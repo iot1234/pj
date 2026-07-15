@@ -1,0 +1,200 @@
+name: Verify PHP application
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5e
+
+      - name: Build production image
+        run: docker build --pull --tag dormitory-ci:${{ github.sha }} .
+
+      - name: Validate Compose configuration
+        env:
+          APP_URL: http://localhost:8080
+          APP_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          DB_DATABASE: testing
+          DB_USERNAME: testing
+          DB_PASSWORD: testing-only
+          DB_ROOT_PASSWORD: testing-root-only
+        run: docker compose config --quiet
+
+      - name: Validate shell scripts
+        run: |
+          docker run --rm --entrypoint bash dormitory-ci:${{ github.sha }} \
+            -n scripts/bootstrap_database.sh
+          docker run --rm --entrypoint bash dormitory-ci:${{ github.sha }} \
+            -n scripts/provision_runtime_db_user.sh
+          docker run --rm --entrypoint bash dormitory-ci:${{ github.sha }} \
+            -n scripts/setup-database.sh
+          docker run --rm --entrypoint sh dormitory-ci:${{ github.sha }} \
+            -n scripts/start-web.sh
+          docker run --rm --entrypoint sh dormitory-ci:${{ github.sha }} \
+            -n scripts/start-worker.sh
+
+      - name: Lint PHP sources
+        run: |
+          docker run --rm --entrypoint sh dormitory-ci:${{ github.sha }} -c '
+            find . -type f -name "*.php" -print0 |
+              xargs -0 -n1 php -l >/tmp/php-lint.log || {
+                cat /tmp/php-lint.log
+                exit 1
+              }
+            echo "PHP lint passed"
+          '
+
+      - name: Run unit tests
+        run: |
+          docker run --rm --entrypoint php \
+            -e APP_ENV=testing \
+            -e APP_DEBUG=false \
+            -e APP_URL=http://localhost \
+            -e APP_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+            -e FORCE_HTTPS=false \
+            -e DB_HOST=127.0.0.1 \
+            -e DB_PORT=3306 \
+            -e DB_DATABASE=testing \
+            -e DB_USERNAME=testing \
+            -e DB_PASSWORD=testing-only \
+            dormitory-ci:${{ github.sha }} tests/run.php
+
+      - name: Exercise MySQL bootstrap, web readiness, and worker isolation
+        env:
+          CI_APP_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          CI_DBA_PASSWORD: ci-root-password-not-for-production
+          CI_DB_DATABASE: ci_dormitory
+          CI_DB_USERNAME: dormitory_app
+          CI_DB_PASSWORD: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+        run: |
+          set -Eeuo pipefail
+
+          image="dormitory-ci:${{ github.sha }}"
+          suffix="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          network="dormitory-ci-${suffix}"
+          database="dormitory-db-${suffix}"
+          web="dormitory-web-${suffix}"
+          worker="dormitory-worker-${suffix}"
+
+          cleanup() {
+            for container in "$worker" "$web" "$database"; do
+              docker rm --force "$container" >/dev/null 2>&1 || true
+            done
+            docker network rm "$network" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker network create "$network" >/dev/null
+          docker run --detach \
+            --name "$database" \
+            --network "$network" \
+            --env MYSQL_ROOT_PASSWORD="$CI_DBA_PASSWORD" \
+            --env MYSQL_ROOT_HOST=% \
+            --env MYSQL_DATABASE="$CI_DB_DATABASE" \
+            mysql:8.4 >/dev/null
+
+          database_ready=false
+          for attempt in $(seq 1 60); do
+            if docker exec \
+              --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+              "$database" mysqladmin ping --host=127.0.0.1 --user=root --silent; then
+              database_ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$database_ready" != true ]; then
+            docker logs "$database"
+            exit 1
+          fi
+
+          run_database_setup() {
+            docker run --rm \
+              --network "$network" \
+              --entrypoint bash \
+              --env RUNTIME_ROLE=job \
+              --env DB_DBA_HOST="$database" \
+              --env DB_DBA_PORT=3306 \
+              --env DB_DBA_USERNAME=root \
+              --env DB_DBA_PASSWORD="$CI_DBA_PASSWORD" \
+              --env DB_HOST="$database" \
+              --env DB_PORT=3306 \
+              --env DB_DATABASE="$CI_DB_DATABASE" \
+              --env DB_USERNAME="$CI_DB_USERNAME" \
+              --env DB_PASSWORD="$CI_DB_PASSWORD" \
+              "$image" scripts/setup-database.sh
+          }
+
+          run_database_setup
+          run_database_setup
+
+          docker run --detach \
+            --name "$web" \
+            --network "$network" \
+            --publish 127.0.0.1:18080:8080 \
+            --env APP_ENV=production \
+            --env APP_DEBUG=false \
+            --env APP_URL=https://web.example.test \
+            --env APP_TIMEZONE=Asia/Bangkok \
+            --env APP_KEY="$CI_APP_KEY" \
+            --env FORCE_HTTPS=true \
+            --env RUNTIME_ROLE=web \
+            --env PORT=8080 \
+            --env DB_HOST="$database" \
+            --env DB_PORT=3306 \
+            --env DB_DATABASE="$CI_DB_DATABASE" \
+            --env DB_USERNAME="$CI_DB_USERNAME" \
+            --env DB_PASSWORD="$CI_DB_PASSWORD" \
+            --env DB_SSL=false \
+            "$image" >/dev/null
+
+          web_ready=false
+          for attempt in $(seq 1 60); do
+            if response="$(curl --fail --silent --show-error \
+              http://127.0.0.1:18080/healthz.php 2>/dev/null)" \
+              && [ "$response" = '{"status":"ok"}' ]; then
+              web_ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$web_ready" != true ]; then
+            docker logs "$web"
+            exit 1
+          fi
+
+          docker run --detach \
+            --name "$worker" \
+            --network "$network" \
+            --env APP_ENV=production \
+            --env APP_DEBUG=false \
+            --env APP_URL=https://web.example.test \
+            --env APP_TIMEZONE=Asia/Bangkok \
+            --env APP_KEY="$CI_APP_KEY" \
+            --env FORCE_HTTPS=true \
+            --env RUNTIME_ROLE=worker \
+            --env DB_HOST="$database" \
+            --env DB_PORT=3306 \
+            --env DB_DATABASE="$CI_DB_DATABASE" \
+            --env DB_USERNAME="$CI_DB_USERNAME" \
+            --env DB_PASSWORD="$CI_DB_PASSWORD" \
+            --env DB_SSL=false \
+            "$image" /var/www/html/scripts/start-worker.sh >/dev/null
+
+          sleep 5
+          [ "$(docker inspect --format '{{.State.Running}}' "$worker")" = true ]
+          [ "$(docker exec --user 0 "$worker" awk '/^Uid:/{print $2}' /proc/1/status)" = 33 ]
+          [ "$(docker exec --user 0 "$worker" awk '/^Gid:/{print $2}' /proc/1/status)" = 33 ]

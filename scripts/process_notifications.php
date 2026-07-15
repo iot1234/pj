@@ -2,8 +2,22 @@
 declare(strict_types=1);
 
 if(PHP_SAPI!=='cli'){http_response_code(404);exit;}
-/** @var Dormitory\Application $app */
-$app=require dirname(__DIR__).'/bootstrap.php';
+$reportInfrastructureFailure=static function(Throwable $error):never{
+    $requestId=bin2hex(random_bytes(8));
+    error_log(sprintf('[notification-worker:%s] infrastructure failure (%s)',$requestId,$error::class));
+    fwrite(STDERR,json_encode([
+        'ok'=>false,
+        'message'=>'Notification worker is temporarily unavailable',
+        'request_id'=>$requestId,
+    ],JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR).PHP_EOL);
+    exit(1);
+};
+try{
+    /** @var Dormitory\Application $app */
+    $app=require dirname(__DIR__).'/bootstrap.php';
+}catch(Throwable $error){
+    $reportInfrastructureFailure($error);
+}
 $limit=null;
 $loop=false;
 $sleepSeconds=15;
@@ -24,11 +38,10 @@ do{
             fwrite(STDOUT,json_encode(['ok'=>true,'data'=>$result],JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR).PHP_EOL);
         }
     }catch(Throwable $error){
-        fwrite(STDERR,json_encode(['ok'=>false,'message'=>$error->getMessage()],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES).PHP_EOL);
         // Provider-level failures are handled per outbox item. Reaching this
         // catch means the worker infrastructure (for example PDO) is broken;
         // exit so Docker/supervisor can recreate a clean process/connection.
-        exit(1);
+        $reportInfrastructureFailure($error);
     }
     if($loop)sleep($sleepSeconds);
 }while($loop);

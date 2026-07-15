@@ -46,9 +46,7 @@ services:
     environment:
       <<: *runtime-common
       RUNTIME_ROLE: worker
-    command: ["php", "scripts/process_notifications.php", "--loop", "--sleep=15"]
-    volumes:
-      - app_storage:/var/www/html/storage
+    command: ["sh", "scripts/start-worker.sh"]
     depends_on:
       db:
         condition: service_healthy

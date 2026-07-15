@@ -230,7 +230,7 @@ MySQL ตีความ `_` และ `%` ในขอบเขต database ข
 
 LINE token, SlipOK API key และ EasySlip API key ถูกเข้ารหัสแบบ AES-256-GCM โดย derive key จาก `APP_KEY` และผูก AAD แยกตามชื่อ field ฐานข้อมูลจึงไม่เก็บ plaintext และ API หลังบ้านไม่คืนทั้ง plaintext หรือ ciphertext แต่คืนเฉพาะ `configured` กับ hint แบบปิดบัง ช่องค่าลับที่เว้นว่าง/ส่ง `null` จะเก็บค่าเดิมไว้ การลบต้องเลือก “ล้างค่า” (`*_clear=true`) อย่างชัดเจน และห้ามส่งค่าลับใหม่พร้อมคำสั่งล้างใน request เดียวกัน
 
-Docker Compose รัน service `worker` ให้อัตโนมัติ ตรวจด้วย `docker compose ps worker` และ `docker compose logs worker` หากไม่ใช้ Docker ต้องให้ supervisor/Task Scheduler/cron รัน `php scripts/process_notifications.php --loop --sleep=15` เป็น process เบื้องหลัง หรือรันแบบ one-shot อย่างน้อยทุกนาที มิฉะนั้นรายการจะค้างที่ “รอส่ง”
+Docker Compose รัน service `worker` ให้อัตโนมัติผ่าน `sh scripts/start-worker.sh` ซึ่งมี bounded exponential backoff เมื่อ process ล้มชั่วคราว ตรวจด้วย `docker compose ps worker` และ `docker compose logs worker` หากไม่ใช้ Docker ให้ supervisor บน Linux รัน wrapper นี้เป็น process เบื้องหลัง; สำหรับ Windows Task Scheduler ให้รัน `php scripts/process_notifications.php` แบบ one-shot อย่างน้อยทุกนาที มิฉะนั้นรายการจะค้างที่ “รอส่ง”
 
 endpoint ผู้ให้บริการเป็น HTTPS allowlist แบบคงที่: SlipOK `https://api.slipok.com/api/line/apikey/{branch-id}` และ EasySlip `https://api.easyslip.com/v2/verify/bank`; ระบบปิด redirect ก่อนเปลี่ยน provider ให้ทดสอบด้วยบิลจำนวนน้อย ตรวจรูปแบบ receiver reference ของบัญชีจริง และเก็บหลักฐาน reconcile ระบบจะรับเป็น “ชำระแล้ว” ก็ต่อเมื่อยอดตรงถึง 1 สตางค์ บัญชีปลายทางตรง และ transaction reference ไม่เคยใช้มาก่อน
 
