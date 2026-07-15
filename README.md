@@ -90,7 +90,7 @@ XAMPP บางรุ่นมี MariaDB หรือ PHP เก่า ต้�
 
 1. วางโครงการ **นอก** `htdocs`, `www` และ public web root อื่นทั้งหมด แล้วตั้ง Apache VirtualHost ให้ `DocumentRoot` ชี้ `C:/path/to/php-mysql/public` เท่านั้น ห้ามวางทั้งโครงการใต้ `htdocs` แม้มี VirtualHost เพราะ default host อาจยังเปิด `.env`, SQL หรือสลิปผ่าน URL อื่นได้
 2. เปิด extensions ใน `php.ini`: `pdo_mysql`, `curl`, `mbstring`, `gd`, `fileinfo`, `openssl`
-3. เปิด `mod_rewrite` และอนุญาต `AllowOverride FileInfo Options AuthConfig` สำหรับโฟลเดอร์ `public` (`AuthConfig` จำเป็นต่อกฎ `Require all denied` ที่กันไฟล์ซ่อน)
+3. เปิด `mod_rewrite` และอนุญาต `AllowOverride FileInfo AuthConfig Options=Indexes,MultiViews` สำหรับโฟลเดอร์ `public` (`AuthConfig` จำเป็นต่อกฎ `Require all denied` ที่กันไฟล์ซ่อน และ Options allowlist อนุญาตเฉพาะการปิด directory listing/Multiviews)
 4. restart Apache แล้วตรวจด้วย `php -m` และ `php -v` จาก PHP ตัวเดียวกับ Apache
 5. ติดตั้งฐานข้อมูล:
    - **วิธีง่ายสำหรับฐานใหม่:** เปิด phpMyAdmin ระดับ server แล้ว import `database/install.sql` เพียงไฟล์เดียว ระบบจะสร้างและเลือกฐาน `dormitory` พร้อมตาราง/trigger/ค่าเริ่มต้นให้ครบ
@@ -119,7 +119,7 @@ XAMPP บางรุ่นมี MariaDB หรือ PHP เก่า ต้�
     </Directory>
     <Directory "C:/path/to/php-mysql/public">
         Options -Indexes +FollowSymLinks -MultiViews
-        AllowOverride FileInfo Options AuthConfig
+        AllowOverride FileInfo AuthConfig Options=Indexes,MultiViews
         Require all granted
     </Directory>
 </VirtualHost>
@@ -273,7 +273,7 @@ docker compose exec worker php scripts/check_requirements.php --db --strict
 ## ปัญหาที่พบบ่อย
 
 - ได้ 404 ทุก route: ตรวจ `mod_rewrite`, `AllowOverride` และ DocumentRoot ต้องเป็น `public/`
-- ได้ 500 พร้อมข้อความว่า `Require not allowed here`: เพิ่ม `AuthConfig` ใน `AllowOverride FileInfo Options AuthConfig` ของโฟลเดอร์ `public/` แล้ว reload Apache
+- ได้ 500 พร้อมข้อความว่า `Require not allowed here` หรือ `Option MultiViews not allowed here`: ใช้ `AllowOverride FileInfo AuthConfig Options=Indexes,MultiViews` กับโฟลเดอร์ `public/` แล้ว reload Apache
 - login แล้วเด้งกลับเมื่อใช้ HTTP local: ตั้ง `APP_ENV=development`, `FORCE_HTTPS=false`, `APP_URL` ให้ตรง origin แล้วล้าง cookie เดิม
 - `could not find driver`: เปิด `pdo_mysql` ใน `php.ini` ของ PHP/Apache ตัวที่กำลังรันจริง
 - import SQL ไม่ผ่าน: ตรวจว่าเป็น MySQL 8.0.16+ ไม่ใช่ MariaDB; ฐานใหม่ชื่อ `dormitory` ให้ใช้ `install.sql` ไฟล์เดียว หรือวิธีขั้นสูงต้องเลือกฐานก่อนแล้ว import `schema.sql` ก่อน `defaults.sql`; `demo.sql` ไม่จำเป็นต่อการทำงาน
