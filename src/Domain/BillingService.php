@@ -175,6 +175,29 @@ final class BillingService
         return $bill;
     }
 
+    /** @param array<string,mixed> $bill */
+    public function assertPromptPayAvailable(array $bill): void
+    {
+        if (($bill['status'] ?? null) !== 'pending') {
+            throw new HttpException(409, 'บิลนี้ชำระแล้ว', 'BILL_ALREADY_PAID');
+        }
+
+        $capabilities = is_array($bill['payment_capabilities'] ?? null)
+            ? $bill['payment_capabilities']
+            : [];
+        if (($capabilities['promptpay_ready'] ?? false) !== true) {
+            throw new HttpException(503, 'ยังไม่ได้ตั้งค่า PromptPay กรุณาติดต่อผู้ดูแลก่อนโอน', 'PROMPTPAY_NOT_CONFIGURED');
+        }
+        if (($capabilities['slip_verification_ready'] ?? false) !== true) {
+            throw new HttpException(503, 'ระบบตรวจสลิปยังไม่พร้อม จึงยังไม่สามารถสร้าง QR ได้', 'SLIP_NOT_CONFIGURED');
+        }
+
+        $payment = is_array($bill['payment'] ?? null) ? $bill['payment'] : [];
+        if (in_array($payment['status'] ?? null, ['pending', 'verified'], true)) {
+            throw new HttpException(409, 'บิลนี้มีรายการชำระที่กำลังดำเนินการอยู่แล้ว', 'PAYMENT_ALREADY_PENDING');
+        }
+    }
+
     /** @return array<string,mixed> */
     private function buildPreview(array $input, PDO $pdo, bool $lock): array
     {

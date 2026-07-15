@@ -78,7 +78,47 @@
     if (key && payload[key] && typeof payload[key] === 'object') return payload[key];
     return payload;
   };
-  const errorMessage = (error, fallback = 'เกิดข้อผิดพลาด กรุณาลองใหม่') => error instanceof Error && error.message ? error.message : fallback;
+  const errorMessagesByCode = Object.freeze({
+    CSRF_INVALID: 'หน้าที่เปิดอยู่อาจหมดอายุ กรุณารีเฟรชแล้วลองใหม่',
+    ORIGIN_REQUIRED: 'ตรวจสอบแหล่งที่มาของคำขอไม่ได้ กรุณารีเฟรชหน้าแล้วลองใหม่',
+    ORIGIN_INVALID: 'คำขอมาจากที่อยู่เว็บที่ไม่ถูกต้อง กรุณาเปิดระบบจาก URL หลัก',
+    ORIGIN_MISMATCH: 'ระบบปฏิเสธคำขอจากคนละเว็บไซต์ กรุณาเปิดระบบจาก URL หลัก',
+    HOST_REQUIRED: 'ตั้งค่าที่อยู่เว็บไซต์ไม่ครบ กรุณาติดต่อผู้ดูแลระบบ',
+    REQUEST_TOO_LARGE: 'ข้อมูลหรือไฟล์มีขนาดใหญ่เกินที่ระบบรองรับ',
+    INVALID_JSON: 'รูปแบบข้อมูลที่ส่งไม่ถูกต้อง กรุณารีเฟรชแล้วลองใหม่',
+    INVALID_JSON_SHAPE: 'รูปแบบข้อมูลที่ส่งไม่ถูกต้อง กรุณารีเฟรชแล้วลองใหม่',
+    UNKNOWN_FIELDS: 'มีข้อมูลที่ระบบไม่รองรับ กรุณารีเฟรชแล้วลองใหม่',
+    IDEMPOTENCY_KEY_REUSED: 'คำขอนี้ถูกใช้กับการจองอื่นแล้ว กรุณาเริ่มรายการใหม่',
+    PROMPTPAY_NOT_CONFIGURED: 'ยังไม่ได้ตั้งค่า PromptPay กรุณาติดต่อผู้ดูแลก่อนโอน',
+    PROMPTPAY_TARGET_INVALID: 'เบอร์ PromptPay หรือเลขผู้เสียภาษีไม่ถูกต้อง',
+    AMOUNT_INVALID: 'ยอดชำระไม่ถูกต้อง กรุณารีเฟรชรายละเอียดบิล',
+    SLIP_NOT_CONFIGURED: 'ระบบตรวจสลิปยังตั้งค่าไม่ครบ กรุณาติดต่อผู้ดูแล',
+    LINE_NOT_CONFIGURED: 'ยังไม่ได้ตั้งค่า LINE Messaging',
+    METER_HISTORY_LOCKED: 'แก้เลขมิเตอร์นี้ไม่ได้ เพราะมีรอบเดือนถัดไปอ้างอิงแล้ว',
+    METER_ALREADY_BILLED: 'แก้เลขมิเตอร์ไม่ได้หลังออกบิลแล้ว',
+    INVALID_CURRENT_PIN: 'PIN ปัจจุบันไม่ถูกต้อง',
+    PIN_UNCHANGED: 'PIN ใหม่ต้องไม่ซ้ำกับ PIN ปัจจุบัน',
+    ADMIN_NOT_FOUND: 'ไม่พบบัญชีผู้ดูแล',
+    USERNAME_EXISTS: 'ชื่อผู้ใช้นี้มีอยู่แล้ว',
+    LAST_OWNER: 'ระบบต้องมีเจ้าของที่ใช้งานได้อย่างน้อย 1 บัญชี',
+    SELF_OWNER_CHANGE: 'ไม่สามารถลดสิทธิ์หรือปิดบัญชีเจ้าของของตนเองได้',
+    SELF_DELETE: 'ไม่สามารถปิดบัญชีของตนเองได้',
+    BILL_NOT_FOUND: 'ไม่พบบิล',
+    BILL_ALREADY_PAID: 'บิลนี้ชำระแล้ว',
+    PAYMENT_ALREADY_PENDING: 'บิลนี้มีรายการชำระที่กำลังดำเนินการอยู่แล้ว',
+    BILL_PREVIEW_INVALID: 'บางห้องยังมีข้อมูลไม่พร้อมออกบิล กรุณาตรวจรายการที่แจ้ง',
+  });
+  const errorMessage = (error, fallback = 'เกิดข้อผิดพลาด กรุณาลองใหม่') => {
+    const code = error?.details?.code;
+    if (code === 'RATE_LIMITED') {
+      const retryAfter = Math.max(0, Math.ceil(Number(error?.details?.retry_after) || 0));
+      return retryAfter > 0
+        ? `มีการทำรายการถี่เกินไป กรุณารอ ${retryAfter} วินาทีแล้วลองใหม่`
+        : 'มีการทำรายการถี่เกินไป กรุณารอสักครู่แล้วลองใหม่';
+    }
+    if (code && errorMessagesByCode[code]) return errorMessagesByCode[code];
+    return error instanceof Error && error.message ? error.message : fallback;
+  };
 
   async function api(url, options = {}) {
     const method = String(options.method || 'GET').toUpperCase();
@@ -458,7 +498,7 @@
   function initResidentPortal() {
     const shell = $('.resident-shell');
     if (!shell) return;
-    const state = { profile: {}, bills: [], filter: 'all', currentBillId: null, billDetailRequest: 0, qrRequest: 0, slipMaxBytes: 4 * 1024 * 1024, slipReady: false };
+    const state = { profile: {}, bills: [], filter: 'all', currentBillId: null, billDetailRequest: 0, qrRequest: 0, slipMaxBytes: 4 * 1024 * 1024, slipReady: false, paymentReady: false };
     const profileForm = $('#resident-profile-form');
     const pinForm = $('#resident-pin-form');
     const billDialog = $('#resident-bill-dialog');
@@ -470,13 +510,21 @@
       return 'unpaid';
     }
 
-    function switchView(name) {
+    function replaceResidentHash(name) {
+      const hash = name === 'dashboard' ? '' : `#${name}`;
+      window.history.replaceState(null, '', `${location.pathname}${location.search}${hash}`);
+    }
+
+    function switchView(name, updateHash = true) {
       const labels = { dashboard: 'ภาพรวม', bills: 'บิลของฉัน', profile: 'ข้อมูลส่วนตัว' };
+      if (!Object.prototype.hasOwnProperty.call(labels, name)) return false;
       $$('[data-view-panel]', shell).forEach((panel) => { const active = panel.dataset.viewPanel === name; panel.hidden = !active; panel.classList.toggle('is-active', active); });
       $$('[data-resident-view]', shell).forEach((button) => { const active = button.dataset.residentView === name; button.classList.toggle('is-active', active); if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current'); });
       $('#resident-page-title').textContent = labels[name] || labels.dashboard;
-      location.hash = name === 'dashboard' ? '' : name;
+      const targetHash = name === 'dashboard' ? '' : `#${name}`;
+      if (updateHash && location.hash !== targetHash) location.hash = targetHash;
       $('#main-content').focus({ preventScroll: true });
+      return true;
     }
 
     function createBillRow(bill) {
@@ -506,7 +554,7 @@
       const unpaid = state.bills.filter((bill) => billStatus(bill) !== 'paid');
       $('#resident-bill-count').textContent = String(state.bills.length);
       $('#resident-due-total').textContent = money(unpaid.reduce((sum, bill) => sum + number(bill.total_amount ?? bill.total), 0));
-      $('#resident-due-caption').textContent = unpaid.length ? `${unpaid.length} บิลล์ที่ยังต้องชำระ` : 'ไม่มียอดค้างชำระ';
+      $('#resident-due-caption').textContent = unpaid.length ? `${unpaid.length} บิลที่ยังต้องชำระ` : 'ไม่มียอดค้างชำระ';
       const navCount = $('#resident-unpaid-count');
       navCount.textContent = String(unpaid.length);
       navCount.hidden = unpaid.length === 0;
@@ -545,6 +593,7 @@
     async function openBill(id) {
       state.currentBillId = id;
       state.slipReady = false;
+      state.paymentReady = false;
       state.qrRequest += 1;
       const request = ++state.billDetailRequest;
       const slipForm = $('#resident-slip-form');
@@ -552,7 +601,7 @@
       slipForm.hidden = true;
       $('[data-file-name]', slipForm).textContent = 'ยังไม่ได้เลือกไฟล์';
       $('#resident-bill-loading').hidden = false;
-      $('#resident-bill-loading').textContent = 'กำลังโหลดรายละเอียดบิลล์…';
+      $('#resident-bill-loading').textContent = 'กำลังโหลดรายละเอียดบิล…';
       $('#resident-bill-detail').hidden = true;
       showFormError($('#resident-slip-error'));
       openDialog(billDialog);
@@ -572,23 +621,32 @@
         const capabilities = objectFrom(bill.payment_capabilities);
         const promptPayReady = capabilities.promptpay_ready === true;
         const slipReady = capabilities.slip_verification_ready === true;
+        const paymentConfigurationReady = promptPayReady && slipReady;
         const paymentInProgress = payment?.status === 'pending' || payment?.status === 'verified';
         state.slipMaxBytes = Math.max(1024, Math.min(4 * 1024 * 1024, Number(capabilities.slip_max_bytes) || 4 * 1024 * 1024));
-        state.slipReady = slipReady && !paymentInProgress;
-        $('#resident-load-qr').hidden = !promptPayReady || paymentInProgress;
-        $('#resident-qr-stage').hidden = !promptPayReady || paymentInProgress;
+        state.paymentReady = paymentConfigurationReady && !paymentInProgress;
+        state.slipReady = state.paymentReady;
+        $('#resident-load-qr').hidden = !state.paymentReady;
+        $('#resident-qr-stage').hidden = !state.paymentReady;
         $('#resident-slip-form').hidden = !state.slipReady;
         const limitMiB = state.slipMaxBytes / 1024 / 1024;
         $('[data-file-name]', $('#resident-slip-form')).textContent = `JPG, PNG หรือ WebP ขนาดไม่เกิน ${limitMiB < 1 ? `${Math.round(state.slipMaxBytes / 1024)} KiB` : `${limitMiB.toFixed(limitMiB % 1 ? 2 : 0)} MiB`}`;
-        paymentNotice.hidden = !payment && (promptPayReady || slipReady);
-        paymentNotice.className = `payment-notice${payment ? ` payment-notice-${text(payment.status, 'pending')}` : ''}`;
+        const notices = [];
         if (payment) {
-          paymentNotice.textContent = payment.status === 'rejected'
+          notices.push(payment.status === 'rejected'
             ? `สลิปถูกปฏิเสธ: ${text(payment.rejection_reason, 'ข้อมูลในสลิปไม่ตรงกับบิล')}`
-            : payment.status === 'verified' ? 'สลิปผ่านการตรวจสอบแล้ว' : 'สลิปอยู่ระหว่างตรวจสอบ';
-        } else if (!promptPayReady && !slipReady) {
-          paymentNotice.textContent = 'ช่องทางชำระเงินยังตั้งค่าไม่ครบ กรุณาติดต่อผู้ดูแลก่อนโอนเงิน';
+            : payment.status === 'verified' ? 'สลิปผ่านการตรวจสอบแล้ว' : 'สลิปอยู่ระหว่างตรวจสอบ');
         }
+        if (!paymentConfigurationReady) {
+          if (!promptPayReady && !slipReady) notices.push('ยังชำระผ่านระบบไม่ได้: ผู้ดูแลต้องตั้งค่า PromptPay และระบบตรวจสลิปให้พร้อมก่อน ห้ามโอนจนกว่าจะตั้งค่าเสร็จ');
+          else if (!promptPayReady) notices.push('ยังชำระผ่านระบบไม่ได้: ยังไม่ได้ตั้งค่า PromptPay กรุณาติดต่อผู้ดูแลก่อนโอน');
+          else notices.push('ยังชำระผ่านระบบไม่ได้: ระบบตรวจสลิปยังไม่พร้อม จึงซ่อน QR ไว้เพื่อป้องกันการโอนที่ตรวจสอบไม่ได้');
+        }
+        paymentNotice.hidden = notices.length === 0;
+        paymentNotice.className = `payment-notice${payment ? ` payment-notice-${text(payment.status, 'pending')}` : ''}${!paymentConfigurationReady ? ' payment-notice-blocked' : ''}`;
+        paymentNotice.setAttribute('role', !paymentConfigurationReady ? 'alert' : 'status');
+        paymentNotice.setAttribute('aria-live', !paymentConfigurationReady ? 'assertive' : 'polite');
+        paymentNotice.textContent = notices.join(' · ');
         const breakdown = $('#resident-bill-breakdown');
         breakdown.replaceChildren();
         if (Array.isArray(bill.line_items)) {
@@ -604,7 +662,7 @@
         breakdown.append(totalRow);
         $('#resident-payment-panel').hidden = status === 'paid';
         $('#resident-payment-complete').hidden = status !== 'paid';
-        $('#resident-qr-stage').replaceChildren(create('div', 'qr-placeholder', 'เลือก “แสดง QR” เพื่อสร้าง QR ตามยอดบิลล์'));
+        $('#resident-qr-stage').replaceChildren(create('div', 'qr-placeholder', 'เลือก “แสดง QR” เพื่อสร้าง QR ตามยอดบิล'));
         $('#resident-bill-loading').hidden = true;
         $('#resident-bill-detail').hidden = false;
       } catch (error) {
@@ -662,6 +720,7 @@
     });
     $('#resident-load-qr').addEventListener('click', async (event) => {
       const button = event.currentTarget;
+      if (!state.paymentReady) { toast('ยังสร้าง QR ไม่ได้ ต้องตั้งค่า PromptPay และระบบตรวจสลิปให้พร้อมทั้งคู่ก่อน', 'error'); return; }
       const billId = state.currentBillId;
       const request = ++state.qrRequest;
       setBusy(button, true, 'กำลังสร้าง QR…');
@@ -673,10 +732,15 @@
         const qrLibrary = window.QRCode || window.qrcodelib;
         if (!payload || !qrLibrary?.toCanvas) throw new ApiError('ไม่สามารถสร้าง QR ได้');
         const canvas = create('canvas');
-        canvas.setAttribute('aria-label', 'QR PromptPay สำหรับบิลล์นี้');
+        canvas.setAttribute('aria-label', 'QR PromptPay สำหรับบิลนี้');
         await qrLibrary.toCanvas(canvas, payload, { width: 240, margin: 2, errorCorrectionLevel: 'M' });
         if (request !== state.qrRequest || String(state.currentBillId) !== String(billId)) return;
-        $('#resident-qr-stage').replaceChildren(canvas, create('small', '', `ยอดชำระ ${money(qr.amount ?? data?.amount)}`));
+        const meta = create('div', 'qr-meta');
+        meta.append(
+          create('strong', '', `ชื่อผู้รับ: ${text(qr.name ?? qr.recipient_name ?? data?.name, 'ไม่ได้ระบุชื่อ')}`),
+          create('small', '', `ยอดชำระ ${money(qr.amount ?? data?.amount)}`),
+        );
+        $('#resident-qr-stage').replaceChildren(canvas, meta);
       } catch (error) { toast(errorMessage(error), 'error'); }
       finally { setBusy(button, false); }
     });
@@ -707,8 +771,20 @@
       } catch (errorValue) { showFormError(error, errorMessage(errorValue)); }
       finally { setBusy(button, false); }
     });
-    const hash = location.hash.replace('#', '');
-    if (['bills', 'profile'].includes(hash)) switchView(hash);
+    const initialHash = location.hash.replace('#', '');
+    const initialView = ['bills', 'profile'].includes(initialHash) ? initialHash : 'dashboard';
+    switchView(initialView, false);
+    if (initialHash !== (initialView === 'dashboard' ? '' : initialView)) replaceResidentHash(initialView);
+    window.addEventListener('hashchange', () => {
+      const requested = location.hash.replace('#', '');
+      const nextView = ['bills', 'profile'].includes(requested) ? requested : 'dashboard';
+      if ($('[data-view-panel].is-active', shell)?.dataset.viewPanel === nextView) {
+        if (requested !== (nextView === 'dashboard' ? '' : nextView)) replaceResidentHash(nextView);
+        return;
+      }
+      switchView(nextView, false);
+      if (requested !== (nextView === 'dashboard' ? '' : nextView)) replaceResidentHash(nextView);
+    });
     loadAll();
   }
 
@@ -746,20 +822,27 @@
       return wrap;
     }
 
-    function switchView(name, force = false) {
-      if (!titles[name] || (name === 'users' && role !== 'owner')) return;
+    function replaceAdminHash(name) {
+      const hash = name === 'rooms' ? '' : `#${name}`;
+      window.history.replaceState(null, '', `${location.pathname}${location.search}${hash}`);
+    }
+
+    function switchView(name, force = false, updateHash = true) {
+      if (!titles[name] || (name === 'users' && role !== 'owner')) return false;
       const activeView = $('[data-admin-view].is-active', app)?.dataset.adminView;
       if (activeView === 'settings' && name !== 'settings' && $('#integration-settings-form')?.dataset.dirty === 'true') {
-        if (!window.confirm('มีการตั้งค่าบริการภายนอกที่ยังไม่บันทึก ต้องการออกจากหน้านี้และทิ้งการแก้ไขหรือไม่?')) return;
+        if (!window.confirm('มีการตั้งค่าบริการภายนอกที่ยังไม่บันทึก ต้องการออกจากหน้านี้และทิ้งการแก้ไขหรือไม่?')) return false;
         renderIntegrationSettings(objectFrom(state.settings.integrations));
       }
       $$('[data-admin-view]', app).forEach((view) => { const active = view.dataset.adminView === name; view.hidden = !active; view.classList.toggle('is-active', active); });
       $$('[data-admin-nav]', app).forEach((nav) => { const active = nav.dataset.adminNav === name; nav.classList.toggle('is-active', active); if (active) nav.setAttribute('aria-current', 'page'); else nav.removeAttribute('aria-current'); });
       $('#admin-page-title').textContent = titles[name];
-      location.hash = name === 'rooms' ? '' : name;
+      const targetHash = name === 'rooms' ? '' : `#${name}`;
+      if (updateHash && location.hash !== targetHash) location.hash = targetHash;
       setAdminMenu(false);
       const volatileViews = ['rooms', 'bookings', 'residents', 'meters', 'bills', 'payments'];
       if (force || volatileViews.includes(name) || !state.loaded.has(name)) loaders[name]?.();
+      return true;
     }
 
     async function confirmAction(title, message, label = 'ยืนยัน', danger = true) {
@@ -806,7 +889,10 @@
         rows.append(tr);
       });
       ['all', 'available', 'reserved', 'occupied'].forEach((key) => { const node = $(`[data-room-stat="${key}"]`); node.textContent = String(key === 'all' ? state.rooms.length : state.rooms.filter((room) => room.status === key).length); });
-      setTableState($('#admin-room-state'), visible.length ? 'ready' : 'empty', 'ไม่พบห้องที่ตรงกับตัวกรอง');
+      const emptyMessage = state.rooms.length === 0
+        ? 'ยังไม่มีห้อง เริ่มใช้งานตามลำดับ: ตั้งค่า → เพิ่มห้อง → รับจอง → รับเข้าพัก → จดเลขตั้งต้น'
+        : 'ไม่พบห้องที่ตรงกับตัวกรอง';
+      setTableState($('#admin-room-state'), visible.length ? 'ready' : 'empty', emptyMessage);
     }
 
     async function loadRooms() {
@@ -914,7 +1000,10 @@
     });
     $('#move-in-form').addEventListener('submit', async (event) => {
       event.preventDefault(); const form = event.currentTarget; const error = $('#move-in-error'); showFormError(error); if (!form.reportValidity()) return;
-      const values = Object.fromEntries(new FormData(form).entries()); const id = values.booking_id; delete values.booking_id; const button = form.querySelector('[type="submit"]'); setBusy(button, true, 'กำลังรับเข้าพัก…');
+      const values = Object.fromEntries(new FormData(form).entries());
+      if (values.pin !== values.confirm_pin) { showFormError(error, 'PIN เริ่มต้นและคำยืนยันไม่ตรงกัน กรุณากรอกใหม่'); form.elements.confirm_pin.focus(); return; }
+      const id = values.booking_id; delete values.booking_id; delete values.confirm_pin;
+      const button = form.querySelector('[type="submit"]'); setBusy(button, true, 'กำลังรับเข้าพัก…');
       try { await api(`/api/admin/bookings/${encodeURIComponent(id)}/move-in`, { method: 'POST', body: values }); closeDialog($('#move-in-dialog')); toast('รับเข้าพักและสร้างบัญชีแล้ว'); state.loaded.delete('residents'); await Promise.all([loadBookings(), loadRooms()]); }
       catch (requestError) {
         if (requestError?.details?.code === 'RESIDENT_REUSE_CONFIRMATION_REQUIRED') {
@@ -999,6 +1088,7 @@
       const rows = $('#meter-rows'); rows.replaceChildren();
       state.meters.forEach((meter) => {
         const roomId = meter.room_id || meter.id;
+        const roomCode = text(meter.room_code || meter.room?.room_code);
         const waterPreviousRaw = meter.water_previous ?? meter.previous_water ?? null;
         const electricPreviousRaw = meter.electric_previous ?? meter.previous_electric ?? null;
         const hasWaterPrevious = waterPreviousRaw !== null && waterPreviousRaw !== '';
@@ -1008,15 +1098,63 @@
         const deltaText = (value, previous, hasPrevious) => value === '' || value === null || value === undefined
           ? '—' : (hasPrevious ? Math.max(0, number(value) - previous).toFixed(2) : '0.00');
         const tr = create('tr'); tr.dataset.roomId = String(roomId); tr.dataset.period = state.meterPeriod;
-        const waterInput = create('input', 'meter-input'); waterInput.type = 'number'; waterInput.min = hasWaterPrevious ? String(waterPrevious) : '0'; waterInput.max = '9999999'; waterInput.step = '0.01'; waterInput.value = meter.water_current ?? '';
-        const electricInput = create('input', 'meter-input'); electricInput.type = 'number'; electricInput.min = hasElectricPrevious ? String(electricPrevious) : '0'; electricInput.max = '9999999'; electricInput.step = '0.01'; electricInput.value = meter.electric_current ?? '';
-        const waterDelta = create('strong', 'meter-delta', deltaText(meter.water_current, waterPrevious, hasWaterPrevious));
-        const electricDelta = create('strong', 'meter-delta', deltaText(meter.electric_current, electricPrevious, hasElectricPrevious));
-        waterInput.addEventListener('input', () => { waterDelta.textContent = deltaText(waterInput.value, waterPrevious, hasWaterPrevious); });
-        electricInput.addEventListener('input', () => { electricDelta.textContent = deltaText(electricInput.value, electricPrevious, hasElectricPrevious); });
-        tr.append(td(text(meter.room_code || meter.room?.room_code)), td(text(waterPreviousRaw, 'เดือนแรก')), td(waterInput), td(waterDelta), td(text(electricPreviousRaw, 'เดือนแรก')), td(electricInput), td(electricDelta), td(actionButton('บันทึก', 'save-meter', roomId, 'button-primary'), 'align-right')); rows.append(tr);
+        tr.classList.toggle('meter-row-baseline', !hasWaterPrevious || !hasElectricPrevious);
+        const previousCell = (type, raw, hasPrevious) => {
+          const value = hasPrevious ? text(raw) : create('span', 'meter-baseline-label', 'เดือนแรก · หน่วย 0');
+          const cell = td(value); cell.dataset.meterPrevious = type; return cell;
+        };
+        const configureInput = (type, value, previous, hasPrevious) => {
+          const input = create('input', 'meter-input');
+          input.type = 'number'; input.min = hasPrevious ? String(previous) : '0'; input.max = '9999999'; input.step = '0.01'; input.value = value ?? '';
+          input.dataset.meterType = type; input.dataset.savedValue = input.value; input.dataset.previous = hasPrevious ? String(previous) : '0'; input.dataset.hasPrevious = String(hasPrevious);
+          const label = type === 'water' ? 'น้ำ' : 'ไฟ';
+          input.setAttribute('aria-label', `เลขมิเตอร์${label}ปัจจุบัน ห้อง ${roomCode}${hasPrevious ? '' : ' เดือนแรกใช้เป็นค่าตั้งต้นและหน่วยเท่ากับ 0'}`);
+          if (!hasPrevious) input.title = 'เดือนแรก: เลขนี้เป็นค่าตั้งต้น (baseline) และหน่วยที่ใช้เท่ากับ 0';
+          return input;
+        };
+        const waterInput = configureInput('water', meter.water_current, waterPrevious, hasWaterPrevious);
+        const electricInput = configureInput('electric', meter.electric_current, electricPrevious, hasElectricPrevious);
+        const waterDelta = create('strong', 'meter-delta', deltaText(meter.water_current, waterPrevious, hasWaterPrevious)); waterDelta.dataset.meterDelta = 'water';
+        const electricDelta = create('strong', 'meter-delta', deltaText(meter.electric_current, electricPrevious, hasElectricPrevious)); electricDelta.dataset.meterDelta = 'electric';
+        const updateDirtyState = () => {
+          const dirty = $$('input[data-meter-type]', tr).some((input) => input.value !== input.dataset.savedValue);
+          tr.classList.toggle('meter-row-dirty', dirty); tr.dataset.dirty = String(dirty);
+        };
+        waterInput.addEventListener('input', () => { waterDelta.textContent = deltaText(waterInput.value, number(waterInput.dataset.previous), waterInput.dataset.hasPrevious === 'true'); updateDirtyState(); });
+        electricInput.addEventListener('input', () => { electricDelta.textContent = deltaText(electricInput.value, number(electricInput.dataset.previous), electricInput.dataset.hasPrevious === 'true'); updateDirtyState(); });
+        tr.append(td(roomCode), previousCell('water', waterPreviousRaw, hasWaterPrevious), td(waterInput), td(waterDelta), previousCell('electric', electricPreviousRaw, hasElectricPrevious), td(electricInput), td(electricDelta), td(actionButton('บันทึก', 'save-meter', roomId, 'button-primary'), 'align-right')); rows.append(tr);
       });
       setTableState($('#meter-state'), state.meters.length ? 'ready' : 'empty', 'ไม่พบห้องที่ต้องจดมิเตอร์');
+    }
+
+    function applySavedMeterResult(tr, result, submittedValues) {
+      const meter = state.meters.find((item) => String(item.room_id || item.id) === String(result.room_id));
+      let hasUnsavedEdit = false;
+      ['water', 'electric'].forEach((type) => {
+        const reading = result[type];
+        if (!reading || typeof reading !== 'object') return;
+        if (meter) {
+          meter[type] = { previous: reading.previous, current: reading.current, units: reading.units };
+          meter[`${type}_previous`] = reading.previous;
+          meter[`${type}_current`] = reading.current;
+          meter[`${type}_units`] = reading.units;
+        }
+        const previousCell = $(`[data-meter-previous="${type}"]`, tr);
+        const input = $(`input[data-meter-type="${type}"]`, tr);
+        const delta = $(`[data-meter-delta="${type}"]`, tr);
+        if (previousCell) previousCell.textContent = text(reading.previous);
+        if (input) {
+          const submitted = submittedValues[`${type}_current`];
+          const changedDuringSave = input.value === '' || !Number.isFinite(Number(input.value)) || Number(input.value) !== Number(submitted);
+          input.min = text(reading.previous, '0'); input.dataset.savedValue = text(reading.current, ''); input.dataset.previous = input.min; input.dataset.hasPrevious = 'true';
+          if (changedDuringSave) hasUnsavedEdit = true;
+          else input.value = input.dataset.savedValue;
+          input.title = ''; input.setAttribute('aria-label', `เลขมิเตอร์${type === 'water' ? 'น้ำ' : 'ไฟ'}ปัจจุบัน ห้อง ${text(meter?.room_code || meter?.room?.room_code || tr.dataset.roomId)}`);
+          if (delta) delta.textContent = input.value === '' ? '—' : Math.max(0, number(input.value) - number(input.dataset.previous)).toFixed(2);
+        }
+        else if (delta) delta.textContent = text(reading.units, '0.00');
+      });
+      tr.classList.remove('meter-row-baseline'); tr.classList.toggle('meter-row-dirty', hasUnsavedEdit); tr.dataset.dirty = String(hasUnsavedEdit);
     }
     async function loadMeters() {
       const period = $('#meter-period').value || todayPeriod(); $('#meter-period').value = period;
@@ -1039,7 +1177,13 @@
       try {
         const payload = { room_id: Number(button.dataset.id), period: tr.dataset.period, water_current: number(inputs[0].value), electric_current: number(inputs[1].value) };
         if (confirmLargeUsage) payload.confirm_large_usage = true;
-        await api('/api/admin/meters', { method: 'POST', body: payload }); toast('บันทึกมิเตอร์แล้ว'); await loadMeters();
+        const result = objectFrom(await api('/api/admin/meters', { method: 'POST', body: payload }));
+        if ($('#meter-period').value === tr.dataset.period && state.meterPeriod === tr.dataset.period) {
+          applySavedMeterResult(tr, result, payload);
+          toast('บันทึกห้องนี้แล้ว ค่าแถวอื่นที่ยังไม่ได้บันทึกยังอยู่ครบ');
+        } else {
+          toast(`บันทึกมิเตอร์รอบ ${tr.dataset.period} แล้ว`);
+        }
       } catch (error) {
         if (!confirmLargeUsage && error?.details?.code === 'METER_USAGE_ANOMALY') {
           const anomalies = Array.isArray(error.details.anomalies) && error.details.anomalies.length ? error.details.anomalies : [error.details];
@@ -1087,7 +1231,7 @@
       const bulkButton = $('#line-bulk-button');
       bulkButton.disabled = !lineReady || eligibleForLine === 0;
       bulkButton.title = !lineReady ? 'ตั้งค่า LINE Channel access token ในหน้า “ตั้งค่า” ก่อน' : (eligibleForLine === 0 ? 'ไม่มีบิลค้างชำระที่ผูก LINE และพร้อมเข้าคิว' : 'เข้าคิวบิลค้างชำระที่พร้อมส่ง');
-      setTableState($('#bill-admin-state'), state.bills.length ? 'ready' : 'empty', 'ยังไม่มีบิลล์ในรอบเดือนนี้');
+      setTableState($('#bill-admin-state'), state.bills.length ? 'ready' : 'empty', 'ยังไม่มีบิลในรอบเดือนนี้');
     }
     async function loadBills() {
       const period = $('#bill-period').value || todayPeriod(); $('#bill-period').value = period;
@@ -1118,6 +1262,24 @@
         node.textContent = 'มีการแก้ไขที่ยังไม่บันทึก — บันทึกก่อนทดสอบ';
       });
     }
+    function applySlipProviderVisibility(form) {
+      if (!form) return;
+      const provider = String(form.elements.slip_provider?.value || 'none');
+      const editable = role === 'owner' && form.dataset.ownerOnly === 'true';
+      $$('[data-slip-provider-field]', form).forEach((wrapper) => {
+        const active = wrapper.dataset.slipProviderField === provider;
+        wrapper.hidden = !active;
+        $$('input, select, textarea', wrapper).forEach((control) => { control.disabled = !active || !editable; });
+      });
+      const help = $('#slip-provider-help', form);
+      if (help) {
+        help.textContent = provider === 'slipok'
+          ? 'แสดงเฉพาะ Branch ID และ API Key ของ SlipOK; ค่า EasySlip เดิมยังถูกเก็บไว้'
+          : provider === 'easyslip'
+            ? 'แสดงเฉพาะ API Key ของ EasySlip; ค่า SlipOK เดิมยังถูกเก็บไว้'
+            : 'ปิดการตรวจสลิปอยู่ โดย API Key เดิมยังถูกเก็บไว้และจะไม่ถูกล้างอัตโนมัติ';
+      }
+    }
     function renderIntegrationSettings(integrations = {}) {
       const form = $('#integration-settings-form');
       if (!form) return;
@@ -1134,6 +1296,7 @@
         const configured = integrations[`${key}_configured`] === true;
         if (status) status.textContent = configured ? `ตั้งค่าแล้ว ${text(integrations[`${key}_hint`], '')}`.trim() : 'ยังไม่ได้ตั้งค่า';
       });
+      applySlipProviderVisibility(form);
       const readiness = objectFrom(integrations.readiness);
       const statusMap = { promptpay: readiness.promptpay === true, line: readiness.line === true, slip: readiness.slip_verification === true };
       Object.entries(statusMap).forEach(([key, ready]) => {
@@ -1177,7 +1340,7 @@
       const status = $('#billing-settings-status');
       if (note) {
         note.classList.toggle('security-note-warning', !ready);
-        const copy = $('span', note); if (copy) copy.textContent = ready ? 'ยืนยันค่ารายเดือนแล้ว สามารถตรวจยอดและออกบิลล์ได้' : 'ยังไม่ยืนยันค่าเริ่มต้น ระบบจะยังไม่ออกบิลล์เพื่อป้องกันยอดผิด';
+        const copy = $('span', note); if (copy) copy.textContent = ready ? 'ยืนยันค่ารายเดือนแล้ว สามารถตรวจยอดและออกบิลได้' : 'ยังไม่ยืนยันค่าเริ่มต้น ระบบจะยังไม่ออกบิลเพื่อป้องกันยอดผิด';
       }
       if (status) status.textContent = ready ? `ยืนยันแล้ว${state.settings.updated_at ? ` · แก้ไขล่าสุด ${formatDate(state.settings.updated_at)}` : ''}` : 'ยังไม่ยืนยัน — ตรวจสอบตัวเลขแล้วกด “ยืนยันและบันทึกการตั้งค่า”';
       const builder = $('#bill-builder-form');
@@ -1187,10 +1350,34 @@
     loaders.bills = initBills; loaders.settings = loadSettings;
     $('#bill-period').value = todayPeriod(); $('#bill-period').addEventListener('change', loadBills);
     $('#select-all-bill-rooms').addEventListener('change', (event) => $$('#bill-room-options input').forEach((input) => { input.checked = event.currentTarget.checked; }));
-    function renderBillPreview(data) {
+    function renderBillPreview(data, previewPayload = billPayload()) {
       const previews = listFrom(data, 'bills'); const issues = listFrom(data, 'issues'); const content = $('#bill-preview-content'); content.replaceChildren();
-      previews.forEach((item) => { const card = create('article', 'preview-item'); const info = create('div'); info.append(create('strong', '', `ห้อง ${text(item.room_code || item.room?.room_code)}`), create('small', '', text(item.resident_name || item.resident?.full_name))); card.append(info, create('strong', '', money(item.total_amount ?? item.total))); content.append(card); });
-      issues.forEach((issue) => { const card = create('article', 'preview-item preview-issue'); const issueDetails = { AMBIGUOUS_OCCUPANCY: 'พบข้อมูลผู้พักซ้อนกันในรอบเดือนนี้ กรุณาตรวจสอบวันเข้า–ออก', NO_OCCUPANCY: 'ไม่มีผู้พักในรอบที่เลือก' }; const detail = issue.code === 'MISSING_METER' ? `ขาดมิเตอร์: ${(issue.meter_types || []).join(', ')}` : (issueDetails[issue.code] || 'ข้อมูลห้องยังไม่พร้อมออกบิลล์'); card.append(create('strong', '', `ห้อง ${text(issue.room_code || issue.room_id)}`), create('small', '', detail)); content.append(card); });
+      const otherContext = create('div', `preview-context${number(previewPayload.other_amount) > 0 ? ' preview-context-warning' : ''}`);
+      otherContext.append(
+        create('strong', '', number(previewPayload.other_amount) > 0 ? 'รายการอื่นคิดแยกต่อห้อง' : 'ไม่มีค่าใช้จ่ายรายการอื่น'),
+        create('span', '', number(previewPayload.other_amount) > 0
+          ? `${text(previewPayload.other_description, 'รายการอื่น')} ${money(previewPayload.other_amount)} จะเพิ่มให้ทุกห้องที่เลือก (${previewPayload.room_ids.length} ห้อง)`
+          : 'จำนวนเงินอื่นเป็น 0 จึงไม่เพิ่มยอดให้ห้องที่เลือก'),
+      );
+      content.append(otherContext);
+      previews.forEach((item) => {
+        const card = create('article', 'preview-item preview-item-detailed');
+        const heading = create('div', 'preview-heading');
+        const identity = create('div'); identity.append(create('strong', '', `ห้อง ${text(item.room_code || item.room?.room_code)}`), create('small', '', text(item.resident_name || item.resident?.full_name)));
+        heading.append(identity, create('strong', 'preview-total', money(item.total_amount ?? item.total)));
+        const breakdown = create('dl', 'preview-breakdown');
+        const appendPreviewLine = (label, detail, amount) => {
+          const row = create('div');
+          const term = create('dt'); term.append(create('span', '', label)); if (detail) term.append(create('small', '', detail));
+          row.append(term, create('dd', '', money(amount))); breakdown.append(row);
+        };
+        appendPreviewLine('ค่าห้อง', '', item.rent_amount);
+        appendPreviewLine('ค่าน้ำ', `${text(item.water_units, '0')} หน่วย × ${money(item.water_rate)}`, item.water_amount);
+        appendPreviewLine('ค่าไฟ', `${text(item.electric_units, '0')} หน่วย × ${money(item.electric_rate)}`, item.electric_amount);
+        appendPreviewLine(text(item.other_description, 'รายการอื่น'), 'คิดต่อห้องนี้', item.other_amount);
+        card.append(heading, breakdown); content.append(card);
+      });
+      issues.forEach((issue) => { const card = create('article', 'preview-item preview-issue'); const issueDetails = { AMBIGUOUS_OCCUPANCY: 'พบข้อมูลผู้พักซ้อนกันในรอบเดือนนี้ กรุณาตรวจสอบวันเข้า–ออก', NO_OCCUPANCY: 'ไม่มีผู้พักในรอบที่เลือก' }; const detail = issue.code === 'MISSING_METER' ? `ขาดมิเตอร์: ${(issue.meter_types || []).join(', ')}` : (issueDetails[issue.code] || 'ข้อมูลห้องยังไม่พร้อมออกบิล'); card.append(create('strong', '', `ห้อง ${text(issue.room_code || issue.room_id)}`), create('small', '', detail)); content.append(card); });
       if (!previews.length && !issues.length) content.append(create('p', 'empty-inline', 'ไม่มีรายการที่สร้างได้'));
       openDialog($('#preview-dialog')); return { previews, issues };
     }
@@ -1198,29 +1385,29 @@
       const payload = billPayload(); const error = $('#bill-builder-error'); showFormError(error);
       if (!$('#bill-builder-form').reportValidity() || !payload.room_ids.length) { showFormError(error, 'กรุณาเลือกอย่างน้อย 1 ห้อง'); return; }
       const button = event.currentTarget; setBusy(button, true, 'กำลังคำนวณ…');
-      try { renderBillPreview(await api('/api/admin/bills/preview', { method: 'POST', body: payload })); }
+      try { renderBillPreview(await api('/api/admin/bills/preview', { method: 'POST', body: payload }), payload); }
       catch (requestError) { showFormError(error, errorMessage(requestError)); }
       finally { setBusy(button, false); }
     });
     $('#bill-builder-form').addEventListener('submit', async (event) => {
       event.preventDefault(); const form = event.currentTarget; const payload = billPayload(); const error = $('#bill-builder-error'); showFormError(error);
-      if (!form.reportValidity() || !payload.room_ids.length) { showFormError(error, 'กรุณาเลือกห้องที่จะออกบิลล์'); return; }
+      if (!form.reportValidity() || !payload.room_ids.length) { showFormError(error, 'กรุณาเลือกห้องที่จะออกบิล'); return; }
       const button = form.querySelector('[type="submit"]'); setBusy(button, true, 'กำลังตรวจยอด…');
       try {
         const preview = await api('/api/admin/bills/preview', { method: 'POST', body: payload });
         const previews = listFrom(preview, 'bills'); const issues = listFrom(preview, 'issues');
-        if (issues.length || !previews.length) { renderBillPreview(preview); showFormError(error, issues.length ? `มี ${issues.length} ห้องที่ข้อมูลยังไม่พร้อม กรุณาแก้ก่อนออกบิลล์` : 'ไม่มีรายการที่ออกบิลล์ได้'); return; }
+        if (issues.length || !previews.length) { renderBillPreview(preview, payload); showFormError(error, issues.length ? `มี ${issues.length} ห้องที่ข้อมูลยังไม่พร้อม กรุณาแก้ก่อนออกบิล` : 'ไม่มีรายการที่ออกบิลได้'); return; }
         if (!preview?.preview_token) throw new ApiError('เซิร์ฟเวอร์ไม่ส่งรหัสยืนยันตัวอย่างยอด กรุณาลองใหม่');
         const grandTotal = previews.reduce((sum, item) => sum + number(item.total_amount ?? item.total), 0);
-        if (!await confirmAction('ยืนยันยอดก่อนออกบิลล์', `ตรวจแล้ว ${previews.length} ห้อง ยอดรวม ${money(grandTotal)} สำหรับ${formatPeriod(payload.period)} หากข้อมูลเปลี่ยนหลังจากนี้ระบบจะหยุดให้อัตโนมัติ`, 'ยืนยันและออกบิลล์', false)) return;
-        setBusy(button, true, 'กำลังออกบิลล์…');
+        if (!await confirmAction('ยืนยันยอดก่อนออกบิล', `ตรวจแล้ว ${previews.length} ห้อง ยอดรวม ${money(grandTotal)} สำหรับ${formatPeriod(payload.period)} หากข้อมูลเปลี่ยนหลังจากนี้ระบบจะหยุดให้อัตโนมัติ`, 'ยืนยันและออกบิล', false)) return;
+        setBusy(button, true, 'กำลังออกบิล…');
         const result = await api('/api/admin/bills/bulk', { method: 'POST', body: { ...payload, preview_token: preview.preview_token } });
-        const created = listFrom(result, 'created'); const skipped = listFrom(result, 'skipped'); toast(`สร้างบิลล์ ${created.length} รายการ${skipped.length ? ` · ข้ามรายการเดิม ${skipped.length}` : ''}`); await loadBills();
+        const created = listFrom(result, 'created'); const skipped = listFrom(result, 'skipped'); toast(`สร้างบิล ${created.length} รายการ${skipped.length ? ` · ข้ามรายการเดิม ${skipped.length}` : ''}`); await loadBills();
       } catch (requestError) { const issues = Array.isArray(requestError.details?.issues) ? ` (${requestError.details.issues.length} ห้องต้องแก้ไข)` : ''; showFormError(error, errorMessage(requestError) + issues); }
       finally { setBusy(button, false); }
     });
-    $('#bill-admin-rows').addEventListener('click', async (event) => { const button = event.target.closest('[data-action="send-line"]'); if (!button) return; setBusy(button, true, 'กำลังเข้าคิว…'); try { await api(`/api/admin/bills/${encodeURIComponent(button.dataset.id)}/line`, { method: 'POST', body: {} }); toast('นำบิลล์เข้าคิว LINE แล้ว'); await loadBills(); } catch (error) { toast(errorMessage(error), 'error'); } finally { setBusy(button, false); } });
-    $('#line-bulk-button').addEventListener('click', async (event) => { if (!await confirmAction('เข้าคิว LINE ทั้งหมด', `นำบิลล์รอบ${formatPeriod($('#bill-period').value)} เข้าคิวสำหรับผู้พักที่ผูก LINE ไว้?`, 'เข้าคิว', false)) return; const button = event.currentTarget; setBusy(button, true, 'กำลังเข้าคิว…'); try { const result = await api('/api/admin/bills/line-bulk', { method: 'POST', body: { period: $('#bill-period').value } }); const queued = listFrom(result, 'queued'); const already = listFrom(result, 'already'); const skipped = listFrom(result, 'skipped'); toast(`เข้าคิวใหม่ ${queued.length} รายการ${already.length ? ` · อยู่ในคิว/ส่งแล้ว ${already.length}` : ''}${skipped.length ? ` · ข้าม ${skipped.length}` : ''}`); await loadBills(); } catch (error) { toast(errorMessage(error), 'error'); } finally { setBusy(button, false); renderAdminBills(); } });
+    $('#bill-admin-rows').addEventListener('click', async (event) => { const button = event.target.closest('[data-action="send-line"]'); if (!button) return; setBusy(button, true, 'กำลังเข้าคิว…'); try { await api(`/api/admin/bills/${encodeURIComponent(button.dataset.id)}/line`, { method: 'POST', body: {} }); toast('นำบิลเข้าคิว LINE แล้ว'); await loadBills(); } catch (error) { toast(errorMessage(error), 'error'); } finally { setBusy(button, false); } });
+    $('#line-bulk-button').addEventListener('click', async (event) => { if (!await confirmAction('เข้าคิว LINE ทั้งหมด', `นำบิลรอบ${formatPeriod($('#bill-period').value)} เข้าคิวสำหรับผู้พักที่ผูก LINE ไว้?`, 'เข้าคิว', false)) return; const button = event.currentTarget; setBusy(button, true, 'กำลังเข้าคิว…'); try { const result = await api('/api/admin/bills/line-bulk', { method: 'POST', body: { period: $('#bill-period').value } }); const queued = listFrom(result, 'queued'); const already = listFrom(result, 'already'); const skipped = listFrom(result, 'skipped'); toast(`เข้าคิวใหม่ ${queued.length} รายการ${already.length ? ` · อยู่ในคิว/ส่งแล้ว ${already.length}` : ''}${skipped.length ? ` · ข้าม ${skipped.length}` : ''}`); await loadBills(); } catch (error) { toast(errorMessage(error), 'error'); } finally { setBusy(button, false); renderAdminBills(); } });
 
     function renderPayments() {
       const rows = $('#payment-rows'); rows.replaceChildren();
@@ -1290,7 +1477,7 @@
         try {
           const result = await api(`/api/admin/payments/${encodeURIComponent(payment.id)}/retry`, { method: 'POST', body: {} });
           const status = result?.status;
-          toast(status === 'verified' ? 'ตรวจผ่านและอัปเดตบิลล์เป็นชำระแล้ว' : (status === 'rejected' ? 'ตรวจแล้วไม่ผ่าน ดูเหตุผลในรายการ' : 'ผู้ให้บริการยังไม่ให้ผลสุดท้าย ระบบคงรายการไว้ให้ตรวจซ้ำ'));
+          toast(status === 'verified' ? 'ตรวจผ่านและอัปเดตบิลเป็นชำระแล้ว' : (status === 'rejected' ? 'ตรวจแล้วไม่ผ่าน ดูเหตุผลในรายการ' : 'ผู้ให้บริการยังไม่ให้ผลสุดท้าย ระบบคงรายการไว้ให้ตรวจซ้ำ'));
           await Promise.all([loadPayments(), loadBills()]);
         } catch (requestError) { toast(errorMessage(requestError), 'error'); } finally { setBusy(button, false); }
       }
@@ -1314,7 +1501,10 @@
     $('#settings-form').addEventListener('submit', async (event) => { event.preventDefault(); const form = event.currentTarget; const error = $('#settings-error'); showFormError(error); if (!form.reportValidity()) return; const values = Object.fromEntries(new FormData(form).entries()); values.water_rate = number(values.water_rate); values.electric_rate = number(values.electric_rate); values.due_days = Number(values.due_days); const button = form.querySelector('[type="submit"]'); setBusy(button, true, 'กำลังบันทึก…'); try { const data = await api('/api/admin/settings', { method: 'PUT', body: values }); state.settings = { ...state.settings, ...objectFrom(data, 'settings') }; $('#bill-water-rate').value = state.settings.water_rate ?? values.water_rate; $('#bill-electric-rate').value = state.settings.electric_rate ?? values.electric_rate; $('#bill-due-date').value = isoDateAfterDays(state.settings.due_days ?? values.due_days); applyBillingReadiness(); toast('ยืนยันและบันทึกการตั้งค่าแล้ว'); } catch (requestError) { showFormError(error, errorMessage(requestError)); } finally { setBusy(button, false); } });
     const integrationSettingsForm = $('#integration-settings-form');
     integrationSettingsForm?.addEventListener('input', markIntegrationSettingsDirty);
-    integrationSettingsForm?.addEventListener('change', markIntegrationSettingsDirty);
+    integrationSettingsForm?.addEventListener('change', (event) => {
+      if (event.target?.name === 'slip_provider') applySlipProviderVisibility(integrationSettingsForm);
+      markIntegrationSettingsDirty();
+    });
     window.addEventListener('beforeunload', (event) => {
       if (integrationSettingsForm?.dataset.dirty !== 'true') return;
       event.preventDefault(); event.returnValue = '';
@@ -1328,7 +1518,7 @@
       if (!form.reportValidity()) return;
       const values = Object.fromEntries(new FormData(form).entries());
       ['line_max_attempts', 'notification_batch_size', 'slip_max_bytes', 'slip_time_tolerance_seconds'].forEach((key) => { values[key] = Number(values[key]); });
-      ['line_channel_access_token_clear', 'slipok_api_key_clear', 'easyslip_api_key_clear'].forEach((key) => { values[key] = form.elements[key].checked; });
+      ['line_channel_access_token_clear', 'slipok_api_key_clear', 'easyslip_api_key_clear'].forEach((key) => { values[key] = !form.elements[key].disabled && form.elements[key].checked; });
       const button = form.querySelector('[type="submit"]');
       setBusy(button, true, 'กำลังเข้ารหัสและบันทึก…');
       try {
@@ -1379,7 +1569,23 @@
     if (typeof mobileMenu.addEventListener === 'function') mobileMenu.addEventListener('change', () => setAdminMenu(false));
     setAdminMenu(false);
     $('[data-admin-logout]').addEventListener('click', async () => { try { await api('/api/auth/admin/logout', { method: 'POST', body: {} }); } finally { location.assign('/admin/login'); } });
-    const hash = location.hash.replace('#', ''); switchView(titles[hash] ? hash : 'rooms');
+    const initialHash = location.hash.replace('#', '');
+    const initialView = titles[initialHash] && (initialHash !== 'users' || role === 'owner') ? initialHash : 'rooms';
+    switchView(initialView, false, false);
+    if (initialHash !== (initialView === 'rooms' ? '' : initialView)) replaceAdminHash(initialView);
+    window.addEventListener('hashchange', () => {
+      const requested = location.hash.replace('#', '');
+      const nextView = titles[requested] && (requested !== 'users' || role === 'owner') ? requested : 'rooms';
+      if ($('[data-admin-view].is-active', app)?.dataset.adminView === nextView) {
+        if (requested !== (nextView === 'rooms' ? '' : nextView)) replaceAdminHash(nextView);
+        return;
+      }
+      if (!switchView(nextView, false, false)) {
+        replaceAdminHash($('[data-admin-view].is-active', app)?.dataset.adminView || 'rooms');
+        return;
+      }
+      if (requested !== (nextView === 'rooms' ? '' : nextView)) replaceAdminHash(nextView);
+    });
   }
 
   setupCommonInteractions();

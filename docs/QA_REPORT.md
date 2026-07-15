@@ -6,14 +6,15 @@
 
 ## ผลตรวจอัตโนมัติ
 
-- PHP 8.5.8 lint ผ่าน 41/41 ไฟล์ ไม่มี syntax error
-- `php tests/run.php` ผ่าน 42/42 tests, 0 failures รวม regression ของ signed bill preview และ guest CSRF/lazy session
+- PHP 8.3.29 lint ผ่าน 43/43 ไฟล์ ไม่มี syntax error
+- `php tests/run.php` ผ่าน 44/44 tests, 0 failures รวม regression ของ signed bill preview, guest CSRF/lazy session, ตัวกัน QR เมื่อเส้นทางชำระเงินยังไม่พร้อม และ UX guard สำคัญ
 - `node --check public/assets/js/app.js` ผ่าน
 - ไม่พบ PHP warning, fatal error หรือ deprecation ใน log ของ HTTP/browser E2E
 - ตรวจหน้า Admin ทั้ง desktop และ mobile แล้ว เมนู/กล่องยืนยันทำงานได้ คอลัมน์ปุ่มสำคัญยังมองเห็นเมื่อเลื่อนตาราง และ browser console ไม่มี warning/error
 
 ## ผลตรวจ Oracle MySQL 8.4.10
 
+- Fresh import `database/install.sql` ไฟล์เดียวผ่าน: 14 ตาราง, integrity triggers 15 รายการ, `billing_settings`/`integration_settings` อย่างละ 1 แถว และไม่มี Owner/ข้อมูลตัวอย่าง; import ซ้ำถูกตัวกันฐานไม่ว่างปฏิเสธก่อนแตะ schema โดยจำนวนตาราง/trigger/settings ไม่เปลี่ยน
 - Fresh import `database/schema.sql` + `database/defaults.sql` ผ่าน: 14 ตาราง, 70 CHECK constraints และ integrity triggers 15 รายการ
 - รัน `003_append_only_guards.sql` ซ้ำ 2 รอบบนฐานใหม่ได้โดยไม่เกิดข้อผิดพลาด และจำนวน trigger ยังคงเป็น 15
 - จำลองฐานรุ่นก่อนแล้วรัน `002_operational_hardening.sql` สำเร็จ: เพิ่มคอลัมน์/ดัชนีที่ต้องใช้และสร้าง trigger ครบ 15 รายการ

@@ -52,7 +52,7 @@ final class RateLimiter
             $update->execute([$hits, $bucket]);
             return null;
         });
-        if($retryAfter!==null)throw new HttpException(429,'Too many requests','RATE_LIMITED',['retry_after'=>$retryAfter]);
+        if($retryAfter!==null)throw new HttpException(429,'มีการทำรายการถี่เกินไป กรุณารอสักครู่แล้วลองใหม่','RATE_LIMITED',['retry_after'=>$retryAfter]);
     }
 
     public function clear(string $scope, string $identity): void

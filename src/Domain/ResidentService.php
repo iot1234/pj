@@ -126,8 +126,8 @@ final class ResidentService
         $newHash=Password::hash($new);
         $this->app->database()->transaction(function(PDO $pdo) use($id,$current,$new,$newHash): void {
             $statement=$pdo->prepare('SELECT pin_hash FROM residents WHERE id=? AND active=1 FOR UPDATE');$statement->execute([$id]);$row=$statement->fetch();
-            if(!$row||!Password::verify($current,(string)$row['pin_hash']))throw new HttpException(401,'Current PIN is incorrect','INVALID_CURRENT_PIN');
-            if(hash_equals($current,$new))throw new HttpException(422,'New PIN must be different','PIN_UNCHANGED');
+            if(!$row||!Password::verify($current,(string)$row['pin_hash']))throw new HttpException(401,'PIN ปัจจุบันไม่ถูกต้อง','INVALID_CURRENT_PIN');
+            if(hash_equals($current,$new))throw new HttpException(422,'PIN ใหม่ต้องไม่ซ้ำกับ PIN ปัจจุบัน','PIN_UNCHANGED');
             $pdo->prepare('UPDATE residents SET pin_hash=?,auth_version=auth_version+1,updated_at=UTC_TIMESTAMP() WHERE id=? AND active=1')->execute([$newHash,$id]);
         });
     }
@@ -159,7 +159,7 @@ final class ResidentService
         $moveOut=Validator::date($input['move_out_date']??null,'move_out_date');
         $timezone=new \DateTimeZone((string)$this->app->config->get('APP_TIMEZONE','Asia/Bangkok'));
         $today=(new \DateTimeImmutable('today',$timezone))->format('Y-m-d');
-        if($moveOut>$today)throw new HttpException(422,'move_out_date cannot be in the future','VALIDATION_ERROR',['field'=>'move_out_date']);
+        if($moveOut>$today)throw new HttpException(422,'วันที่ย้ายออกต้องไม่เป็นวันในอนาคต','VALIDATION_ERROR',['field'=>'move_out_date']);
 
         return $this->app->database()->transaction(function(PDO $pdo)use($id,$moveOut):array{
             $lock=$pdo->prepare("SELECT o.id AS occupancy_id,o.room_id,o.move_in_date,rm.room_code
@@ -171,7 +171,7 @@ final class ResidentService
             $lock->execute([$id]);
             $occupancy=$lock->fetch();
             if(!$occupancy)throw new HttpException(404,'ไม่พบผู้พักอาศัยปัจจุบัน','RESIDENT_NOT_FOUND');
-            if($moveOut<(string)$occupancy['move_in_date'])throw new HttpException(422,'move_out_date cannot precede move_in_date','VALIDATION_ERROR',['field'=>'move_out_date']);
+            if($moveOut<(string)$occupancy['move_in_date'])throw new HttpException(422,'วันที่ย้ายออกต้องไม่ก่อนวันที่เข้าพัก','VALIDATION_ERROR',['field'=>'move_out_date']);
 
             $pending=$pdo->prepare("SELECT id,bill_no FROM bills WHERE occupancy_id=? AND status='pending' ORDER BY period,id FOR UPDATE");
             $pending->execute([$occupancy['occupancy_id']]);

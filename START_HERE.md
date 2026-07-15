@@ -1,6 +1,6 @@
 # เริ่มใช้งานแบบง่าย
 
-เอกสารนี้เป็นทางลัดสำหรับติดตั้งใหม่ หากระบบมีฐานข้อมูลและข้อมูลใช้งานอยู่แล้ว **ห้าม import `database/install.sql` ทับ** ให้ใช้คู่มืออัปเกรดใน `docs/SQL_SETUP.md`
+เอกสารนี้เป็นทางลัดสำหรับติดตั้งใหม่ หากระบบมีฐานข้อมูลและข้อมูลใช้งานอยู่แล้ว **ห้าม import `database/install.sql` ทับ** ให้ใช้คู่มืออัปเกรดใน `docs/SQL_SETUP.md` ตัวติดตั้งจะปฏิเสธฐานที่ไม่ว่าง และห้ามเลือกตัวเลือก force/continue เมื่อ import
 
 ## ทางเลือก A: Docker Desktop (แนะนำ)
 
@@ -38,8 +38,16 @@ Docker จะติดตั้งฐานข้อมูลและเปิ�
    database/install.sql
    ```
 
-3. สร้าง MySQL runtime user ที่ไม่ใช่ `root` และให้เฉพาะ `SELECT`, `INSERT`, `UPDATE` บนฐาน `dormitory`
-4. คัดลอก `.env.example` เป็น `.env` แล้วตั้ง `APP_KEY` และค่า `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`
+3. เปิดแท็บ SQL แล้วสร้าง MySQL runtime user ที่ไม่ใช่ `root` (เปลี่ยนรหัสตัวอย่างก่อนรัน):
+
+   ```sql
+   CREATE USER 'dormitory_app'@'127.0.0.1'
+   IDENTIFIED BY 'เปลี่ยนเป็นรหัสสุ่มที่ยาวและไม่ซ้ำ';
+   GRANT SELECT, INSERT, UPDATE
+   ON dormitory.* TO 'dormitory_app'@'127.0.0.1';
+   ```
+
+4. คัดลอก `.env.example` เป็น `.env`, สร้าง `APP_KEY` ด้วย `php -r "echo bin2hex(random_bytes(32)), PHP_EOL;"` แล้วตั้ง `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD` ให้ตรงกับข้อ 3
 5. รัน:
 
    ```powershell
@@ -51,7 +59,7 @@ Docker จะติดตั้งฐานข้อมูลและเปิ�
    ```
 
 6. เปิด `/admin` → **ตั้งค่า** แล้วกรอกค่าดำเนินงานทั้งหมดจากหน้าเว็บ
-7. ให้ Task Scheduler/supervisor รัน `php scripts/process_notifications.php --loop --sleep=15` เพื่อส่ง LINE
+7. ตั้ง worker ส่ง LINE: บน Linux ให้ supervisor รัน `sh scripts/start-worker.sh` เป็น process เบื้องหลัง; บน Windows ให้ Task Scheduler รัน `php scripts/process_notifications.php` แบบ one-shot อย่างน้อยทุกนาที (ไม่ใช้ `--loop` ใน scheduled task)
 
 ## ตรวจว่าพร้อมใช้
 

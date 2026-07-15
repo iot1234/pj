@@ -74,7 +74,7 @@ $residentInitial = preg_match('/^./us', $residentName, $initialMatch) === 1 ? $i
 
       <section class="portal-view" id="resident-view-bills" data-view-panel="bills" aria-labelledby="resident-bills-title" hidden>
         <div class="section-heading section-heading-row">
-          <div><span class="eyebrow">Billing history</span><h2 id="resident-bills-title">บิลของฉัน</h2><p>รายการย้อนหลังและสถานะการชำระของแต่ละรอบ</p></div>
+          <div><span class="eyebrow">ประวัติใบแจ้งหนี้</span><h2 id="resident-bills-title">บิลของฉัน</h2><p>รายการย้อนหลังและสถานะการชำระของแต่ละรอบ</p></div>
           <button class="button button-ghost" id="resident-bills-refresh" type="button">รีเฟรช</button>
         </div>
         <div class="segmented-control" id="resident-bill-filter" aria-label="กรองสถานะบิล">
@@ -133,7 +133,7 @@ $residentInitial = preg_match('/^./us', $residentName, $initialMatch) === 1 ? $i
 <dialog class="app-dialog bill-dialog" id="resident-bill-dialog" aria-labelledby="resident-bill-dialog-title">
   <div class="dialog-panel dialog-panel-wide">
     <div class="dialog-header">
-      <div><span class="eyebrow">Bill detail</span><h2 id="resident-bill-dialog-title">รายละเอียดบิล</h2></div>
+      <div><span class="eyebrow">รายละเอียดใบแจ้งหนี้</span><h2 id="resident-bill-dialog-title">รายละเอียดบิล</h2></div>
       <button class="icon-button" type="button" data-close-dialog aria-label="ปิดหน้าต่าง">×</button>
     </div>
     <div class="bill-detail-loading" id="resident-bill-loading">กำลังโหลดรายละเอียดบิล…</div>

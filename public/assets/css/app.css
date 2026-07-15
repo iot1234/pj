@@ -268,11 +268,15 @@ input[readonly] { color: var(--ink-soft); background: #f2f1ed; cursor: not-allow
 .breakdown-total { margin-top: .35rem; border-bottom: 0; font-size: 1.05rem; }
 .qr-stage { display: grid; min-height: 150px; place-items: center; gap: .4rem; margin-bottom: .8rem; padding: .8rem; background: #fff; border: 1px dashed var(--line-strong); border-radius: 10px; text-align: center; }
 .qr-stage canvas { max-width: 100%; height: auto; }
+.qr-meta { display: grid; gap: .15rem; }
+.qr-meta strong { color: var(--ink); }
+.qr-meta small { color: var(--ink-soft); }
 .qr-placeholder { max-width: 260px; color: var(--ink-soft); font-size: .82rem; }
 .slip-form { display: grid; gap: .8rem; margin-top: 1rem; }
 .payment-notice { margin-top: .8rem; padding: .65rem .75rem; color: var(--amber); background: var(--amber-soft); border-radius: 8px; font-size: .82rem; }
 .payment-notice-rejected { color: var(--red); background: var(--red-soft); }
 .payment-notice-verified { color: var(--green); background: var(--green-soft); }
+.payment-notice-blocked { color: #7b2929; background: var(--red-soft); border: 1px solid #e6aaa5; font-weight: 750; line-height: 1.5; }
 .file-picker { display: grid; gap: .35rem; padding: .8rem; border: 1px dashed var(--line-strong); border-radius: 10px; cursor: pointer; }
 .file-picker input { min-height: auto; padding: 0; border: 0; }
 .file-picker small { color: var(--ink-soft); }
@@ -326,6 +330,9 @@ tbody tr:last-child td { border-bottom: 0; }
 .meter-table th:first-child, .meter-table td:first-child { text-align: left; }
 .meter-input { min-width: 100px; max-width: 130px; }
 .meter-delta { color: var(--green); }
+.meter-baseline-note { align-items: flex-start; }
+.meter-baseline-label { display: inline-flex; padding: .2rem .45rem; color: #704f00; background: var(--amber-soft); border-radius: 99px; font-size: .7rem; font-weight: 800; white-space: nowrap; }
+.meter-row-dirty, .meter-row-dirty:hover { background: #fff9e8; box-shadow: inset 3px 0 0 var(--amber); }
 .billing-builder { margin-bottom: 1.5rem; }
 .room-selector { margin: 1.2rem 0 0; padding: 1rem; border: 1px solid var(--line); border-radius: 11px; }
 .room-selector legend { padding: 0 .35rem; font-weight: 800; }
@@ -349,6 +356,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .integration-test-result.is-error { color: var(--red); }
 .integration-status-actions { display: flex; align-items: center; justify-content: flex-end; gap: .45rem; }
 .danger-check { margin-top: .5rem; color: var(--red); }
+[data-slip-provider-field][hidden] { display: none !important; }
 .settings-card :disabled { cursor: not-allowed; opacity: .68; }
 .integration-list { display: grid; gap: .7rem; }
 .integration-list article { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; align-items: center; gap: .65rem; padding: .7rem; background: #f6f6f3; border-radius: 10px; }
@@ -363,6 +371,16 @@ tbody tr:last-child td { border-bottom: 0; }
 .preview-item { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .75rem; background: #f5f4f0; border-radius: 9px; }
 .preview-item div { display: grid; }
 .preview-item small { color: var(--ink-soft); }
+.preview-context { display: grid; gap: .2rem; padding: .75rem; color: var(--ink-soft); background: #f5f4f0; border: 1px solid var(--line); border-radius: 9px; font-size: .82rem; }
+.preview-context strong { color: var(--ink); }
+.preview-context-warning { color: #6a4c05; background: var(--amber-soft); border-color: #e7ce8d; }
+.preview-item-detailed { display: grid; align-items: stretch; gap: .65rem; }
+.preview-heading { display: flex !important; align-items: start; justify-content: space-between; gap: 1rem; }
+.preview-total { color: var(--accent-dark); font-size: 1rem; white-space: nowrap; }
+.preview-breakdown { display: grid; gap: .2rem; margin: 0; }
+.preview-breakdown > div { display: flex; align-items: end; justify-content: space-between; gap: 1rem; padding-top: .45rem; border-top: 1px solid var(--line); }
+.preview-breakdown dt { display: grid; }
+.preview-breakdown dd { margin: 0; font-weight: 750; white-space: nowrap; }
 .preview-issue { color: var(--red); background: var(--red-soft); border: 1px solid #efc4bf; }
 .empty-inline { padding: 2rem; color: var(--ink-soft); text-align: center; }
 

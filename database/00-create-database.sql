@@ -13,7 +13,8 @@ USE dormitory;
 
 SELECT DATABASE() AS selected_database, VERSION() AS mysql_version;
 
--- Next, keep `dormitory` selected in phpMyAdmin and import:
+-- Only when this file is run standalone (not through install.sql), keep
+-- `dormitory` selected in phpMyAdmin and import:
 --   1. database/schema.sql
 --   2. database/defaults.sql
 -- Import database/demo.sql only on an isolated local-development database.

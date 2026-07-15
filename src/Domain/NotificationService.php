@@ -161,7 +161,7 @@ final class NotificationService
     /** @param array<string,mixed> $bill @return array<string,mixed> */
     private function billPayload(array $bill): array
     {
-        $text="Bill {$bill['bill_no']}\nRoom {$bill['room_code']}\nPeriod ".substr((string)$bill['period'],0,7)."\nAmount {$bill['total_amount']} THB\nDue {$bill['due_date']}";
+        $text="ใบแจ้งหนี้ {$bill['bill_no']}\nห้อง {$bill['room_code']}\nรอบบิล ".substr((string)$bill['period'],0,7)."\nยอดชำระ {$bill['total_amount']} บาท\nครบกำหนด {$bill['due_date']}";
         return ['to'=>(string)$bill['line_user_id'],'messages'=>[['type'=>'text','text'=>$text]]];
     }
 

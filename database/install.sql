@@ -7,7 +7,7 @@
 -- Never use a force/continue-on-error import option with this file.
 -- Regenerate: php scripts/build_install_sql.php
 -- Verify current: php scripts/build_install_sql.php --check
--- Source digest: 61f2a13d36d70f381eb80adf9a406757f185f900add76cc41fe06a6c4feb0319
+-- Source digest: 9dff099b9b3372885ed22f84ce7d65035ba294ec382ec53801675a4843eb1044
 -- BEGIN database/00-create-database.sql
 -- Advanced/manual fresh-install step. For the simplest new installation,
 -- import database/install.sql once instead. Run this standalone file from the
@@ -24,7 +24,8 @@ USE dormitory;
 
 SELECT DATABASE() AS selected_database, VERSION() AS mysql_version;
 
--- Next, keep `dormitory` selected in phpMyAdmin and import:
+-- Only when this file is run standalone (not through install.sql), keep
+-- `dormitory` selected in phpMyAdmin and import:
 --   1. database/schema.sql
 --   2. database/defaults.sql
 -- Import database/demo.sql only on an isolated local-development database.

@@ -119,7 +119,7 @@ constraint ไม่สามารถกัน active booking กับ active 
 ## Checklist ก่อนเปิด production
 
 - [ ] `php scripts/check_requirements.php --production` ผ่าน; Docker ต้องผ่านทั้ง service `app` และ `worker` ตาม README
-- [ ] ฐานข้อมูลใหม่ import `schema.sql` + `defaults.sql` ครบ (`demo.sql` ใช้ได้เฉพาะ local แบบ optional และฐานใหม่ไม่ต้องรัน migration) หรือฐานข้อมูลเดิมสำรองแล้ว รัน `001_integration_settings.sql` เมื่อจำเป็น → `002_operational_hardening.sql` หนึ่งครั้ง → `003_append_only_guards.sql` (รันซ้ำได้) พร้อมรัน `--db --strict` ด้วยบัญชี runtime และ `--schema-audit` ด้วยบัญชี schema owner ที่คงอยู่เพื่อตรวจ integrity triggers 15 รายการ; ห้ามลบ trigger `DEFINER` หลังติดตั้ง
+- [ ] ฐานข้อมูลใหม่ชื่อ `dormitory` import `install.sql` ไฟล์เดียว หรือฐานชื่ออื่นใช้วิธีขั้นสูงโดยเลือกฐานเป้าหมายแล้ว import `schema.sql` + `defaults.sql` ครบ (`demo.sql` ใช้ได้เฉพาะ local แบบ optional และฐานใหม่ไม่ต้องรัน migration) หรือฐานข้อมูลเดิมสำรองแล้ว รัน `001_integration_settings.sql` เมื่อจำเป็น → `002_operational_hardening.sql` หนึ่งครั้ง → `003_append_only_guards.sql` (รันซ้ำได้) พร้อมรัน `--db --strict` ด้วยบัญชี runtime และ `--schema-audit` ด้วยบัญชี schema owner ที่คงอยู่เพื่อตรวจ integrity triggers 15 รายการ; ห้ามลบ trigger `DEFINER` หลังติดตั้ง
 - [ ] HTTPS/HSTS/CSP/security headers ตรวจจากภายนอกแล้ว
 - [ ] `.env`, source และ `storage/private` เปิดผ่าน URL ไม่ได้
 - [ ] ไม่มี default credential, สร้าง Owner ผ่าน `--password-stdin`/secret store และลบตัวแปรรหัสผ่านชั่วคราวหลัง bootstrap

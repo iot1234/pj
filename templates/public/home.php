@@ -35,7 +35,7 @@
   <section class="content-section" aria-labelledby="rooms-title">
     <div class="section-heading">
       <div>
-        <span class="eyebrow">Room directory</span>
+        <span class="eyebrow">รายการห้องพัก</span>
         <h2 id="rooms-title">ห้องพักที่ว่าง</h2>
         <p>ระบบแสดงเฉพาะห้องสถานะ “ว่าง” เท่านั้น</p>
       </div>

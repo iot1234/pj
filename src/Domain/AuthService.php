@@ -96,7 +96,7 @@ final class AuthService
                 'principal_hash' => hash_hmac('sha256', $username, $this->app->config->appKey()),
                 'account_rate_limited'=>!$accountAllowed,
             ]);
-            throw new HttpException(401, 'Invalid username or password', 'INVALID_CREDENTIALS');
+            throw new HttpException(401, 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง', 'INVALID_CREDENTIALS');
         }
 
         if (Password::needsRehash((string) $row['password_hash'])) {
@@ -150,7 +150,7 @@ final class AuthService
                 'principal_hash' => hash_hmac('sha256', $phoneValid?$phone:trim($rawPhone), $this->app->config->appKey()),
                 'account_rate_limited'=>!$accountAllowed,
             ]);
-            throw new HttpException(401, 'Invalid phone number or PIN', 'INVALID_CREDENTIALS');
+            throw new HttpException(401, 'เบอร์โทรหรือ PIN ไม่ถูกต้อง', 'INVALID_CREDENTIALS');
         }
         if (Password::needsRehash((string) $row['pin_hash'])) {
             $rehash = $this->app->database()->pdo()->prepare('UPDATE residents SET pin_hash=?,updated_at=UTC_TIMESTAMP() WHERE id=?');

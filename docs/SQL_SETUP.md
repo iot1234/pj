@@ -23,6 +23,8 @@
 
 **วิธีง่ายสำหรับฐานใหม่ชื่อ `dormitory`:** เปิด phpMyAdmin ระดับ server แล้ว import `database/install.sql` เพียงไฟล์เดียว ไฟล์นี้รวมการสร้างฐาน, schema, triggers และค่าเริ่มต้นที่ปลอดภัยไว้แล้ว ไม่มีบัญชี Owner, ข้อมูลห้อง, demo หรือ credential ใด ๆ และห้าม import ทับฐานที่มีข้อมูลอยู่
 
+ให้นำเข้าด้วยบัญชี DBA/schema owner ที่มีสิทธิ์อย่างน้อย `CREATE DATABASE`, `CREATE`, `REFERENCES`, `TRIGGER` และ `INSERT`; บัญชี runtime ของแอปใช้ติดตั้งไม่ได้ (`REFERENCES` จำเป็นต่อการสร้าง foreign keys) ตัวติดตั้งจะหยุดก่อนแก้ไขเมื่อพบฐานที่ไม่ว่าง และห้ามใช้ตัวเลือก force/continue-on-error เนื่องจาก MySQL DDL auto-commit หากการติดตั้งฐานใหม่ขาดกลางทาง ให้ยืนยันก่อนว่าไม่มีข้อมูลจริง แล้วลบเฉพาะฐาน `dormitory` ที่ติดตั้งค้างและ import ใหม่ตั้งแต่ต้น ห้าม import ซ้ำบนฐานที่ค้าง
+
 ไฟล์ `install.sql` ถูกสร้างจาก source สามไฟล์ด้านล่างและตรวจว่าเป็นรุ่นปัจจุบันได้ด้วย `php scripts/build_install_sql.php --check` วิธีแยกไฟล์ต่อไปนี้เก็บไว้สำหรับผู้ที่ใช้ชื่อฐานอื่น, ไม่มีสิทธิ์ `CREATE DATABASE` หรือดูแลระบบแบบแยกขั้นตอน:
 
 1. `database/00-create-database.sql` — สร้างและเลือกฐานข้อมูล `dormitory`; ข้ามได้เมื่อสร้างและเลือกฐานข้อมูลไว้แล้ว
@@ -31,7 +33,7 @@
 
 `database/demo.sql` เป็นข้อมูลห้องทดสอบแบบเห็นชัดสำหรับเครื่องพัฒนาเท่านั้น ไม่ถูก import โดย Docker และห้าม import ใน production เจ้าของระบบต้องเพิ่มห้องจริงและตรวจบันทึกอัตราค่าน้ำ ค่าไฟ และวันครบกำหนดจากหน้า Admin ก่อนออกบิลครั้งแรก
 
-การติดตั้งใหม่ที่ import `schema.sql` แล้วตามด้วย `defaults.sql` มีโครงสร้างและ integrity triggers ล่าสุดครบแล้ว ไม่ต้องรันไฟล์ใน `database/migrations/` เพิ่ม
+การติดตั้งใหม่ที่ import `install.sql` ไฟล์เดียว หรือใช้วิธีขั้นสูง `schema.sql` แล้วตามด้วย `defaults.sql` มีโครงสร้างและ integrity triggers ล่าสุดครบแล้ว ไม่ต้องรันไฟล์ใน `database/migrations/` เพิ่ม
 
 ฐานข้อมูลที่ติดตั้งจาก schema รุ่นเก่าไม่ควร import `schema.sql` ทับเพื่อหวังให้อัปเกรด ให้สำรองข้อมูล ทดสอบ restore บน staging และใช้ไฟล์ใน `database/migrations/` ด้วยบัญชี schema owner ที่มีสิทธิ์ DDL และคงอยู่ เพราะบัญชีนี้จะเป็น `DEFINER` ของ trigger; ห้ามลบบัญชีหลัง migration เว้นแต่ recreate trigger ครบภายใต้ definer ที่คงอยู่:
 

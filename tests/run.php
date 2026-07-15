@@ -15,11 +15,41 @@ use Dormitory\Security\SecretCipher;
 use Dormitory\Support\Validator;
 
 if(PHP_SAPI!=='cli'){http_response_code(404);exit;}
+
+// Keep the test process isolated from a developer's local/production .env.
+// Explicit process variables (for example from CI) still take precedence.
+$testEnvironmentDefaults=[
+    'APP_ENV'=>'testing',
+    'APP_DEBUG'=>'false',
+    'APP_URL'=>'http://localhost',
+    'APP_TIMEZONE'=>'Asia/Bangkok',
+    'APP_KEY'=>'0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    'FORCE_HTTPS'=>'false',
+    'TRUSTED_PROXIES'=>'',
+    'RUNTIME_ROLE'=>'job',
+    'SESSION_NAME'=>'dormitory_test_session',
+    'SESSION_LIFETIME_SECONDS'=>'3600',
+    'DB_HOST'=>'127.0.0.1',
+    'DB_PORT'=>'3306',
+    'DB_DATABASE'=>'testing',
+    'DB_USERNAME'=>'testing',
+    'DB_PASSWORD'=>'testing-only',
+    'DB_SSL'=>'false',
+    'DB_SSL_CA'=>'',
+];
+foreach($testEnvironmentDefaults as$key=>$value){
+    if(getenv($key)!==false)continue;
+    putenv($key.'='.$value);
+    $_ENV[$key]=$value;
+    $_SERVER[$key]=$value;
+}
+
 $app=require dirname(__DIR__).'/bootstrap.php';
 $passed=0;$failed=0;
 $test=static function(string $name,callable $callback)use(&$passed,&$failed):void{try{$callback();$passed++;fwrite(STDOUT,"PASS {$name}".PHP_EOL);}catch(Throwable $e){$failed++;fwrite(STDERR,"FAIL {$name}: {$e->getMessage()}".PHP_EOL);}};
 $same=static function(mixed $expected,mixed $actual):void{if($expected!==$actual)throw new RuntimeException('expected '.var_export($expected,true).', got '.var_export($actual,true));};
 $throws=static function(callable $callback,string $code):void{try{$callback();}catch(HttpException $e){if($e->errorCode!==$code)throw new RuntimeException("expected {$code}, got {$e->errorCode}");return;}throw new RuntimeException("expected exception {$code}");};
+$throwsHttp=static function(callable $callback,string $code,int $status):void{try{$callback();}catch(HttpException $e){if($e->errorCode!==$code||$e->status!==$status)throw new RuntimeException("expected {$status} {$code}, got {$e->status} {$e->errorCode}");return;}throw new RuntimeException("expected exception {$status} {$code}");};
 
 $test('Thai phone normalization',function()use($same):void{$same('0812345678',Validator::phone('+66 81-234-5678'));$same('0812345678',Validator::phone('66812345678'));$same('0812345678',Validator::phone('081.234.5678'));});
 $test('Thai phone rejection',fn()=>$throws(fn()=>Validator::phone('12345'),'VALIDATION_ERROR'));
@@ -58,6 +88,26 @@ $test('all SQL bootstraps include 15 integrity triggers',function()use($same):vo
     $same(1,preg_match('/DORMITORY_INSTALL_ABORT_DATABASE_NOT_EMPTY/i',$installer));
     $same(1,preg_match('/information_schema\.tables\s+WHERE table_schema = DATABASE\(\)/is',$installer));
     $same(1,preg_match('/INSERT IGNORE INTO billing_settings/i',$installer));
+});
+$test('PromptPay QR is blocked until the full payment path is ready',function()use($same,$throwsHttp,$app):void{
+    $base=['status'=>'pending','payment_capabilities'=>['promptpay_ready'=>true,'slip_verification_ready'=>true],'payment'=>null];
+    $throwsHttp(fn()=>$app->billing()->assertPromptPayAvailable([...$base,'status'=>'paid']),'BILL_ALREADY_PAID',409);
+    $throwsHttp(fn()=>$app->billing()->assertPromptPayAvailable([...$base,'payment_capabilities'=>['promptpay_ready'=>false,'slip_verification_ready'=>true]]),'PROMPTPAY_NOT_CONFIGURED',503);
+    $throwsHttp(fn()=>$app->billing()->assertPromptPayAvailable([...$base,'payment_capabilities'=>['promptpay_ready'=>true,'slip_verification_ready'=>false]]),'SLIP_NOT_CONFIGURED',503);
+    $throwsHttp(fn()=>$app->billing()->assertPromptPayAvailable([...$base,'payment'=>['status'=>'pending']]),'PAYMENT_ALREADY_PENDING',409);
+    $throwsHttp(fn()=>$app->billing()->assertPromptPayAvailable([...$base,'payment'=>['status'=>'verified']]),'PAYMENT_ALREADY_PENDING',409);
+    $app->billing()->assertPromptPayAvailable([...$base,'payment'=>['status'=>'rejected']]);
+    $routes=file_get_contents(dirname(__DIR__).'/src/Http/Routes.php');if(!is_string($routes))throw new RuntimeException('cannot read routes');
+    $same(1,preg_match("#/api/resident/bills/\{id\}/promptpay'.*?residentDetail.*?assertPromptPayAvailable.*?PromptPayService::payload#s",$routes));
+});
+$test('critical usability guards remain in the web UI',function()use($same):void{
+    $root=dirname(__DIR__);$js=file_get_contents($root.'/public/assets/js/app.js');$admin=file_get_contents($root.'/templates/admin/console.php');
+    if(!is_string($js)||!is_string($admin))throw new RuntimeException('cannot read UI sources');
+    $same(1,preg_match('/paymentConfigurationReady\s*=\s*promptPayReady\s*&&\s*slipReady/',$js));
+    $same(1,preg_match('/function applySavedMeterResult\s*\(/',$js));
+    $same(1,preg_match('/name="confirm_pin"[^>]*required/',$admin));
+    $same(1,preg_match('/จำนวนเงินอื่น \/ ห้อง/',$admin));
+    $same(1,preg_match('/water_units.*water_rate.*water_amount/s',$js));
 });
 $test('Apache permits the hidden-file access guard',function()use($same):void{
     $root=dirname(__DIR__);

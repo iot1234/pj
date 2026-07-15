@@ -154,7 +154,7 @@ final class RoomService
         if (array_key_exists('room_type', $input)) $out['room_type'] = Validator::string($input['room_type'], 'room_type', 1, 50);
         if (array_key_exists('monthly_rent', $input)) {
             $rent=Validator::scaledDecimal($input['monthly_rent'], 'monthly_rent');
-            if($rent<=0||$rent>100_000_000) throw new HttpException(422,'monthly_rent is outside the allowed range','VALIDATION_ERROR',['field'=>'monthly_rent']);
+            if($rent<=0||$rent>100_000_000) throw new HttpException(422,'ค่าเช่าต้องมากกว่า 0 และไม่เกิน 1,000,000.00 บาท','VALIDATION_ERROR',['field'=>'monthly_rent']);
             $out['monthly_rent'] = Validator::decimalString($rent);
         }
         if (array_key_exists('description', $input)) $out['description'] = trim((string) $input['description']) === '' ? null : Validator::string($input['description'], 'description', 0, 2000);

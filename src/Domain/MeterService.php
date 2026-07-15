@@ -103,12 +103,12 @@ final class MeterService
                 $hasLater=(bool)$next->fetch();
                 $oldCurrent=$row?Validator::scaledDecimal($row['current_reading'],'current_reading',2,12):null;
                 if($hasLater&&($oldCurrent===null||$oldCurrent!==$currentScaled)){
-                    throw new HttpException(409,'A later meter reading already depends on this value','METER_HISTORY_LOCKED',['meter_type'=>$type]);
+                    throw new HttpException(409,'แก้เลขมิเตอร์นี้ไม่ได้ เพราะมีรอบเดือนถัดไปอ้างอิงแล้ว','METER_HISTORY_LOCKED',['meter_type'=>$type]);
                 }
                 $billed=$pdo->prepare('SELECT id FROM bills WHERE room_id=? AND period=? LIMIT 1 FOR UPDATE');
                 $billed->execute([$roomId,$periodDate]);
                 if($billed->fetch()&&($oldCurrent===null||$oldCurrent!==$currentScaled)){
-                    throw new HttpException(409,'Meter reading is immutable after bill creation','METER_ALREADY_BILLED',['meter_type'=>$type]);
+                    throw new HttpException(409,'แก้เลขมิเตอร์ไม่ได้หลังออกบิลแล้ว','METER_ALREADY_BILLED',['meter_type'=>$type]);
                 }
                 if ($row) {
                     $previousScaled = Validator::scaledDecimal($row['previous_reading'], 'previous_reading', 2, 12);

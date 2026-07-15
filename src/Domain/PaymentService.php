@@ -243,24 +243,24 @@ final class PaymentService
     }
 
     /** @return array<string,mixed> */
-    private function bill(int $billId,int $residentId): array{$statement=$this->app->database()->pdo()->prepare('SELECT id,status,total_amount,created_at FROM bills WHERE id=? AND resident_id=?');$statement->execute([$billId,$residentId]);$row=$statement->fetch();if(!$row)throw new HttpException(404,'Bill not found','BILL_NOT_FOUND');$row['id']=(int)$row['id'];return $row;}
+    private function bill(int $billId,int $residentId): array{$statement=$this->app->database()->pdo()->prepare('SELECT id,status,total_amount,created_at FROM bills WHERE id=? AND resident_id=?');$statement->execute([$billId,$residentId]);$row=$statement->fetch();if(!$row)throw new HttpException(404,'ไม่พบบิล','BILL_NOT_FOUND');$row['id']=(int)$row['id'];return $row;}
 
     /** @param array<string,mixed> $file @return array{string,string,string,string} */
     private function store(array $file,int $residentId,int $billId): array
     {
-        if(($file['error']??UPLOAD_ERR_NO_FILE)!==UPLOAD_ERR_OK||!is_string($file['tmp_name']??null))throw new HttpException(422,'A valid slip file is required','SLIP_UPLOAD_ERROR');
-        $max=max(1024,min(4*1024*1024,$this->app->settings()->intValue('slip_max_bytes',4*1024*1024)));$size=(int)($file['size']??0);if($size<=0||$size>$max)throw new HttpException(413,'Slip exceeds the configured upload limit','SLIP_TOO_LARGE');
-        $tmp=$file['tmp_name'];if(!is_file($tmp)||PHP_SAPI!=='cli'&&!is_uploaded_file($tmp))throw new HttpException(422,'Uploaded slip is missing','SLIP_UPLOAD_ERROR');
-        $actualSize=filesize($tmp);if($actualSize===false||$actualSize<=0||$actualSize>$max)throw new HttpException(413,'Slip exceeds the configured upload limit','SLIP_TOO_LARGE');
-        $finfo=new \finfo(FILEINFO_MIME_TYPE);$mime=(string)$finfo->file($tmp);$extensions=['image/jpeg'=>'jpg','image/png'=>'png','image/webp'=>'webp'];if(!isset($extensions[$mime]))throw new HttpException(422,'Slip must be JPEG, PNG, or WebP','SLIP_TYPE_INVALID');
-        $image=@getimagesize($tmp);if(!$image||($image[0]*$image[1])>self::MAX_IMAGE_PIXELS||$image[0]>self::MAX_IMAGE_DIMENSION||$image[1]>self::MAX_IMAGE_DIMENSION)throw new HttpException(422,'Slip image is invalid or too large','SLIP_IMAGE_INVALID');
+        if(($file['error']??UPLOAD_ERR_NO_FILE)!==UPLOAD_ERR_OK||!is_string($file['tmp_name']??null))throw new HttpException(422,'กรุณาเลือกไฟล์สลิปที่ถูกต้อง','SLIP_UPLOAD_ERROR');
+        $max=max(1024,min(4*1024*1024,$this->app->settings()->intValue('slip_max_bytes',4*1024*1024)));$size=(int)($file['size']??0);if($size<=0||$size>$max)throw new HttpException(413,'ไฟล์สลิปมีขนาดเกินค่าที่ระบบกำหนด','SLIP_TOO_LARGE');
+        $tmp=$file['tmp_name'];if(!is_file($tmp)||PHP_SAPI!=='cli'&&!is_uploaded_file($tmp))throw new HttpException(422,'ไม่พบไฟล์สลิปที่อัปโหลด','SLIP_UPLOAD_ERROR');
+        $actualSize=filesize($tmp);if($actualSize===false||$actualSize<=0||$actualSize>$max)throw new HttpException(413,'ไฟล์สลิปมีขนาดเกินค่าที่ระบบกำหนด','SLIP_TOO_LARGE');
+        $finfo=new \finfo(FILEINFO_MIME_TYPE);$mime=(string)$finfo->file($tmp);$extensions=['image/jpeg'=>'jpg','image/png'=>'png','image/webp'=>'webp'];if(!isset($extensions[$mime]))throw new HttpException(422,'ไฟล์สลิปต้องเป็น JPEG, PNG หรือ WebP','SLIP_TYPE_INVALID');
+        $image=@getimagesize($tmp);if(!$image||($image[0]*$image[1])>self::MAX_IMAGE_PIXELS||$image[0]>self::MAX_IMAGE_DIMENSION||$image[1]>self::MAX_IMAGE_DIMENSION)throw new HttpException(422,'รูปสลิปไม่ถูกต้องหรือมีขนาดภาพใหญ่เกินไป','SLIP_IMAGE_INVALID');
         $this->assertImageMemoryBudget((int)$image[0],(int)$image[1],(int)$actualSize);
         $directory=$this->app->config->root.'/storage/private/slips/'.gmdate('Y/m');if(!is_dir($directory)&&!mkdir($directory,0700,true)&&!is_dir($directory))throw new \RuntimeException('Cannot create private slip directory');
         $name=gmdate('YmdHis').'-'.$residentId.'-'.$billId.'-'.bin2hex(random_bytes(12)).'.'.$extensions[$mime];$absolute=$directory.'/'.$name;
         $decoder=['image/jpeg'=>'imagecreatefromjpeg','image/png'=>'imagecreatefrompng','image/webp'=>'imagecreatefromwebp'][$mime];
         $encoder=['image/jpeg'=>'imagejpeg','image/png'=>'imagepng','image/webp'=>'imagewebp'][$mime];
         if(!function_exists($decoder)||!function_exists($encoder))throw new \RuntimeException('PHP GD with JPEG, PNG, and WebP support is required');
-        $resource=@$decoder($tmp);if($resource===false)throw new HttpException(422,'Slip image cannot be decoded','SLIP_IMAGE_INVALID');
+        $resource=@$decoder($tmp);if($resource===false)throw new HttpException(422,'ระบบอ่านรูปสลิปไม่ได้ กรุณาใช้ไฟล์รูปอื่น','SLIP_IMAGE_INVALID');
         try{$written=$mime==='image/jpeg'?$encoder($resource,$absolute,90):($mime==='image/png'?$encoder($resource,$absolute,6):$encoder($resource,$absolute,90));}finally{imagedestroy($resource);}
         if(!$written||!is_file($absolute)){@unlink($absolute);throw new \RuntimeException('Cannot canonicalize uploaded slip');}
         if(filesize($absolute)===false||filesize($absolute)>$max){@unlink($absolute);throw new HttpException(413,'ไฟล์สลิปหลังตรวจรูปภาพเกินขนาดที่ตั้งไว้','SLIP_TOO_LARGE');}
@@ -277,7 +277,7 @@ final class PaymentService
         $estimated=$width*$height*6+$fileSize*3+16*1024*1024;
         $limit=self::iniBytes((string)ini_get('memory_limit'));
         if($limit>0&&memory_get_usage(true)+$estimated>(int)floor($limit*0.85)){
-            throw new HttpException(422,'Slip image needs more decode memory than this server safely allows','SLIP_IMAGE_MEMORY_LIMIT');
+            throw new HttpException(422,'รูปสลิปใช้หน่วยความจำมากเกินขอบเขตที่ปลอดภัย กรุณาลดขนาดรูป','SLIP_IMAGE_MEMORY_LIMIT');
         }
     }
 
