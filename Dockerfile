@@ -37,11 +37,12 @@ RUN mkdir -p \
         /var/www/html/storage/sessions \
         /var/www/html/storage/cache \
     && chown -R www-data:www-data /var/www/html/storage \
-    && chmod -R 0750 /var/www/html/storage
+    && chmod -R 0750 /var/www/html/storage \
+    && chmod 0755 /var/www/html/scripts/start-web.sh
 
 EXPOSE 80
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD php scripts/check_requirements.php --db >/dev/null || exit 1
 
-CMD ["apache2-foreground"]
+CMD ["/var/www/html/scripts/start-web.sh"]

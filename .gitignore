@@ -25,6 +25,7 @@
 # Editor and operating-system files
 /.idea/
 /.vscode/
+/.railway/
 *.swp
 *.swo
 .DS_Store

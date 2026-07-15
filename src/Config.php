@@ -116,8 +116,8 @@ final class Config
     public function requestIsHttps(): bool
     {
         $remote = (string) ($_SERVER['REMOTE_ADDR'] ?? '');
-        $trusted = array_filter(array_map('trim', explode(',', (string) $this->get('TRUSTED_PROXIES', ''))));
-        if (in_array($remote, $trusted, true)) {
+        $railwayRequestId = (string) ($_SERVER['HTTP_X_RAILWAY_REQUEST_ID'] ?? '');
+        if ($this->requestComesFromTrustedProxy($remote, $railwayRequestId)) {
             $parts = array_map('trim', explode(',', (string) ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')));
             $forwarded = strtolower((string) end($parts));
             if (in_array($forwarded, ['http', 'https'], true)) {
@@ -126,6 +126,76 @@ final class Config
         }
         $https = strtolower((string) ($_SERVER['HTTPS'] ?? ''));
         return ($https !== '' && $https !== 'off') || (string) ($_SERVER['SERVER_PORT'] ?? '') === '443';
+    }
+
+    /**
+     * Trust explicitly configured proxy addresses/CIDRs. On Railway, public
+     * requests are also trusted only when both Railway runtime identity and
+     * the edge-generated request ID are present. This avoids accepting a
+     * spoofed forwarded scheme on ordinary hosts.
+     */
+    public function requestComesFromTrustedProxy(string $remote, ?string $railwayRequestId = null): bool
+    {
+        if ($this->isTrustedProxyAddress($remote)) {
+            return true;
+        }
+
+        return $this->isRailwayProxyRequest($railwayRequestId);
+    }
+
+    public function isRailwayProxyRequest(?string $railwayRequestId): bool
+    {
+        return trim((string) $railwayRequestId) !== ''
+            && trim((string) $this->get('RAILWAY_PROJECT_ID', '')) !== ''
+            && trim((string) $this->get('RAILWAY_ENVIRONMENT_ID', '')) !== ''
+            && trim((string) $this->get('RAILWAY_SERVICE_ID', '')) !== '';
+    }
+
+    public function isTrustedProxyAddress(string $address): bool
+    {
+        if (filter_var($address, FILTER_VALIDATE_IP) === false) {
+            return false;
+        }
+
+        $trusted = array_filter(array_map('trim', explode(',', (string) $this->get('TRUSTED_PROXIES', ''))));
+        foreach ($trusted as $entry) {
+            if ($entry === $address || (str_contains($entry, '/') && $this->ipInCidr($address, $entry))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private function ipInCidr(string $address, string $cidr): bool
+    {
+        [$network, $prefix] = array_pad(explode('/', $cidr, 2), 2, '');
+        if ($network === '' || !preg_match('/^\d{1,3}$/D', $prefix)) {
+            return false;
+        }
+
+        $addressBytes = @inet_pton($address);
+        $networkBytes = @inet_pton($network);
+        if ($addressBytes === false || $networkBytes === false || strlen($addressBytes) !== strlen($networkBytes)) {
+            return false;
+        }
+
+        $bits = (int) $prefix;
+        $maximumBits = strlen($addressBytes) * 8;
+        if ($bits < 0 || $bits > $maximumBits) {
+            return false;
+        }
+
+        $fullBytes = intdiv($bits, 8);
+        if ($fullBytes > 0 && substr($addressBytes, 0, $fullBytes) !== substr($networkBytes, 0, $fullBytes)) {
+            return false;
+        }
+
+        $remainingBits = $bits % 8;
+        if ($remainingBits === 0) {
+            return true;
+        }
+        $mask = (0xff << (8 - $remainingBits)) & 0xff;
+        return (ord($addressBytes[$fullBytes]) & $mask) === (ord($networkBytes[$fullBytes]) & $mask);
     }
 
     public function enforceHttps(): void

@@ -81,8 +81,14 @@ final class Security
     public function clientIp(Request $request): string
     {
         $remote = (string) ($request->server['REMOTE_ADDR'] ?? '0.0.0.0');
-        $trusted = array_filter(array_map('trim', explode(',', (string) $this->config->get('TRUSTED_PROXIES', ''))));
-        if (in_array($remote, $trusted, true)) {
+        $railwayProxy = $this->config->isRailwayProxyRequest($request->header('x-railway-request-id'));
+        if ($railwayProxy) {
+            $real = trim((string) ($request->header('x-real-ip') ?? ''));
+            if (filter_var($real, FILTER_VALIDATE_IP)) {
+                return $real;
+            }
+        }
+        if ($railwayProxy || $this->config->isTrustedProxyAddress($remote)) {
             $forwarded = $request->header('x-forwarded-for');
             if ($forwarded) {
                 // A well-behaved proxy appends its peer to X-Forwarded-For.
@@ -94,7 +100,7 @@ final class Security
                     if (!filter_var($candidate, FILTER_VALIDATE_IP)) {
                         return filter_var($remote, FILTER_VALIDATE_IP) ? $remote : '0.0.0.0';
                     }
-                    if (!in_array($candidate, $trusted, true)) {
+                    if (!$this->config->isTrustedProxyAddress($candidate)) {
                         return $candidate;
                     }
                 }
@@ -131,8 +137,7 @@ final class Security
     private function requestScheme(Request $request): string
     {
         $remote=(string)($request->server['REMOTE_ADDR']??'');
-        $trusted=array_filter(array_map('trim',explode(',',(string)$this->config->get('TRUSTED_PROXIES',''))));
-        if(in_array($remote,$trusted,true)){
+        if($this->config->requestComesFromTrustedProxy($remote,$request->header('x-railway-request-id'))){
             $parts=array_map('trim',explode(',',(string)($request->header('x-forwarded-proto')??'')));
             $forwarded=strtolower((string)end($parts));
             if(in_array($forwarded,['http','https'],true))return $forwarded;
