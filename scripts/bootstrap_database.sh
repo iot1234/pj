@@ -67,6 +67,7 @@ DB_CONNECT_RETRY_SECONDS_NUMBER=$((10#$DB_CONNECT_RETRY_SECONDS))
     || die "DB_CONNECT_RETRY_SECONDS must be an integer from 0 to 60"
 
 command -v mysql >/dev/null 2>&1 || die "mysql CLI is required"
+command -v sort >/dev/null 2>&1 || die "sort is required"
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 project_root="$(CDPATH= cd -- "${script_dir}/.." && pwd)"
@@ -132,7 +133,7 @@ expected_hardening_columns=$'bills.resident_name_snapshot|varchar(150)|NO\nbills
 expected_generated_columns=$'bookings.active_room_id\noccupancies.active_resident_id\noccupancies.active_room_id\npayments.active_bill_id'
 
 verify_schema_and_defaults() {
-    local object_count base_table_count actual_tables actual_triggers
+    local object_count base_table_count actual_tables actual_triggers actual_trigger_count
     local actual_hardening_columns actual_generated_columns bill_item_index
     local check_constraint_count billing_row_count integration_row_count
 
@@ -145,8 +146,15 @@ verify_schema_and_defaults() {
     [[ "$actual_tables" == "$expected_tables" ]] \
         || die "database has a partial or incompatible table set; refusing to modify it"
 
-    actual_triggers="$(mysql_query "SELECT CONCAT(trigger_name, '|', action_timing, '|', event_manipulation, '|', event_object_table) FROM information_schema.triggers WHERE trigger_schema = DATABASE() ORDER BY trigger_name")"
-    [[ "$actual_triggers" == "$expected_triggers" ]] \
+    actual_trigger_count="$(mysql_query "SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_schema = DATABASE()")"
+    [[ "$actual_trigger_count" == 15 ]] \
+        || die "database does not contain exactly the required 15 integrity triggers; refusing to modify it"
+    actual_triggers="$(mysql_query "SELECT CONCAT(trigger_name, '|', action_timing, '|', event_manipulation, '|', event_object_table) FROM information_schema.triggers WHERE trigger_schema = DATABASE()")"
+    # INFORMATION_SCHEMA uses a server collation whose punctuation ordering can
+    # differ between MySQL releases. Compare the tuple set under C ordering so
+    # verification is deterministic and independent of metadata collation.
+    actual_triggers="$(LC_ALL=C sort <<< "$actual_triggers")"
+    [[ "$actual_triggers" == "$(LC_ALL=C sort <<< "$expected_triggers")" ]] \
         || die "database has missing or incompatible integrity triggers; refusing to modify it"
 
     actual_hardening_columns="$(mysql_query "SELECT CONCAT(table_name, '.', column_name, '|', LOWER(column_type), '|', is_nullable) FROM information_schema.columns WHERE table_schema = DATABASE() AND ((table_name = 'bookings' AND column_name = 'booked_monthly_rent') OR (table_name = 'bills' AND column_name IN ('resident_name_snapshot', 'room_code_snapshot')) OR (table_name = 'payments' AND column_name IN ('verification_lease_until', 'verification_token', 'verification_attempts'))) ORDER BY table_name, column_name")"
