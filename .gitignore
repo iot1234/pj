@@ -1,0 +1,32 @@
+# Runtime configuration and credentials
+/.env
+/.env.*
+!/.env.example
+!/.env.production.example
+
+# Runtime/private data
+/storage/private/*
+/storage/logs/*
+/storage/sessions/*
+/storage/cache/*
+!/storage/private/.gitkeep
+!/storage/private/slips/
+/storage/private/slips/**
+!/storage/private/slips/.gitkeep
+!/storage/logs/.gitkeep
+!/storage/sessions/.gitkeep
+!/storage/cache/.gitkeep
+
+# Dependency/build output if added later
+/vendor/
+/.phpunit.cache/
+/coverage/
+
+# Editor and operating-system files
+/.idea/
+/.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+Desktop.ini
