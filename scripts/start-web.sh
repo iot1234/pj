@@ -26,6 +26,12 @@ install -d -o www-data -g www-data -m 0750 \
     /var/www/html/storage/sessions \
     /var/www/html/storage/cache
 
+# The official php:apache image runs non-thread-safe mod_php, which requires
+# prefork. Normalize again at runtime so a stale layer or mounted Apache config
+# cannot leave event/worker enabled beside prefork and crash the container.
+a2dismod -q -f mpm_event mpm_worker
+a2enmod -q mpm_prefork
+
 sed -ri "s/^[[:space:]]*Listen[[:space:]]+[0-9]+/Listen ${port}/" /etc/apache2/ports.conf
 sed -ri "s#<VirtualHost \*:[0-9]+>#<VirtualHost *:${port}>#" /etc/apache2/sites-available/000-default.conf
 

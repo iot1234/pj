@@ -2,6 +2,9 @@ FROM php:8.3-apache@sha256:a05f87f7f1e3927b9f3a44d64c01dfe15992328fa179bdfa72ad0
 
 ENV TZ=Asia/Bangkok
 
+# Debian package updates can re-enable the default event/worker MPM while the
+# official mod_php image already has prefork enabled. Normalize the mutually
+# exclusive MPM selection after every apt operation.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         bash \
@@ -17,7 +20,8 @@ RUN apt-get update \
         libwebp-dev \
     && docker-php-ext-configure gd --with-freetype --with-jpeg --with-webp \
     && docker-php-ext-install -j"$(nproc)" pdo_mysql curl mbstring gd fileinfo \
-    && a2enmod rewrite headers expires \
+    && a2dismod -f mpm_event mpm_worker \
+    && a2enmod mpm_prefork rewrite headers expires \
     && cp "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini" \
     && sed -ri \
         -e 's/^expose_php = On/expose_php = Off/' \
@@ -46,7 +50,8 @@ RUN mkdir -p \
         /var/www/html/scripts/provision_runtime_db_user.sh \
         /var/www/html/scripts/setup-database.sh \
         /var/www/html/scripts/start-web.sh \
-        /var/www/html/scripts/start-worker.sh
+        /var/www/html/scripts/start-worker.sh \
+    && apache2ctl configtest
 
 EXPOSE 80
 

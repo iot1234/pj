@@ -23,6 +23,14 @@ jobs:
       - name: Build production image
         run: docker build --pull --tag dormitory-ci:${{ github.sha }} .
 
+      - name: Validate Apache MPM configuration
+        run: |
+          docker run --rm --entrypoint sh dormitory-ci:${{ github.sha }} -ec '
+            test -L /etc/apache2/mods-enabled/mpm_prefork.load
+            test "$(find /etc/apache2/mods-enabled -maxdepth 1 -type l -name "mpm_*.load" | wc -l)" -eq 1
+            apache2ctl configtest
+          '
+
       - name: Validate Compose configuration
         env:
           APP_URL: http://localhost:8080
