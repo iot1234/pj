@@ -17,14 +17,6 @@ final class RoomService
         'room-studio.jpg',
     ];
 
-    private const SELECT = "SELECT r.id,r.room_code,r.floor,r.room_type,r.monthly_rent,r.description,r.amenities,r.image_key,
-        CASE
-          WHEN EXISTS(SELECT 1 FROM occupancies o WHERE o.room_id=r.id AND o.status='active') THEN 'occupied'
-          WHEN EXISTS(SELECT 1 FROM bookings b WHERE b.room_id=r.id AND b.status IN ('pending','confirmed')) THEN 'reserved'
-          ELSE 'available'
-        END AS status
-      FROM rooms r";
-
     public function __construct(private readonly Application $app)
     {
     }
@@ -32,14 +24,14 @@ final class RoomService
     /** @return list<array<string,mixed>> */
     public function available(): array
     {
-        $rows = $this->app->database()->pdo()->query(self::SELECT . " WHERE r.deleted_at IS NULL HAVING status='available' ORDER BY r.floor,r.room_code")->fetchAll();
+        $rows = $this->app->database()->pdo()->query($this->selectSql() . " WHERE r.deleted_at IS NULL HAVING status='available' ORDER BY r.floor,r.room_code")->fetchAll();
         return array_map($this->map(...), $rows);
     }
 
     /** @return list<array<string,mixed>> */
     public function all(): array
     {
-        $rows = $this->app->database()->pdo()->query(self::SELECT . ' WHERE r.deleted_at IS NULL ORDER BY r.floor,r.room_code')->fetchAll();
+        $rows = $this->app->database()->pdo()->query($this->selectSql() . ' WHERE r.deleted_at IS NULL ORDER BY r.floor,r.room_code')->fetchAll();
         return array_map($this->map(...), $rows);
     }
 
@@ -49,6 +41,8 @@ final class RoomService
         Validator::only($input, ['room_code','floor','room_type','monthly_rent','description','amenities','image_key']);
         $data = $this->validate($input, false);
         $data['amenities'] ??= '[]';
+        $data['description'] ??= null;
+        $data['image_key'] ??= null;
         $statement = $this->app->database()->pdo()->prepare(
             'INSERT INTO rooms (room_code,floor,room_type,monthly_rent,description,amenities,image_key,created_at,updated_at) VALUES (?,?,?,?,?,?,?,UTC_TIMESTAMP(),UTC_TIMESTAMP())'
         );
@@ -104,9 +98,10 @@ final class RoomService
             if (!$lock->fetch()) {
                 throw new HttpException(404, 'ไม่พบห้อง', 'ROOM_NOT_FOUND');
             }
+            $holdSeconds=$this->app->config->intInRange('BOOKING_HOLD_SECONDS',86400,900,604800);
             $refs = $pdo->prepare("SELECT
                 EXISTS(SELECT 1 FROM occupancies WHERE room_id=? AND status='active') AS occupied,
-                EXISTS(SELECT 1 FROM bookings WHERE room_id=? AND status IN ('pending','confirmed')) AS reserved");
+                EXISTS(SELECT 1 FROM bookings WHERE room_id=? AND (status='confirmed' OR (status='pending' AND created_at>DATE_SUB(UTC_TIMESTAMP(),INTERVAL {$holdSeconds} SECOND)))) AS reserved");
             $refs->execute([$id,$id]);
             $state = $refs->fetch();
             if ((bool) $state['occupied'] || (bool) $state['reserved']) {
@@ -120,7 +115,7 @@ final class RoomService
     /** @return array<string,mixed> */
     public function find(int $id): array
     {
-        $statement = $this->app->database()->pdo()->prepare(self::SELECT . ' WHERE r.id=? AND r.deleted_at IS NULL LIMIT 1');
+        $statement = $this->app->database()->pdo()->prepare($this->selectSql() . ' WHERE r.id=? AND r.deleted_at IS NULL LIMIT 1');
         $statement->execute([$id]);
         $row = $statement->fetch();
         if (!$row) {
@@ -172,6 +167,18 @@ final class RoomService
             $out['image_key'] = $key === '' ? null : $key;
         }
         return $out;
+    }
+
+    private function selectSql(): string
+    {
+        $holdSeconds=$this->app->config->intInRange('BOOKING_HOLD_SECONDS',86400,900,604800);
+        return "SELECT r.id,r.room_code,r.floor,r.room_type,r.monthly_rent,r.description,r.amenities,r.image_key,
+            CASE
+              WHEN EXISTS(SELECT 1 FROM occupancies o WHERE o.room_id=r.id AND o.status='active') THEN 'occupied'
+              WHEN EXISTS(SELECT 1 FROM bookings b WHERE b.room_id=r.id AND (b.status='confirmed' OR (b.status='pending' AND b.created_at>DATE_SUB(UTC_TIMESTAMP(),INTERVAL {$holdSeconds} SECOND)))) THEN 'reserved'
+              ELSE 'available'
+            END AS status
+          FROM rooms r";
     }
 
     /** @param array<string,mixed> $row

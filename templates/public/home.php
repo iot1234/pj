@@ -153,6 +153,7 @@
       <span class="success-mark" aria-hidden="true">✓</span>
       <h3>รับคำขอจองเรียบร้อยแล้ว</h3>
       <p>ห้องถูกกันไว้แล้ว ผู้ดูแลจะติดต่อกลับตามเบอร์ที่แจ้ง</p>
+      <p id="booking-expiry">กรุณารอผู้ดูแลติดต่อกลับเพื่อยืนยันการจอง</p>
       <div class="reference-box">
         <span>หมายเลขอ้างอิง</span>
         <strong id="booking-reference">—</strong>

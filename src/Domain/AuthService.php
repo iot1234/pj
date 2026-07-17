@@ -12,6 +12,12 @@ use PDO;
 
 final class AuthService
 {
+    // Fixed hashes avoid generating an additional expensive hash on each
+    // request while matching the runtime KDF used by real credentials.
+    private const DUMMY_ARGON2ID_HASH = '$argon2id$v=19$m=65536,t=4,p=1$QTFrdlJTMlNhNVlOcVNaag$4OGNDlE1/yhI16yCneeHZrvMpjVK3wp5Z14RKNiHaws';
+    private const DUMMY_BCRYPT_HASH = '$2y$10$u0R/rN94jiaDgP4CtmlUUu9M5buyoEZvxmz4wiLkxAAQqTs4/Nuki';
+    private const LOGIN_DEVICE_TTL = 2592000;
+
     public function __construct(private readonly Application $app)
     {
     }
@@ -86,12 +92,14 @@ final class AuthService
         // account is normalized to the same credential response below, which
         // prevents using bucket behavior as an account-enumeration oracle.
         $accountIdentity=$row?(string)$row['username']:'unknown:'.$ip;
-        $accountAllowed=$this->accountAttemptAllowed('admin-login-account',$accountIdentity,5,900,1800);
-        static $dummyHash = null;
-        $dummyHash ??= Password::hash('dummy-password-that-is-never-valid');
-        $valid = Password::verify($password, $row['password_hash'] ?? $dummyHash);
+        $sourceIdentity=$accountIdentity.':'.$ip;
+        $sourceAllowed=$this->accountAttemptAllowed('admin-login-account-source',$sourceIdentity,5,900,1800);
+        $globalAllowed=$this->globalAccountAttemptAllowed('admin-login-account',$accountIdentity,$sourceAllowed,$ip,50,900,1800);
+        $accountAllowed=$sourceAllowed&&$globalAllowed;
+        $valid = self::verifyCredential($password,is_string($row['password_hash']??null)?(string)$row['password_hash']:null);
+        $trustedDevice=$row&&$valid&&$this->hasTrustedLoginDevice('admin',(int)$row['id'],(int)$row['auth_version']);
         usleep(random_int(180000, 320000));
-        if (!$accountAllowed || !$row || !(bool) $row['active'] || !$valid) {
+        if ((!$accountAllowed&&!$trustedDevice) || !$row || !(bool) $row['active'] || !$valid) {
             $this->app->audit()->write($request, null, 'auth.admin_failed', 'admin_user', null, [
                 'principal_hash' => hash_hmac('sha256', $username, $this->app->config->appKey()),
                 'account_rate_limited'=>!$accountAllowed,
@@ -100,8 +108,16 @@ final class AuthService
         }
 
         if (Password::needsRehash((string) $row['password_hash'])) {
-            $rehash = $this->app->database()->pdo()->prepare('UPDATE admin_users SET password_hash=?,updated_at=UTC_TIMESTAMP() WHERE id=?');
-            $rehash->execute([Password::hash($password), $row['id']]);
+            $newHash = Password::hash($password);
+            $rehash = $this->app->database()->pdo()->prepare(
+                'UPDATE admin_users SET password_hash=?,updated_at=UTC_TIMESTAMP() WHERE id=? AND password_hash=? AND auth_version=?'
+            );
+            $rehash->execute([$newHash, $row['id'], $row['password_hash'], $row['auth_version']]);
+            if ($rehash->rowCount() !== 1) {
+                $this->app->audit()->write($request, null, 'auth.admin_stale_login', 'admin_user', $row['id']);
+                throw new HttpException(401, 'Username or password is invalid', 'INVALID_CREDENTIALS');
+            }
+            $row['password_hash'] = $newHash;
         }
         $actor = [
             'type' => 'admin', 'id' => (int) $row['id'], 'username' => $row['username'],
@@ -110,6 +126,8 @@ final class AuthService
         $this->app->session()->login($actor);
         $this->app->clearActorCache();
         $this->app->limiter()->clear('admin-login-account', $accountIdentity);
+        $this->app->limiter()->clear('admin-login-account-source', $sourceIdentity);
+        $this->rememberLoginDevice('admin',(int)$row['id'],(int)$row['auth_version']);
         $this->app->audit()->write($request, $actor, 'auth.admin_login', 'admin_user', $row['id']);
         return $actor;
     }
@@ -140,12 +158,14 @@ final class AuthService
             $row = $statement->fetch();
         }
         $accountIdentity=$row?(string)$row['phone_norm']:'unknown:'.$ip;
-        $accountAllowed=$this->accountAttemptAllowed('resident-login-account',$accountIdentity,8,900,1800);
-        static $dummyHash = null;
-        $dummyHash ??= Password::hash('9876543210');
-        $valid = Password::verify($pin, $row['pin_hash'] ?? $dummyHash);
+        $sourceIdentity=$accountIdentity.':'.$ip;
+        $sourceAllowed=$this->accountAttemptAllowed('resident-login-account-source',$sourceIdentity,8,900,1800);
+        $globalAllowed=$this->globalAccountAttemptAllowed('resident-login-account',$accountIdentity,$sourceAllowed,$ip,60,900,1800);
+        $accountAllowed=$sourceAllowed&&$globalAllowed;
+        $valid = self::verifyCredential($pin,is_string($row['pin_hash']??null)?(string)$row['pin_hash']:null);
+        $trustedDevice=$row&&$valid&&$this->hasTrustedLoginDevice('resident',(int)$row['id'],(int)$row['auth_version']);
         usleep(random_int(180000, 320000));
-        if (!$accountAllowed || !$row || !(bool) $row['active'] || !$row['occupancy_id'] || !$valid) {
+        if ((!$accountAllowed&&!$trustedDevice) || !$row || !(bool) $row['active'] || !$row['occupancy_id'] || !$valid) {
             $this->app->audit()->write($request, null, 'auth.resident_failed', 'resident', null, [
                 'principal_hash' => hash_hmac('sha256', $phoneValid?$phone:trim($rawPhone), $this->app->config->appKey()),
                 'account_rate_limited'=>!$accountAllowed,
@@ -153,8 +173,16 @@ final class AuthService
             throw new HttpException(401, 'เบอร์โทรหรือ PIN ไม่ถูกต้อง', 'INVALID_CREDENTIALS');
         }
         if (Password::needsRehash((string) $row['pin_hash'])) {
-            $rehash = $this->app->database()->pdo()->prepare('UPDATE residents SET pin_hash=?,updated_at=UTC_TIMESTAMP() WHERE id=?');
-            $rehash->execute([Password::hash($pin), $row['id']]);
+            $newHash = Password::hash($pin);
+            $rehash = $this->app->database()->pdo()->prepare(
+                'UPDATE residents SET pin_hash=?,updated_at=UTC_TIMESTAMP() WHERE id=? AND pin_hash=? AND auth_version=?'
+            );
+            $rehash->execute([$newHash, $row['id'], $row['pin_hash'], $row['auth_version']]);
+            if ($rehash->rowCount() !== 1) {
+                $this->app->audit()->write($request, null, 'auth.resident_stale_login', 'resident', $row['id']);
+                throw new HttpException(401, 'Phone number or PIN is invalid', 'INVALID_CREDENTIALS');
+            }
+            $row['pin_hash'] = $newHash;
         }
         $actor = [
             'type' => 'resident', 'id' => (int) $row['id'], 'full_name' => $row['full_name'],
@@ -165,6 +193,8 @@ final class AuthService
         $this->app->session()->login($actor);
         $this->app->clearActorCache();
         $this->app->limiter()->clear('resident-login-account', $accountIdentity);
+        $this->app->limiter()->clear('resident-login-account-source', $sourceIdentity);
+        $this->rememberLoginDevice('resident',(int)$row['id'],(int)$row['auth_version']);
         $this->app->audit()->write($request, $actor, 'auth.resident_login', 'resident', $row['id']);
         return $actor;
     }
@@ -188,5 +218,77 @@ final class AuthService
             if($error->errorCode==='RATE_LIMITED')return false;
             throw $error;
         }
+    }
+
+    private function globalAccountAttemptAllowed(string $scope,string $identity,bool $sourceAllowed,string $ip,int $max,int $windowSeconds,int $blockSeconds): bool
+    {
+        if($sourceAllowed)return $this->accountAttemptAllowed($scope,$identity,$max,$windowSeconds,$blockSeconds);
+        // Preserve the second DB transaction without incrementing the real
+        // account bucket after this source is already blocked. The IP bucket
+        // caps this padding bucket far below its maximum.
+        $this->accountAttemptAllowed($scope.'-timing-pad',$ip,1000,$windowSeconds,$blockSeconds);
+        return false;
+    }
+
+    private static function verifyCredential(string $plain,?string $hash): bool
+    {
+        if(!defined('PASSWORD_ARGON2ID'))return Password::verify($plain,$hash??self::DUMMY_BCRYPT_HASH);
+        // Match one Argon2id plus one bcrypt verification for current,
+        // legacy, and unknown credentials. This closes the KDF/account timing
+        // distinction while retaining a fixed non-user dummy hash.
+        if(is_string($hash)&&str_starts_with($hash,'$argon2')){
+            $valid=Password::verify($plain,$hash);
+            Password::verify($plain,self::DUMMY_BCRYPT_HASH);
+            return $valid;
+        }
+        Password::verify($plain,self::DUMMY_ARGON2ID_HASH);
+        $valid=Password::verify($plain,$hash??self::DUMMY_BCRYPT_HASH);
+        return is_string($hash)&&$valid;
+    }
+
+    private function hasTrustedLoginDevice(string $type,int $id,int $authVersion): bool
+    {
+        $token=$_COOKIE[$this->loginDeviceCookieName($type,$id)]??null;
+        return is_string($token)&&$this->validLoginDeviceToken($token,$type,$id,$authVersion,time());
+    }
+
+    private function rememberLoginDevice(string $type,int $id,int $authVersion): void
+    {
+        $expires=time()+self::LOGIN_DEVICE_TTL;
+        $token=$this->createLoginDeviceToken($type,$id,$authVersion,$expires);
+        $name=$this->loginDeviceCookieName($type,$id);
+        if(setcookie($name,$token,[
+            'expires'=>$expires,'path'=>'/','domain'=>'','secure'=>$this->app->config->requestIsHttps(),
+            'httponly'=>true,'samesite'=>'Lax',
+        ]))$_COOKIE[$name]=$token;
+    }
+
+    private function loginDeviceCookieName(string $type,int $id): string
+    {
+        if(!in_array($type,['admin','resident'],true)||$id<1)throw new \InvalidArgumentException('Invalid login device identity');
+        $base='dormitory_login_device_'.$type.'_'.$id;
+        return $this->app->config->requestIsHttps()?'__Host-'.$base:$base;
+    }
+
+    private function createLoginDeviceToken(string $type,int $id,int $authVersion,int $expires): string
+    {
+        $payload=$type.'|'.$id.'|'.$authVersion.'|'.$expires.'|'.bin2hex(random_bytes(16));
+        $encoded=rtrim(strtr(base64_encode($payload),'+/','-_'),'=');
+        $signature=hash_hmac('sha256',"login-device\0{$encoded}",$this->app->config->appKey());
+        return $encoded.'.'.$signature;
+    }
+
+    private function validLoginDeviceToken(string $token,string $type,int $id,int $authVersion,int $now): bool
+    {
+        if(preg_match('/^([A-Za-z0-9_-]{20,300})\.([a-f0-9]{64})$/D',$token,$match)!==1)return false;
+        $expected=hash_hmac('sha256',"login-device\0{$match[1]}",$this->app->config->appKey());
+        if(!hash_equals($expected,$match[2]))return false;
+        $encoded=strtr($match[1],'-_','+/');$encoded.=str_repeat('=',(4-strlen($encoded)%4)%4);
+        $payload=base64_decode($encoded,true);if(!is_string($payload))return false;
+        $parts=explode('|',$payload);
+        if(count($parts)!==5||!ctype_digit($parts[1])||!ctype_digit($parts[2])||!ctype_digit($parts[3])||preg_match('/^[a-f0-9]{32}$/D',$parts[4])!==1)return false;
+        $expires=(int)$parts[3];
+        return hash_equals($type,$parts[0])&&(int)$parts[1]===$id&&(int)$parts[2]===$authVersion
+            &&$expires>=$now&&$expires<=$now+self::LOGIN_DEVICE_TTL+300;
     }
 }

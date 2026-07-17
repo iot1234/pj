@@ -7,6 +7,7 @@ use Dormitory\Domain\AdminUserService;
 use Dormitory\Domain\PaymentService;
 use Dormitory\AuditLogger;
 use Dormitory\Config;
+use Dormitory\Database;
 use Dormitory\Http\HttpException;
 use Dormitory\Http\Request;
 use Dormitory\Integration\SlipVerifier;
@@ -263,5 +264,124 @@ $test('billing amounts respect DECIMAL(14,2) bounds',function()use($same,$throws
 $test('billing preview token binds exact values and expiry',function()use($app,$throws):void{$service=new BillingService($app);$sign=new ReflectionMethod(BillingService::class,'previewToken');$verify=new ReflectionMethod(BillingService::class,'assertPreviewToken');$preview=['period'=>'2026-07','due_date'=>'2026-07-10','bills'=>[['room_id'=>1,'total_amount'=>'1234.56']],'issues'=>[]];$token=$sign->invoke($service,$preview,time()+60);$verify->invoke($service,$token,$preview);$changed=$preview;$changed['bills'][0]['total_amount']='1234.57';$throws(fn()=>$verify->invoke($service,$token,$changed),'BILL_PREVIEW_CHANGED');$expired=$sign->invoke($service,$preview,time()-1);$throws(fn()=>$verify->invoke($service,$expired,$preview),'BILL_PREVIEW_EXPIRED');});
 $test('overlapping occupancies are excluded from billing',function()use($same):void{$partition=new ReflectionMethod(BillingService::class,'partitionOccupancies');$result=$partition->invoke(null,[['occupancy_id'=>1,'room_id'=>10,'room_code'=>'101'],['occupancy_id'=>2,'room_id'=>10,'room_code'=>'101'],['occupancy_id'=>3,'room_id'=>20,'room_code'=>'201']]);$same([3],array_column($result['occupancies'],'occupancy_id'));$same(1,count($result['issues']));$same('AMBIGUOUS_OCCUPANCY',$result['issues'][0]['code']);$same([1,2],$result['issues'][0]['occupancy_ids']);});
 $test('audit UTF-8 truncation preserves valid characters',function()use($same):void{$cut=new ReflectionMethod(AuditLogger::class,'utf8Cut');$value=str_repeat('ก',200)."\xFF";$result=$cut->invoke(null,$value,500);$same(1,preg_match('//u',$result));$same(true,strlen($result)<=500);});
+
+$test('runtime integer ranges and production database password fail closed',function()use($same,$app):void{
+    putenv('TEST_BOUNDED_INTEGER=900');
+    try{$same(900,$app->config->intInRange('TEST_BOUNDED_INTEGER',600,300,1200));}
+    finally{putenv('TEST_BOUNDED_INTEGER');}
+    foreach(['0','65536']as$port){
+        putenv('DB_PORT='.$port);
+        try{(new Database($app->config))->pdo();throw new RuntimeException('invalid DB_PORT was accepted');}
+        catch(RuntimeException $error){if($error->getMessage()==='invalid DB_PORT was accepted')throw $error;$same(true,str_contains($error->getMessage(),'DB_PORT')&&str_contains($error->getMessage(),'between'));}
+        finally{putenv('DB_PORT=3306');}
+    }
+    putenv('DB_HOST=localhost;dbname=other');
+    try{(new Database($app->config))->pdo();throw new RuntimeException('invalid DB_HOST was accepted');}
+    catch(RuntimeException $error){if($error->getMessage()==='invalid DB_HOST was accepted')throw $error;$same(true,str_contains($error->getMessage(),'DB_HOST'));}
+    finally{putenv('DB_HOST=127.0.0.1');}
+    $same('mysql.internal:3306',Config::validatedDbHost(' mysql.internal:3306 '));
+    putenv('APP_ENV=production');putenv('DB_HOST=');
+    try{(new Database($app->config))->pdo();throw new RuntimeException('empty production DB_HOST was accepted');}
+    catch(RuntimeException $error){if($error->getMessage()==='empty production DB_HOST was accepted')throw $error;$same(true,str_contains($error->getMessage(),'DB_HOST'));}
+    finally{putenv('DB_HOST=127.0.0.1');}
+    putenv('DB_PASSWORD=');
+    try{(new Database($app->config))->pdo();throw new RuntimeException('empty production DB_PASSWORD was accepted');}
+    catch(RuntimeException $error){if($error->getMessage()==='empty production DB_PASSWORD was accepted')throw $error;$same(true,str_contains($error->getMessage(),'DB_PASSWORD'));}
+    finally{putenv('APP_ENV=testing');putenv('DB_PASSWORD=testing-only');}
+});
+$test('production APP_KEY requires random 32-byte key material',function()use($same):void{
+    $sequential='';for($i=0;$i<32;$i++)$sequential.=sprintf('%02x',$i);
+    foreach([str_repeat('a',64),str_repeat('ab',32),str_repeat('x',64),$sequential,'000102030405060708090a0b0c0d0e0f000102030405060708090a0b0c0d0e0f','qwertyuiopasdfghjklzxcvbnm123456','1234567890abcdefghijklmnopqrstuvwxyz']as$key){
+        try{Config::validatedAppKey($key,true);throw new RuntimeException('weak production APP_KEY was accepted');}
+        catch(RuntimeException $error){if($error->getMessage()==='weak production APP_KEY was accepted')throw $error;}
+    }
+    $strong='5a1697717edc7dd7783c09b4c594fefa546e5aab212ae6136749002617d085f6';
+    $same($strong,Config::validatedAppKey($strong,true));
+    $base64='oBIPWekW02veQzND7dwDkgk1YzqJpKSRro6dU2QEThc=';
+    $same($base64,Config::validatedAppKey($base64,true));
+    $base64Url=rtrim(strtr($base64,'+/','-_'),'=');
+    $same($base64Url,Config::validatedAppKey($base64Url,true));
+    $raw='Q7!vL2@xP9#cN4$mR8%tK5^zW3&hD6*jS';
+    $same($raw,Config::validatedAppKey($raw,true));
+    $rawWithSpace='Q7!vL2@xP9#cN4$m R8%tK5^zW3&hD6*jS';
+    $same($rawWithSpace,Config::validatedAppKey($rawWithSpace,true));
+    $block='';for($i=0;$i<33;$i++)$block.=chr(33+$i);
+    try{Config::validatedAppKey(base64_encode($block.$block),true);throw new RuntimeException('long repeated APP_KEY pattern was accepted');}
+    catch(RuntimeException $error){if($error->getMessage()==='long repeated APP_KEY pattern was accepted')throw $error;}
+    try{Config::validatedAppKey(str_repeat('Ab3!',300),true);throw new RuntimeException('oversized APP_KEY was accepted');}
+    catch(RuntimeException $error){if($error->getMessage()==='oversized APP_KEY was accepted')throw $error;}
+});
+$test('login rehash is compare-and-swap with layered account throttling',function()use($same,$app):void{
+    $source=file_get_contents(dirname(__DIR__).'/src/Domain/AuthService.php');if(!is_string($source))throw new RuntimeException('cannot read AuthService');
+    $same(1,preg_match('/UPDATE admin_users SET password_hash=\?,updated_at=UTC_TIMESTAMP\(\) WHERE id=\? AND password_hash=\? AND auth_version=\?/',$source));
+    $same(1,preg_match('/UPDATE residents SET pin_hash=\?,updated_at=UTC_TIMESTAMP\(\) WHERE id=\? AND pin_hash=\? AND auth_version=\?/',$source));
+    $same(true,str_contains($source,'(!$accountAllowed&&!$trustedDevice)'));
+    foreach(['admin-login-account-source','admin-login-account','resident-login-account-source','resident-login-account']as$scope)$same(true,str_contains($source,$scope));
+    $same(true,str_contains($source,'DUMMY_ARGON2ID_HASH'));
+    $same(true,str_contains($source,'$2y$10$'));
+    $same(false,str_contains($source,'$sourceAllowed&&$this->accountAttemptAllowed'));
+    $same(true,str_contains($source,'globalAccountAttemptAllowed'));
+    $same(true,str_contains($source,"\$scope.'-timing-pad'"));
+    $same(true,str_contains($source,'private static function verifyCredential'));
+    $same(false,str_contains($source,"Password::hash('dummy-password"));
+    $auth=new Dormitory\Domain\AuthService($app);$create=new ReflectionMethod($auth,'createLoginDeviceToken');$valid=new ReflectionMethod($auth,'validLoginDeviceToken');$now=time();
+    $verifyCredential=new ReflectionMethod($auth,'verifyCredential');$credential='Timing-safe-test-password-48!';$credentialHash=Password::hash($credential);
+    $same(true,$verifyCredential->invoke($auth,$credential,$credentialHash));
+    $same(false,$verifyCredential->invoke($auth,$credential,null));
+    $same(true,$verifyCredential->invoke($auth,'dummy-password-that-is-never-valid','$2y$10$u0R/rN94jiaDgP4CtmlUUu9M5buyoEZvxmz4wiLkxAAQqTs4/Nuki'));
+    $token=$create->invoke($auth,'admin',7,3,$now+60);
+    $same(true,$valid->invoke($auth,$token,'admin',7,3,$now));
+    $same(false,$valid->invoke($auth,$token,'admin',7,4,$now));
+    $tampered=substr($token,0,-1).(str_ends_with($token,'0')?'1':'0');
+    $same(false,$valid->invoke($auth,$tampered,'admin',7,3,$now));
+    $cookieName=new ReflectionMethod($auth,'loginDeviceCookieName');
+    $same(false,$cookieName->invoke($auth,'admin',7)===$cookieName->invoke($auth,'resident',7));
+    $same(false,$cookieName->invoke($auth,'admin',7)===$cookieName->invoke($auth,'admin',8));
+    $limiterSource=file_get_contents(dirname(__DIR__).'/src/Security/RateLimiter.php');if(!is_string($limiterSource))throw new RuntimeException('cannot read RateLimiter');
+    $same(true,str_contains($limiterSource,'UPDATE rate_limits SET updated_at=UTC_TIMESTAMP() WHERE bucket_key=?'));
+});
+$test('booking holds use the database clock and inactive replays fail closed',function()use($same):void{
+    $source=file_get_contents(dirname(__DIR__).'/src/Domain/BookingService.php');if(!is_string($source))throw new RuntimeException('cannot read BookingService');
+    $same(true,substr_count($source,'SELECT * FROM bookings WHERE idempotency_key=?')>=3);
+    $same(true,str_contains($source,'created_at<=DATE_SUB(UTC_TIMESTAMP(),INTERVAL'));
+    $same(true,str_contains($source,"'BOOKING_INACTIVE'"));
+    $same(true,str_contains($source,'private function replay(PDO $pdo'));
+    $rooms=file_get_contents(dirname(__DIR__).'/src/Domain/RoomService.php');if(!is_string($rooms))throw new RuntimeException('cannot read RoomService');
+    $same(false,str_contains($rooms,'created_at>=DATE_SUB'));
+    $same(true,str_contains($rooms,'created_at>DATE_SUB'));
+});
+$test('room optional fields and overdue display status are deterministic',function()use($same):void{
+    $rooms=file_get_contents(dirname(__DIR__).'/src/Domain/RoomService.php');if(!is_string($rooms))throw new RuntimeException('cannot read RoomService');
+    $same(true,str_contains($rooms,"\$data['description'] ??= null"));$same(true,str_contains($rooms,"\$data['image_key'] ??= null"));
+    $display=new ReflectionMethod(BillingService::class,'displayStatus');$now=new DateTimeImmutable('2026-07-18T12:00:00Z');
+    $same('overdue',$display->invoke(null,'pending','2026-07-17',$now));$same('pending',$display->invoke(null,'pending','2026-07-18',$now));$same('paid',$display->invoke(null,'paid','2026-07-01',$now));
+});
+$test('LINE bill delivery requires an authenticated one-time-code link flow',function()use($same,$app):void{
+    $routes=new ReflectionProperty(Dormitory\Http\Router::class,'routes');$registered=$routes->getValue(Dormitory\Http\Routes::build($app));$paths=[];
+    foreach($registered as$route){if(str_contains($route['regex'],'profile/line'))$paths[]=$route['method'].':'.$route['regex'];}
+    $same(3,count($paths));
+    $resident=file_get_contents(dirname(__DIR__).'/src/Domain/ResidentService.php');$booking=file_get_contents(dirname(__DIR__).'/src/Domain/BookingService.php');
+    if(!is_string($resident)||!is_string($booking))throw new RuntimeException('cannot read LINE binding sources');
+    $same(1,preg_match("/updateProfile.*?Validator::only\\(\\\$input,\\['full_name','email'\\]\\)/s",$resident));
+    $same(1,preg_match("/moveIn.*?Validator::only\\(\\\$input, \\['pin','email','move_in_date','reuse_resident_id'\\]\\)/s",$booking));
+    $same(true,str_contains($resident,'lineLinkDigest'));
+    $same(true,str_contains($resident,"Validator::only(\$input,['line_user_id','current_pin'])"));
+    $notification=file_get_contents(dirname(__DIR__).'/src/Domain/NotificationService.php');if(!is_string($notification))throw new RuntimeException('cannot read NotificationService');
+    $same(true,str_contains($notification,'isLineBindingVerified'));
+    $same(true,str_contains($notification,"resident.line_link_verified','resident.line_unlinked"));
+    $routesSource=file_get_contents(dirname(__DIR__).'/src/Http/Routes.php');if(!is_string($routesSource))throw new RuntimeException('cannot read Routes');
+    $same(true,str_contains($routesSource,'line_user_id_hash'));
+});
+$test('container runtime command dispatches by fail-closed role',function()use($same):void{
+    $script=file_get_contents(dirname(__DIR__).'/scripts/start-runtime.sh');$docker=file_get_contents(dirname(__DIR__).'/Dockerfile');
+    if(!is_string($script)||!is_string($docker))throw new RuntimeException('cannot read runtime dispatch sources');
+    foreach(['web)','worker)','job)']as$case)$same(true,str_contains($script,$case));
+    $same(true,str_contains($script,'role=${RUNTIME_ROLE:-}'));
+    $same(false,str_contains($script,'RUNTIME_ROLE:-web'));
+    $same(true,str_contains($docker,'CMD ["/var/www/html/scripts/start-runtime.sh"]'));
+    $checker=file_get_contents(dirname(__DIR__).'/scripts/check_requirements.php');if(!is_string($checker))throw new RuntimeException('cannot read requirement checker');
+    $same(true,str_contains($checker,"\$runtimeRole=(string)envValue(\$env,'RUNTIME_ROLE','all')"));
+    $same(false,str_contains($checker,'$runtimeRole=strtolower'));
+});
 
 fwrite(STDOUT,"\n{$passed} passed, {$failed} failed".PHP_EOL);exit($failed===0?0:1);

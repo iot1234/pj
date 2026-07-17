@@ -52,6 +52,10 @@ is reference material only and is not modified.
 
 - `GET|PUT /api/resident/profile`
 - `POST /api/resident/profile/pin` `{current_pin,new_pin}`
+- `POST /api/resident/profile/line/start` `{line_user_id,current_pin}`;
+  `POST .../line/confirm` `{code}`; `POST .../line/unlink` `{current_pin}`.
+  Billing delivery requires the latest append-only audit proof to match the
+  current LINE ID; legacy IDs without this OTP proof are treated as unverified.
 - `GET /api/resident/bills`
 - `GET /api/resident/bills/{id}`
 - `GET /api/resident/bills/{id}/promptpay`
@@ -63,7 +67,7 @@ is reference material only and is not modified.
 - `GET|POST /api/admin/rooms`; `PUT|DELETE /api/admin/rooms/{id}`
 - `GET /api/admin/residents` returns current residents, occupancy IDs, and
   their rooms.
-- `PUT /api/admin/residents/{id}` `{full_name,phone,email,line_user_id}` lets an
+- `PUT /api/admin/residents/{id}` `{full_name,phone,email}` lets an
   Admin perform an identity-verified correction; changing the login phone
   increments `auth_version` and revokes existing resident sessions.
 - `POST /api/admin/residents/{id}/reset-pin` `{new_pin}` resets the resident
@@ -76,7 +80,8 @@ is reference material only and is not modified.
 - `POST /api/admin/bookings/{id}/confirm`
 - `POST /api/admin/bookings/{id}/cancel`
 - `POST /api/admin/bookings/{id}/move-in`
-  `{pin,email,line_user_id,move_in_date}`
+  `{pin,email,move_in_date,reuse_resident_id?}`; LINE is linked later by the
+  resident through the verified flow above.
 - `GET /api/admin/meters?period=YYYY-MM`
 - `POST /api/admin/meters`
   `{room_id,period,water_current,electric_current,confirm_large_usage?}`;

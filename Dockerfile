@@ -49,6 +49,7 @@ RUN mkdir -p \
         /var/www/html/scripts/bootstrap_database.sh \
         /var/www/html/scripts/provision_runtime_db_user.sh \
         /var/www/html/scripts/setup-database.sh \
+        /var/www/html/scripts/start-runtime.sh \
         /var/www/html/scripts/start-web.sh \
         /var/www/html/scripts/start-worker.sh \
     && apache2ctl configtest
@@ -56,7 +57,7 @@ RUN mkdir -p \
 EXPOSE 80
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD role="${RUNTIME_ROLE:-web}"; \
+    CMD role="${RUNTIME_ROLE:-}"; \
         if [ "$role" = "web" ]; then \
             curl --fail --silent --show-error --max-time 4 \
                 "http://127.0.0.1:${PORT:-80}/healthz.php" \
@@ -72,4 +73,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
             exit 1; \
         fi
 
-CMD ["/var/www/html/scripts/start-web.sh"]
+CMD ["/var/www/html/scripts/start-runtime.sh"]

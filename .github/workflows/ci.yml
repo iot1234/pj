@@ -31,10 +31,23 @@ jobs:
             apache2ctl configtest
           '
 
+      - name: Validate runtime role dispatch fails closed
+        run: |
+          set +e
+          docker run --rm dormitory-ci:${{ github.sha }}
+          status=$?
+          set -e
+          test "$status" -eq 64
+          set +e
+          docker run --rm --env RUNTIME_ROLE=WEB dormitory-ci:${{ github.sha }}
+          status=$?
+          set -e
+          test "$status" -eq 64
+
       - name: Validate Compose configuration
         env:
           APP_URL: http://localhost:8080
-          APP_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          APP_KEY: 5a1697717edc7dd7783c09b4c594fefa546e5aab212ae6136749002617d085f6
           DB_DATABASE: testing
           DB_USERNAME: testing
           DB_PASSWORD: testing-only
@@ -51,6 +64,8 @@ jobs:
             -n scripts/setup-database.sh
           docker run --rm --entrypoint sh dormitory-ci:${{ github.sha }} \
             -n scripts/start-web.sh
+          docker run --rm --entrypoint sh dormitory-ci:${{ github.sha }} \
+            -n scripts/start-runtime.sh
           docker run --rm --entrypoint sh dormitory-ci:${{ github.sha }} \
             -n scripts/start-worker.sh
 
@@ -71,7 +86,7 @@ jobs:
             -e APP_ENV=testing \
             -e APP_DEBUG=false \
             -e APP_URL=http://localhost \
-            -e APP_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+            -e APP_KEY=5a1697717edc7dd7783c09b4c594fefa546e5aab212ae6136749002617d085f6 \
             -e FORCE_HTTPS=false \
             -e DB_HOST=127.0.0.1 \
             -e DB_PORT=3306 \
@@ -82,7 +97,7 @@ jobs:
 
       - name: Exercise MySQL bootstrap, web readiness, and worker isolation
         env:
-          CI_APP_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          CI_APP_KEY: 5a1697717edc7dd7783c09b4c594fefa546e5aab212ae6136749002617d085f6
           CI_DBA_PASSWORD: ci-root-password-not-for-production
           CI_DB_DATABASE: ci_dormitory
           CI_DB_USERNAME: dormitory_app
@@ -155,7 +170,7 @@ jobs:
             --publish 127.0.0.1:18080:8080 \
             --env APP_ENV=production \
             --env APP_DEBUG=false \
-            --env APP_URL=https://web.example.test \
+            --env APP_URL=https://ci-dormitory.example.co.th \
             --env APP_TIMEZONE=Asia/Bangkok \
             --env APP_KEY="$CI_APP_KEY" \
             --env FORCE_HTTPS=true \
@@ -184,12 +199,17 @@ jobs:
             exit 1
           fi
 
+          # Validate production configuration/schema while allowing expected
+          # fresh-install readiness warnings (owner/integrations are added by
+          # deployment steps after bootstrap).
+          docker exec "$web" php scripts/check_requirements.php --db
+
           docker run --detach \
             --name "$worker" \
             --network "$network" \
             --env APP_ENV=production \
             --env APP_DEBUG=false \
-            --env APP_URL=https://web.example.test \
+            --env APP_URL=https://ci-dormitory.example.co.th \
             --env APP_TIMEZONE=Asia/Bangkok \
             --env APP_KEY="$CI_APP_KEY" \
             --env FORCE_HTTPS=true \
@@ -200,7 +220,7 @@ jobs:
             --env DB_USERNAME="$CI_DB_USERNAME" \
             --env DB_PASSWORD="$CI_DB_PASSWORD" \
             --env DB_SSL=false \
-            "$image" /var/www/html/scripts/start-worker.sh >/dev/null
+            "$image" >/dev/null
 
           sleep 5
           [ "$(docker inspect --format '{{.State.Running}}' "$worker")" = true ]

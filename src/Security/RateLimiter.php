@@ -32,6 +32,10 @@ final class RateLimiter
             if(!$row)throw new \RuntimeException('Rate-limit bucket could not be locked');
 
             if ($row['blocked_until'] !== null && new \DateTimeImmutable((string) $row['blocked_until'], new \DateTimeZone('UTC')) > $now) {
+                // Keep blocked and fresh buckets on a similar locked-update
+                // path without changing hits or extending blocked_until.
+                $touch=$pdo->prepare('UPDATE rate_limits SET updated_at=UTC_TIMESTAMP() WHERE bucket_key=?');
+                $touch->execute([$bucket]);
                 return max(1,(new \DateTimeImmutable((string)$row['blocked_until'],new \DateTimeZone('UTC')))->getTimestamp()-$now->getTimestamp());
             }
             $started = new \DateTimeImmutable((string) $row['window_started_at'], new \DateTimeZone('UTC'));

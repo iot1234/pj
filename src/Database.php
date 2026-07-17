@@ -21,9 +21,19 @@ final class Database
             return $this->pdo;
         }
 
-        $host = $this->config->get('DB_HOST', '127.0.0.1');
-        $port = $this->config->int('DB_PORT', 3306);
+        $host = $this->config->isProduction()
+            ? $this->config->require('DB_HOST')
+            : trim((string) $this->config->get('DB_HOST', ''));
+        if ($host === '') {
+            $host = '127.0.0.1';
+        }
+        $host = Config::validatedDbHost($host);
+        $port = $this->config->intInRange('DB_PORT', 3306, 1, 65535);
         $database = $this->config->require('DB_DATABASE');
+        $username = $this->config->require('DB_USERNAME');
+        $password = $this->config->isProduction()
+            ? $this->config->require('DB_PASSWORD')
+            : (string) $this->config->get('DB_PASSWORD', '');
         $charset = 'utf8mb4';
         $dsn = "mysql:host={$host};port={$port};dbname={$database};charset={$charset}";
         $options = [
@@ -41,8 +51,8 @@ final class Database
 
         $this->pdo = new PDO(
             $dsn,
-            $this->config->require('DB_USERNAME'),
-            (string) $this->config->get('DB_PASSWORD', ''),
+            $username,
+            $password,
             $options,
         );
         $this->pdo->exec("SET time_zone = '+00:00'");

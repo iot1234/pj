@@ -124,11 +124,7 @@ deploy พร้อมใช้งานจนกว่าคำสั่งน�
 
 ## 5. ตั้งค่า worker
 
-สร้าง service ชื่อ `worker` จาก repository เดียวกัน ตั้ง Start Command เป็น:
-
-```text
-/var/www/html/scripts/start-worker.sh
-```
+สร้าง service ชื่อ `worker` จาก repository เดียวกันและปล่อย Start Command ว่าง ตัว image จะเลือก worker จาก `RUNTIME_ROLE=worker` เอง หากต้องกำหนดคำสั่งเองให้ใช้ `/var/www/html/scripts/start-runtime.sh` เพื่อคงการตรวจ role แบบ fail-closed
 
 ใช้ Variables ชุด runtime เดียวกับ web แต่มีข้อแตกต่างดังนี้:
 

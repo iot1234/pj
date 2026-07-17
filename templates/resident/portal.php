@@ -87,18 +87,32 @@ $residentInitial = preg_match('/^./us', $residentName, $initialMatch) === 1 ? $i
       </section>
 
       <section class="portal-view" id="resident-view-profile" data-view-panel="profile" aria-labelledby="resident-profile-title" hidden>
-        <div class="section-heading"><div><span class="eyebrow">Account</span><h2 id="resident-profile-title">ข้อมูลส่วนตัว</h2><p>แก้ไขชื่อ อีเมล และ LINE User ID ของคุณ ห้องและเบอร์โทรเป็นข้อมูลที่ผู้ดูแลยืนยันไว้</p></div></div>
+        <div class="section-heading"><div><span class="eyebrow">Account</span><h2 id="resident-profile-title">ข้อมูลส่วนตัว</h2><p>แก้ไขชื่อและอีเมล ห้องและเบอร์โทรเป็นข้อมูลที่ผู้ดูแลยืนยันไว้</p></div></div>
         <div class="profile-layout">
           <form class="card-block stack-form" id="resident-profile-form" novalidate>
             <div class="card-heading"><div><h3>ข้อมูลติดต่อ</h3><p>ข้อมูลนี้ใช้บนบิลและการติดต่อจากหอพัก</p></div></div>
             <label class="field"><span>ชื่อ–นามสกุล</span><input name="full_name" type="text" minlength="2" maxlength="120" autocomplete="name" required></label>
             <label class="field"><span>อีเมล</span><input name="email" type="email" maxlength="190" autocomplete="email" placeholder="name@example.com"></label>
-            <label class="field"><span>LINE User ID สำหรับรับบิล</span><input name="line_user_id" type="text" minlength="21" maxlength="81" pattern="U[0-9A-Za-z_-]{20,80}" autocomplete="off" spellcheck="false" placeholder="U ตามด้วยรหัสบัญชี LINE"><small>ใช้ระบุผู้รับบิลผ่าน LINE เท่านั้น ไม่ใช่รหัสผ่านหรือ Channel access token; เว้นว่างเพื่อยกเลิกการผูก</small></label>
             <label class="field"><span>เบอร์โทรศัพท์</span><input name="phone" type="tel" readonly aria-readonly="true"><small>หากต้องเปลี่ยนเบอร์ กรุณาติดต่อผู้ดูแลเพื่อยืนยันตัวตน</small></label>
             <label class="field"><span>ห้อง</span><input name="room_code" type="text" readonly aria-readonly="true"></label>
             <div class="form-error" id="resident-profile-error" role="alert" hidden></div>
             <button class="button button-primary" type="submit" data-submit-label="บันทึกข้อมูล">บันทึกข้อมูล</button>
           </form>
+
+          <div class="card-block stack-form" id="resident-line-card">
+            <div class="card-heading"><div><h3>รับบิลผ่าน LINE</h3><p id="resident-line-status">ยังไม่ได้ผูกบัญชี LINE</p></div></div>
+            <form class="stack-form" id="resident-line-start-form" novalidate>
+              <label class="field"><span>LINE User ID</span><input name="line_user_id" type="text" minlength="21" maxlength="81" pattern="U[0-9A-Za-z_-]{20,80}" autocomplete="off" spellcheck="false" placeholder="U ตามด้วยรหัสบัญชี LINE" required><small>ระบบจะส่งรหัส 6 หลักไปยังบัญชีนี้เพื่อยืนยันว่าเป็นของคุณ</small></label>
+              <label class="field"><span>PIN ปัจจุบัน</span><input name="current_pin" type="password" inputmode="numeric" pattern="[0-9]{6,12}" minlength="6" maxlength="12" autocomplete="current-password" required><small>ใช้ยืนยันตัวตนก่อนผูกหรือยกเลิก LINE</small></label>
+              <button class="button button-secondary" type="submit">ส่งรหัสยืนยัน</button>
+            </form>
+            <form class="stack-form" id="resident-line-confirm-form" novalidate hidden>
+              <label class="field"><span>รหัสยืนยันจาก LINE</span><input name="code" type="text" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code" required></label>
+              <button class="button button-primary" type="submit">ยืนยันการผูกบัญชี</button>
+            </form>
+            <button class="button button-ghost" id="resident-line-unlink" type="button" hidden>ยกเลิกการผูก LINE</button>
+            <div class="form-error" id="resident-line-error" role="alert" hidden></div>
+          </div>
 
           <form class="card-block stack-form" id="resident-pin-form" novalidate>
             <div class="card-heading"><div><h3>เปลี่ยน PIN</h3><p>PIN ใหม่ต้องเป็นตัวเลข 6–12 หลักและไม่ควรเดาง่าย</p></div></div>

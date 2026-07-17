@@ -23,7 +23,7 @@ if (in_array('--help', $arguments, true) || in_array('-h', $arguments, true)) {
     echo "  --strict  return a failure code when warnings exist\n";
     echo "  --production  require production mode, check MySQL, and fail on warnings\n";
     echo "  --schema-audit verify trigger definitions with a temporary DBA/schema-owner connection\n";
-    echo "  RUNTIME_ROLE=all|web|worker limits integration checks to that process role\n";
+    echo "  RUNTIME_ROLE=all|web|worker|job limits integration checks to that process role\n";
     exit(0);
 }
 
@@ -273,13 +273,14 @@ $appEnv = strtolower(trim((string) envValue($env, 'APP_ENV', 'production')));
 if (!in_array($appEnv, ['development', 'staging', 'production', 'testing'], true)) {
     addResult($errors, 'APP_ENV ต้องเป็น development, staging, production หรือ testing');
 }
-$runtimeRole=strtolower(trim((string)envValue($env,'RUNTIME_ROLE','all')));
-if(!in_array($runtimeRole,['all','web','worker'],true))addResult($errors,'RUNTIME_ROLE ต้องเป็น all, web หรือ worker');
+$runtimeRole=(string)envValue($env,'RUNTIME_ROLE','all');
+if(!in_array($runtimeRole,['all','web','worker','job'],true))addResult($errors,'RUNTIME_ROLE ต้องเป็น all, web, worker หรือ job');
 else addResult($successes,'ตรวจ configuration ตามบทบาท runtime: '.$runtimeRole);
 $production = $appEnv === 'production';
 if ($productionMode && !$production) {
     addResult($errors, '--production ต้องใช้ APP_ENV=production เพื่อป้องกันการ deploy ด้วยโหมด development/staging');
 }
+if($production&&$runtimeRole==='all')addResult($errors,'production ต้องกำหนด RUNTIME_ROLE เป็น web, worker หรือ job ให้ชัดเจน');
 $appDebug = validatedEnvBool(envValue($env, 'APP_DEBUG'), false, 'APP_DEBUG', $errors);
 $forceHttps = validatedEnvBool(envValue($env, 'FORCE_HTTPS'), $production, 'FORCE_HTTPS', $errors);
 $dbSsl = validatedEnvBool(envValue($env, 'DB_SSL'), false, 'DB_SSL', $errors);
@@ -294,6 +295,13 @@ if ($appKey === '') {
 }
 
 $secretCipher = null;
+if ($production && $appKey !== '') {
+    try {
+        \Dormitory\Config::validatedAppKey($appKey, true);
+    } catch (Throwable) {
+        addResult($errors, 'production APP_KEY ต้องมี random key material แบบ printable อย่างน้อย 32 ไบต์และมีความหลากหลายสูง');
+    }
+}
 if ($appKey !== '' && extension_loaded('openssl')) {
     try {
         $secretCipher = new \Dormitory\Security\SecretCipher(\Dormitory\Config::fromEnvironment($root));
@@ -343,17 +351,34 @@ $sessionLifetime = filter_var(envValue($env, 'SESSION_LIFETIME_SECONDS', '43200'
 if ($sessionLifetime === false) {
     addResult($errors, 'SESSION_LIFETIME_SECONDS ต้องเป็นเลข 300-604800');
 }
+$bookingHold = filter_var(envValue($env, 'BOOKING_HOLD_SECONDS', '86400'), FILTER_VALIDATE_INT, [
+    'options' => ['min_range' => 900, 'max_range' => 604800],
+]);
+if ($bookingHold === false) {
+    addResult($errors, 'BOOKING_HOLD_SECONDS ต้องเป็นเลข 900-604800');
+}
 
 foreach (['DB_DATABASE', 'DB_USERNAME'] as $key) {
     if (trim((string) envValue($env, $key, '')) === '') {
         addResult($errors, $key . ' ยังว่างอยู่');
     }
 }
+$dbHost = trim((string) envValue($env, 'DB_HOST', $production ? '' : '127.0.0.1'));
+if ($production && $dbHost === '') {
+    addResult($errors, 'production ต้องระบุ DB_HOST จาก environment/secret manager');
+} elseif ($dbHost !== '') {
+    try {
+        $dbHost=\Dormitory\Config::validatedDbHost($dbHost);
+    } catch (Throwable) {
+        addResult($errors, 'DB_HOST มีรูปแบบ hostname หรือ address ไม่ถูกต้อง');
+    }
+}
 $dbPort = filter_var(envValue($env, 'DB_PORT', '3306'), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 65535]]);
 if ($dbPort === false) {
     addResult($errors, 'DB_PORT ต้องเป็นเลขพอร์ต 1-65535');
 }
-$dbPassword = (string) envValue($env, 'DB_PASSWORD', '');
+$dbPasswordRaw = (string) envValue($env, 'DB_PASSWORD', '');
+$dbPassword = $production ? trim($dbPasswordRaw) : $dbPasswordRaw;
 if ($appEnv === 'production' && $dbPassword === '') {
     addResult($errors, 'production ห้ามใช้ DB_PASSWORD ว่าง');
 } elseif ($dbPassword === '') {
@@ -424,7 +449,12 @@ foreach ($storagePaths as $path) {
 
 if ($checkDatabase && extension_loaded('pdo_mysql')) {
     try {
-        $host = trim((string) envValue($env, 'DB_HOST', '127.0.0.1'));
+        $host = trim((string) envValue($env, 'DB_HOST', $production ? '' : '127.0.0.1'));
+        if ($host === '') {
+            if($production)throw new RuntimeException('DB_HOST is required in production');
+            $host='127.0.0.1';
+        }
+        $host=\Dormitory\Config::validatedDbHost($host);
         $database = trim((string) envValue($env, 'DB_DATABASE', ''));
         $username = trim((string) envValue($env, 'DB_USERNAME', ''));
         $port = (int) envValue($env, 'DB_PORT', '3306');

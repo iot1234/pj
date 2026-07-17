@@ -11,6 +11,7 @@ final class SessionManager
     private const CSRF_KEY = 'dormitory_csrf';
     private const CREATED_KEY = 'dormitory_created_at';
     private const LAST_SEEN_KEY = 'dormitory_last_seen_at';
+    private const LINE_LINK_KEY = 'dormitory_line_link_challenge';
     private string $name;
     private bool $initialized = false;
 
@@ -52,7 +53,7 @@ final class SessionManager
         }
         if($this->initialized)return true;
         $now = time();
-        $lifetime = max(300, min(604800, $this->config->int('SESSION_LIFETIME_SECONDS', 43200)));
+        $lifetime = $this->config->intInRange('SESSION_LIFETIME_SECONDS', 43200, 300, 604800);
         $createdAt = (int) ($_SESSION[self::CREATED_KEY] ?? 0);
         $lastSeenAt = (int) ($_SESSION[self::LAST_SEEN_KEY] ?? 0);
         if (($createdAt > 0 && $now - $createdAt > $lifetime)
@@ -82,6 +83,7 @@ final class SessionManager
     {
         $this->start(true);
         session_regenerate_id(true);
+        unset($_SESSION[self::LINE_LINK_KEY]);
         $_SESSION[self::ACTOR_KEY] = $actor;
         $_SESSION[self::CSRF_KEY] = bin2hex(random_bytes(32));
         $_SESSION[self::CREATED_KEY] = time();
@@ -107,10 +109,31 @@ final class SessionManager
         $this->initialized=false;
     }
 
+    /** @return array<string,mixed>|null */
+    public function lineLinkChallenge(): ?array
+    {
+        if(!$this->start(false))return null;
+        $challenge=$_SESSION[self::LINE_LINK_KEY]??null;
+        return is_array($challenge)?$challenge:null;
+    }
+
+    /** @param array<string,mixed> $challenge */
+    public function storeLineLinkChallenge(array $challenge): void
+    {
+        $this->start(true);
+        $_SESSION[self::LINE_LINK_KEY]=$challenge;
+    }
+
+    public function clearLineLinkChallenge(): void
+    {
+        if(!$this->start(false))return;
+        unset($_SESSION[self::LINE_LINK_KEY]);
+    }
+
     public function revokeLocal(): void
     {
         if(!$this->start(false))return;
-        unset($_SESSION[self::ACTOR_KEY]);
+        unset($_SESSION[self::ACTOR_KEY],$_SESSION[self::LINE_LINK_KEY]);
         session_regenerate_id(true);
         $_SESSION[self::CSRF_KEY] = bin2hex(random_bytes(32));
         $_SESSION[self::CREATED_KEY] = time();

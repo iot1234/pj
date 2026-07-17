@@ -98,6 +98,27 @@ final class Config
         return $parsed;
     }
 
+    public function intInRange(string $key, int $default, int $minimum, int $maximum): int
+    {
+        if ($minimum > $maximum) {
+            throw new RuntimeException('Invalid integer configuration range');
+        }
+        $value = $this->int($key, $default);
+        if ($value < $minimum || $value > $maximum) {
+            throw new RuntimeException("Environment variable {$key} must be between {$minimum} and {$maximum}");
+        }
+        return $value;
+    }
+
+    public static function validatedDbHost(string $host): string
+    {
+        $host=trim($host);
+        if (preg_match('/^[A-Za-z0-9._:-]{1,253}$/D', $host) !== 1) {
+            throw new RuntimeException('Environment variable DB_HOST has an invalid hostname or address');
+        }
+        return $host;
+    }
+
     public function isProduction(): bool
     {
         return $this->environment() === 'production';
@@ -216,8 +237,74 @@ final class Config
     public function appKey(): string
     {
         $key = $this->require('APP_KEY');
+        return self::validatedAppKey($key, $this->isProduction());
+    }
+
+    public static function validatedAppKey(string $key, bool $production): string
+    {
         if (strlen($key) < 32 || stripos($key, 'change') !== false) {
             throw new RuntimeException('APP_KEY must be a random value of at least 32 characters and must not be a placeholder');
+        }
+        if (strlen($key) > 1024) {
+            throw new RuntimeException('APP_KEY exceeds the supported maximum length');
+        }
+        if (!$production) {
+            return $key;
+        }
+        $bytes = null;
+        if (preg_match('/^[a-f0-9]{64}$/iD', $key) === 1) {
+            $bytes = hex2bin($key);
+        } else {
+            $decoded = base64_decode($key, true);
+            if (is_string($decoded) && strlen($decoded) >= 32
+                && hash_equals(rtrim(base64_encode($decoded), '='), rtrim($key, '='))) {
+                $bytes = $decoded;
+            }
+            if (!is_string($bytes) && preg_match('/^[A-Za-z0-9_-]+={0,2}$/D', $key) === 1) {
+                $normalized = strtr(rtrim($key, '='), '-_', '+/');
+                $normalized .= str_repeat('=', (4 - strlen($normalized) % 4) % 4);
+                $decoded = base64_decode($normalized, true);
+                if (is_string($decoded) && strlen($decoded) >= 32
+                    && hash_equals(rtrim(strtr(base64_encode($decoded), '+/', '-_'), '='), rtrim($key, '='))) {
+                    $bytes = $decoded;
+                }
+            }
+            // Preserve compatibility with existing high-entropy printable
+            // secrets that predate the documented hex/base64 formats. The
+            // same diversity and pattern checks below still apply.
+            if (!is_string($bytes) && preg_match('/^[^\x00-\x1F\x7F]{32,}$/sD', $key) === 1) {
+                $bytes = $key;
+            }
+        }
+        if (!is_string($bytes)) {
+            throw new RuntimeException('Production APP_KEY must contain at least 32 bytes of printable random key material');
+        }
+        if (count(array_unique(str_split($bytes))) < 16) {
+            throw new RuntimeException('Production APP_KEY has insufficient diversity; generate a new random key');
+        }
+        $encodedLower = strtolower($key);
+        $decodedLower = strtolower($bytes);
+        foreach (['abcdefghijklmnopqrstuvwxyz','zyxwvutsrqponmlkjihgfedcba','0123456789','9876543210','qwertyuiop','poiuytrewq','asdfghjkl','lkjhgfdsa','zxcvbnm','mnbvcxz'] as $predictable) {
+            if (str_contains($encodedLower, $predictable) || str_contains($decodedLower, $predictable)) {
+                throw new RuntimeException('Production APP_KEY contains a predictable sequence; generate a new random key');
+            }
+        }
+        $length = strlen($bytes);
+        for ($period = 1; $period <= intdiv($length, 2); $period++) {
+            if (substr(str_repeat(substr($bytes, 0, $period), (int) ceil($length / $period)), 0, $length) === $bytes) {
+                throw new RuntimeException('Production APP_KEY contains a repeated pattern; generate a new random key');
+            }
+        }
+        $delta = (ord($bytes[1]) - ord($bytes[0])) & 0xff;
+        $sequence = true;
+        for ($index = 2; $index < $length; $index++) {
+            if (((ord($bytes[$index]) - ord($bytes[$index - 1])) & 0xff) !== $delta) {
+                $sequence = false;
+                break;
+            }
+        }
+        if ($sequence) {
+            throw new RuntimeException('Production APP_KEY contains a predictable sequence; generate a new random key');
         }
         return $key;
     }
@@ -295,7 +382,7 @@ final class Config
             ini_set('session.sid_length', '64');
             ini_set('session.sid_bits_per_character', '6');
         }
-        ini_set('session.gc_maxlifetime', (string) $this->int('SESSION_LIFETIME_SECONDS', 43200));
+        ini_set('session.gc_maxlifetime', (string) $this->intInRange('SESSION_LIFETIME_SECONDS', 43200, 300, 604800));
         $sessionPath=$this->root.'/storage/sessions';
         if(!is_dir($sessionPath)&&!mkdir($sessionPath,0700,true)&&!is_dir($sessionPath))throw new RuntimeException('Cannot create session storage directory');
         ini_set('session.save_path',$sessionPath);

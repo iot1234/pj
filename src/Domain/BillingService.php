@@ -128,7 +128,8 @@ final class BillingService
             $parameters[] = Validator::periodDate($period);
         }
         $statement = $this->app->database()->pdo()->prepare(
-            'SELECT b.*,b.room_code_snapshot AS room_code,b.resident_name_snapshot AS full_name,res.phone_norm,(res.line_user_id IS NOT NULL) AS line_linked,
+            'SELECT b.*,b.room_code_snapshot AS room_code,b.resident_name_snapshot AS full_name,res.phone_norm,
+                    res.id AS line_resident_id,res.line_user_id AS line_recipient,
                     n.status AS line_status,n.attempts AS line_attempts,n.last_error AS line_last_error,n.sent_at AS line_sent_at
                FROM bills b
                JOIN rooms r ON r.id=b.room_id
@@ -137,7 +138,15 @@ final class BillingService
             ' ORDER BY b.period DESC,r.floor,r.room_code'
         );
         $statement->execute($parameters);
-        return array_map($this->mapBill(...), $statement->fetchAll());
+        $rows=$statement->fetchAll();$bindings=[];
+        foreach($rows as $row)$bindings[]=['resident_id'=>(int)$row['line_resident_id'],'line_user_id'=>$row['line_recipient']??null];
+        $verified=$this->app->notifications()->verifiedLineBindings($bindings);
+        foreach($rows as &$row){
+            $row['line_linked']=$verified[(int)$row['line_resident_id']]??false;
+            unset($row['line_resident_id'],$row['line_recipient']);
+        }
+        unset($row);
+        return array_map($this->mapBill(...), $rows);
     }
 
     /** @return list<array<string,mixed>> */
@@ -396,6 +405,15 @@ final class BillingService
         if (isset($row['period'])) $row['period'] = substr((string)$row['period'], 0, 7);
         if(isset($row['full_name']))$row['resident_name']=$row['full_name'];
         if(isset($row['line_linked']))$row['line_linked']=(bool)$row['line_linked'];
+        $timezone=new \DateTimeZone((string)$this->app->config->get('APP_TIMEZONE','Asia/Bangkok'));
+        $row['display_status']=self::displayStatus((string)($row['status']??''),(string)($row['due_date']??''),new \DateTimeImmutable('now',$timezone));
         return $row;
+    }
+
+    private static function displayStatus(string $status,string $dueDate,?\DateTimeImmutable $now=null): string
+    {
+        if($status!=='pending'||!preg_match('/^\d{4}-\d{2}-\d{2}$/D',$dueDate))return $status;
+        $today=($now??new \DateTimeImmutable('now',new \DateTimeZone('UTC')))->format('Y-m-d');
+        return $dueDate<$today?'overdue':'pending';
     }
 }

@@ -15,6 +15,10 @@
     day: 'numeric',
     timeZone: 'Asia/Bangkok',
   });
+  const dateTimeFormatter = new Intl.DateTimeFormat('th-TH', {
+    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+    timeZone: 'Asia/Bangkok',
+  });
   const activeMutations = new Set();
   const maxApiResponseBytes = 2 * 1024 * 1024;
 
@@ -54,6 +58,11 @@
     const parsed = new Date(normalized);
     return Number.isNaN(parsed.getTime()) ? text(value) : dateFormatter.format(parsed);
   };
+  const formatDateTime = (value) => {
+    if (!value) return '—';
+    const parsed = new Date(String(value));
+    return Number.isNaN(parsed.getTime()) ? text(value) : dateTimeFormatter.format(parsed);
+  };
   const formatPeriod = (value) => {
     const match = String(value || '').match(/^(\d{4})-(\d{2})/);
     if (!match) return text(value);
@@ -89,11 +98,15 @@
     INVALID_JSON_SHAPE: 'รูปแบบข้อมูลที่ส่งไม่ถูกต้อง กรุณารีเฟรชแล้วลองใหม่',
     UNKNOWN_FIELDS: 'มีข้อมูลที่ระบบไม่รองรับ กรุณารีเฟรชแล้วลองใหม่',
     IDEMPOTENCY_KEY_REUSED: 'คำขอนี้ถูกใช้กับการจองอื่นแล้ว กรุณาเริ่มรายการใหม่',
+    BOOKING_EXPIRED: 'เวลายืนยันการจองเดิมหมดแล้ว กรุณาส่งคำขอใหม่',
+    BOOKING_INACTIVE: 'การจองเดิมสิ้นสุดแล้ว กรุณาส่งคำขอใหม่',
     PROMPTPAY_NOT_CONFIGURED: 'ยังไม่ได้ตั้งค่า PromptPay กรุณาติดต่อผู้ดูแลก่อนโอน',
     PROMPTPAY_TARGET_INVALID: 'เบอร์ PromptPay หรือเลขผู้เสียภาษีไม่ถูกต้อง',
     AMOUNT_INVALID: 'ยอดชำระไม่ถูกต้อง กรุณารีเฟรชรายละเอียดบิล',
     SLIP_NOT_CONFIGURED: 'ระบบตรวจสลิปยังตั้งค่าไม่ครบ กรุณาติดต่อผู้ดูแล',
     LINE_NOT_CONFIGURED: 'ยังไม่ได้ตั้งค่า LINE Messaging',
+    LINE_NOT_VERIFIED: 'บัญชี LINE ยังไม่ผ่านรหัสยืนยัน',
+    LINE_LINK_STALE: 'PIN ถูกเปลี่ยนหลังขอรหัส LINE กรุณาขอรหัสใหม่',
     METER_HISTORY_LOCKED: 'แก้เลขมิเตอร์นี้ไม่ได้ เพราะมีรอบเดือนถัดไปอ้างอิงแล้ว',
     METER_ALREADY_BILLED: 'แก้เลขมิเตอร์ไม่ได้หลังออกบิลแล้ว',
     INVALID_CURRENT_PIN: 'PIN ปัจจุบันไม่ถูกต้อง',
@@ -458,6 +471,11 @@
         });
         const booking = objectFrom(data, 'booking');
         $('#booking-reference').textContent = text(booking.reference_no || booking.reference || booking.booking_reference || booking.id || data?.reference_no || data?.reference);
+        $('#booking-expiry').textContent = booking.status === 'confirmed'
+          ? 'คำขอนี้ได้รับการยืนยันแล้ว กรุณารอผู้ดูแลติดต่อเรื่องวันเข้าพัก'
+          : (booking.expires_at
+            ? `ระบบกันห้องไว้ถึง ${formatDateTime(booking.expires_at)} น. หากเลยเวลานี้กรุณาส่งคำขอใหม่`
+            : 'กรุณารอผู้ดูแลติดต่อกลับเพื่อยืนยันการจอง');
         bookingForm.hidden = true;
         const success = $('#public-booking-success');
         success.hidden = false;
@@ -465,7 +483,10 @@
         load();
       } catch (error) {
         showFormError($('#public-booking-error'), errorMessage(error, 'ส่งคำขอไม่สำเร็จ'));
-        if (error?.details?.code === 'ROOM_NOT_AVAILABLE' || error?.details?.code === 'ROOM_NOT_FOUND') await load();
+        if (['BOOKING_EXPIRED', 'BOOKING_INACTIVE', 'IDEMPOTENCY_KEY_REUSED'].includes(error?.details?.code)) {
+          $('#booking-idempotency').value = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        }
+        if (['ROOM_NOT_AVAILABLE', 'ROOM_NOT_FOUND', 'BOOKING_EXPIRED', 'BOOKING_INACTIVE'].includes(error?.details?.code)) await load();
       } finally {
         setBusy(button, false);
       }
@@ -500,11 +521,14 @@
     if (!shell) return;
     const state = { profile: {}, bills: [], filter: 'all', currentBillId: null, billDetailRequest: 0, qrRequest: 0, slipMaxBytes: 4 * 1024 * 1024, slipReady: false, paymentReady: false };
     const profileForm = $('#resident-profile-form');
+    const lineStartForm = $('#resident-line-start-form');
+    const lineConfirmForm = $('#resident-line-confirm-form');
+    const lineUnlinkButton = $('#resident-line-unlink');
     const pinForm = $('#resident-pin-form');
     const billDialog = $('#resident-bill-dialog');
 
     function billStatus(bill) {
-      const raw = String(bill.status || bill.payment_status || '').toLowerCase();
+      const raw = String(bill.display_status || bill.status || bill.payment_status || '').toLowerCase();
       if (['paid', 'verified'].includes(raw)) return 'paid';
       if (raw === 'overdue') return 'overdue';
       return 'unpaid';
@@ -545,7 +569,8 @@
     function renderBills() {
       const list = $('#resident-bill-list');
       const recent = $('#resident-recent-bills');
-      const filtered = state.bills.filter((bill) => state.filter === 'all' || billStatus(bill) === state.filter);
+      const filtered = state.bills.filter((bill) => state.filter === 'all'
+        || (state.filter === 'unpaid' ? billStatus(bill) !== 'paid' : billStatus(bill) === state.filter));
       list.replaceChildren(...filtered.map(createBillRow));
       recent.replaceChildren(...state.bills.slice(0, 3).map(createBillRow));
       list.setAttribute('aria-busy', 'false');
@@ -562,9 +587,19 @@
 
     function fillProfile() {
       const profile = state.profile;
-      ['full_name', 'email', 'line_user_id', 'phone', 'room_code'].forEach((name) => {
+      ['full_name', 'email', 'phone', 'room_code'].forEach((name) => {
         if (profileForm.elements[name]) profileForm.elements[name].value = profile[name] || (name === 'room_code' ? profile.room?.room_code || '' : '');
       });
+      const hasLine = typeof profile.line_user_id === 'string' && profile.line_user_id.length > 0;
+      const linked = hasLine && profile.line_verified === true;
+      const pending = profile.line_link_pending && typeof profile.line_link_pending === 'object' ? profile.line_link_pending : null;
+      $('#resident-line-status').textContent = pending
+        ? `รอยืนยัน ${text(pending.line_user_id_hint)} ภายใน ${formatDateTime(pending.expires_at)} น.`
+        : (linked ? `ยืนยันแล้ว •••${profile.line_user_id.slice(-6)}`
+          : (hasLine ? `ข้อมูลเดิม •••${profile.line_user_id.slice(-6)} ต้องขอรหัสยืนยันใหม่` : 'ยังไม่ได้ผูกบัญชี LINE'));
+      lineStartForm.elements.line_user_id.value = hasLine ? profile.line_user_id : '';
+      lineUnlinkButton.hidden = !hasLine;
+      lineConfirmForm.hidden = !pending;
     }
 
     async function loadAll() {
@@ -691,7 +726,7 @@
       const values = Object.fromEntries(new FormData(profileForm).entries());
       setBusy(button, true, 'กำลังบันทึก…');
       try {
-        const data = await api('/api/resident/profile', { method: 'PUT', body: { full_name: values.full_name, email: values.email, line_user_id: values.line_user_id.trim() } });
+        const data = await api('/api/resident/profile', { method: 'PUT', body: { full_name: values.full_name, email: values.email } });
         state.profile = objectFrom(data, 'profile');
         fillProfile();
         $('#resident-sidebar-name').textContent = text(state.profile.full_name);
@@ -700,6 +735,63 @@
         toast('บันทึกข้อมูลแล้ว');
       } catch (errorValue) { showFormError(error, errorMessage(errorValue)); }
       finally { setBusy(button, false); }
+    });
+    lineStartForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const error = $('#resident-line-error');
+      showFormError(error);
+      if (!lineStartForm.reportValidity()) return;
+      const button = lineStartForm.querySelector('[type="submit"]');
+      const lineUserId = String(lineStartForm.elements.line_user_id.value || '').trim();
+      const currentPin = String(lineStartForm.elements.current_pin.value || '');
+      setBusy(button, true, 'กำลังส่งรหัส…');
+      try {
+        const result = await api('/api/resident/profile/line/start', { method: 'POST', body: { line_user_id: lineUserId, current_pin: currentPin } });
+        lineConfirmForm.hidden = false;
+        lineConfirmForm.reset();
+        lineConfirmForm.elements.code.focus();
+        toast(`ส่งรหัสยืนยันไปยัง ${text(result?.line_user_id_hint, 'LINE แล้ว')}`);
+      } catch (errorValue) {
+        if (!['LINE_NOT_CONFIGURED', 'INVALID_CURRENT_PIN', 'VALIDATION_ERROR'].includes(errorValue?.details?.code)) {
+          lineConfirmForm.hidden = false;
+        }
+        showFormError(error, errorMessage(errorValue));
+      }
+      finally { lineStartForm.elements.current_pin.value = ''; setBusy(button, false); }
+    });
+    lineConfirmForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const error = $('#resident-line-error');
+      showFormError(error);
+      if (!lineConfirmForm.reportValidity()) return;
+      const button = lineConfirmForm.querySelector('[type="submit"]');
+      setBusy(button, true, 'กำลังยืนยัน…');
+      try {
+        const data = await api('/api/resident/profile/line/confirm', { method: 'POST', body: { code: String(lineConfirmForm.elements.code.value || '').trim() } });
+        state.profile = objectFrom(data, 'profile');
+        fillProfile();
+        lineConfirmForm.hidden = true;
+        lineConfirmForm.reset();
+        toast('ยืนยันบัญชี LINE แล้ว');
+      } catch (errorValue) { showFormError(error, errorMessage(errorValue)); }
+      finally { setBusy(button, false); }
+    });
+    lineUnlinkButton.addEventListener('click', async () => {
+      const currentPinInput = lineStartForm.elements.current_pin;
+      if (!currentPinInput.reportValidity()) return;
+      if (!await confirmAction('ยกเลิกการผูก LINE', 'หลังยกเลิก ระบบจะไม่ส่งบิลใหม่ไปยัง LINE จนกว่าจะยืนยันอีกครั้ง')) return;
+      const error = $('#resident-line-error');
+      showFormError(error);
+      setBusy(lineUnlinkButton, true, 'กำลังยกเลิก…');
+      try {
+        const data = await api('/api/resident/profile/line/unlink', { method: 'POST', body: { current_pin: String(currentPinInput.value || '') } });
+        state.profile = objectFrom(data, 'profile');
+        fillProfile();
+        lineConfirmForm.hidden = true;
+        lineConfirmForm.reset();
+        toast('ยกเลิกการผูก LINE แล้ว');
+      } catch (errorValue) { showFormError(error, errorMessage(errorValue)); }
+      finally { currentPinInput.value = ''; setBusy(lineUnlinkButton, false); }
     });
     pinForm.addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -981,7 +1073,6 @@
         if (candidate?.id) {
           reuseInput.value = String(candidate.id); reuseInput.disabled = false; reuseInput.required = true;
           form.elements.email.value = candidate.email || '';
-          form.elements.line_user_id.value = candidate.line_user_id || '';
           $('#move-in-reuse-label').textContent = `ยืนยันว่า ${text(candidate.full_name)} เป็นบุคคลเดิมและอนุญาตให้เชื่อมประวัติบิล`;
           reuseField.hidden = false; reuseHelp.hidden = false;
         } else {
@@ -991,7 +1082,7 @@
       }
       if (button.dataset.action === 'confirm-booking') {
         if (!await confirmAction('ยืนยันการจอง', `ยืนยันห้องให้ ${text(booking.full_name)} หรือไม่?`, 'ยืนยันการจอง', false)) return;
-        try { await api(`/api/admin/bookings/${encodeURIComponent(booking.id)}/confirm`, { method: 'POST', body: {} }); toast('ยืนยันการจองแล้ว'); await Promise.all([loadBookings(), loadRooms()]); } catch (error) { toast(errorMessage(error), 'error'); }
+        try { await api(`/api/admin/bookings/${encodeURIComponent(booking.id)}/confirm`, { method: 'POST', body: {} }); toast('ยืนยันการจองแล้ว'); await Promise.all([loadBookings(), loadRooms()]); } catch (error) { toast(errorMessage(error), 'error'); if (error?.details?.code === 'BOOKING_EXPIRED') await Promise.all([loadBookings(), loadRooms()]); }
       }
       if (button.dataset.action === 'cancel-booking') {
         if (!await confirmAction('ยกเลิกการจอง', `ยกเลิกคำขอของ ${text(booking.full_name)} หรือไม่?`)) return;
@@ -1020,7 +1111,8 @@
       const visible = state.residents.filter((resident) => !query || `${resident.full_name} ${resident.phone} ${resident.room_code || resident.room?.room_code} ${resident.line_user_id || ''}`.toLocaleLowerCase('th').includes(query));
       visible.forEach((resident) => {
         const tr = create('tr'); const person = create('span', 'person-cell'); person.append(create('strong', '', text(resident.full_name)), create('small', '', text(resident.email, 'ไม่ระบุอีเมล')));
-        const line = resident.line_user_id ? pill('active', `ผูกแล้ว •••${String(resident.line_user_id).slice(-6)}`) : pill('neutral', 'ยังไม่ผูก');
+        const line = resident.line_verified === true ? pill('active', `ยืนยันแล้ว •••${String(resident.line_user_id).slice(-6)}`)
+          : (resident.line_user_id ? pill('pending', 'รอยืนยันใหม่') : pill('neutral', 'ยังไม่ผูก'));
         const active = !(resident.active === false || resident.active === 0);
         const actions = active ? rowActions(
           actionButton('แก้ข้อมูล', 'edit-resident', resident.id),
@@ -1040,7 +1132,7 @@
       const summary = `${text(resident.full_name)} · ห้อง ${text(resident.room_code || resident.room?.room_code)}`;
       if (button.dataset.action === 'edit-resident') {
         const form = $('#resident-edit-form'); form.reset(); form.elements.resident_id.value = resident.id;
-        ['full_name', 'phone', 'email', 'line_user_id'].forEach((name) => { form.elements[name].value = resident[name] || ''; });
+        ['full_name', 'phone', 'email'].forEach((name) => { form.elements[name].value = resident[name] || ''; });
         $('#resident-edit-summary').textContent = summary; showFormError($('#resident-edit-error')); openDialog($('#resident-edit-dialog'));
       }
       if (button.dataset.action === 'reset-resident-pin') {
@@ -1224,8 +1316,9 @@
         else if (!bill.line_status && bill.status !== 'pending') line.append(create('small', 'muted', 'ชำระแล้ว ไม่ส่งซ้ำ'));
         else if (!bill.line_status && !bill.line_linked) line.append(create('small', 'muted', 'ผู้พักยังไม่ผูก LINE'));
         else if (!bill.line_status && !lineReady) line.append(create('small', 'muted', 'ตั้งค่า LINE ยังไม่ครบ'));
-        const billStatusLabel = bill.status === 'pending' ? 'รอชำระ' : '';
-        tr.append(td(text(bill.bill_no || bill.number || bill.id)), td(text(bill.room_code || bill.room?.room_code)), td(text(bill.resident_name || bill.resident?.full_name)), td(money(bill.total_amount ?? bill.total)), td(formatDate(bill.due_date)), td(pill(bill.status, billStatusLabel)), td(line, 'align-right'));
+        const displayStatus = bill.display_status || bill.status;
+        const billStatusLabel = displayStatus === 'overdue' ? 'เลยกำหนด' : (bill.status === 'pending' ? 'รอชำระ' : '');
+        tr.append(td(text(bill.bill_no || bill.number || bill.id)), td(text(bill.room_code || bill.room?.room_code)), td(text(bill.resident_name || bill.resident?.full_name)), td(money(bill.total_amount ?? bill.total)), td(formatDate(bill.due_date)), td(pill(displayStatus, billStatusLabel)), td(line, 'align-right'));
         rows.append(tr);
       });
       const bulkButton = $('#line-bulk-button');

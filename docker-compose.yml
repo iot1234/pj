@@ -46,7 +46,6 @@ services:
     environment:
       <<: *runtime-common
       RUNTIME_ROLE: worker
-    command: ["sh", "scripts/start-worker.sh"]
     depends_on:
       db:
         condition: service_healthy

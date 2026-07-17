@@ -34,7 +34,7 @@ Copy-Item .env.production.example .env
 php -r "echo bin2hex(random_bytes(32)), PHP_EOL;"
 ```
 
-นำค่าสุ่ม 64 ตัวที่ได้ใส่ `APP_KEY` จากนั้นกำหนดค่าอย่างน้อยดังนี้:
+นำค่าสุ่ม hexadecimal 64 ตัวที่ได้จาก random 32 bytes ใส่ `APP_KEY` จากนั้นกำหนดค่าอย่างน้อยดังนี้:
 
 - `.env.example` เป็น local development เท่านั้น ห้ามนำไป deploy production
 - production ต้องเริ่มจาก `.env.production.example` แล้วเปลี่ยน `APP_URL`, `APP_KEY`, รหัสฐานข้อมูล และค่า proxy ให้ตรงระบบจริง
@@ -45,6 +45,7 @@ php -r "echo bin2hex(random_bytes(32)), PHP_EOL;"
 - เมื่อใช้ Docker ให้ `DB_DATABASE` และ `DB_USERNAME` มีเฉพาะ A-Z, a-z, 0-9 หรือ `_` (`DB_USERNAME` ไม่เกิน 32 ตัว) เพื่อให้สคริปต์ลดสิทธิ์ตรวจสอบค่าได้แบบ fail-closed
 - `APP_KEY` ต้องคงเดิมและมีค่าเดียวกันใน web/worker ทุก instance เพราะใช้สร้าง HMAC และถอดรหัส token/API key ใน `integration_settings`; ห้ามหมุนค่าโดยไม่มีขั้นตอน re-encrypt หรือล้างค่าลับด้วย key เดิมแล้วกรอกใหม่หลังเปลี่ยน key
 - `TRUSTED_PROXIES` ใส่เฉพาะ IP ของ reverse proxy ที่ควบคุมเอง คั่นด้วย comma; หากไม่ได้ใช้ proxy ให้เว้นว่าง
+- `BOOKING_HOLD_SECONDS` กำหนดอายุคำขอจองที่ยังไม่ยืนยัน ค่าเริ่มต้น 86,400 วินาที (24 ชั่วโมง) และกำหนดได้ 900–604,800 วินาที; เมื่อหมดอายุระบบจะยกเลิกคำขออัตโนมัติและคืนห้องให้จองใหม่
 - ค่าโครงสร้างพื้นฐาน เช่น `APP_KEY`, `APP_URL`, `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME` และ `DB_PASSWORD` ยังต้องมาจาก environment/secret manager ส่วนเบอร์พร้อมเพย์, LINE token และ SlipOK/EasySlip key ไม่ต้องและไม่ควรใส่ใน `.env`
 
 ห้าม commit `.env` และห้ามส่งไฟล์นี้ทางแชตหรืออีเมล
@@ -222,7 +223,7 @@ MySQL ตีความ `_` และ `%` ในขอบเขต database ข
 ค่าใช้งานทั้งหมดในหัวข้อนี้จัดการจาก Admin → ตั้งค่า โดยบัญชี `owner` เท่านั้นที่บันทึกหรือเปลี่ยนค่าได้ บัญชี admin ทั่วไปอ่านค่าที่ไม่ลับและสถานะความพร้อมได้ แต่ credential จะแสดงเพียง hint แบบปิดบัง ค่าถูกเก็บใน singleton `integration_settings` และ web/worker อ่านจากฐานข้อมูลเมื่อใช้งาน จึงมีผลกับ request/รอบ worker ถัดไปโดยไม่ต้องแก้ `.env`, rebuild image หรือ restart process
 
 - PromptPay: กรอกเบอร์มือถือไทย 10 หลักหรือเลขผู้เสียภาษี 13 หลัก, ชื่อผู้รับ และเลขบัญชีปลายทาง/เลขท้าย 6–20 หลัก QR ใช้ยอดจาก bill snapshot ฝั่ง server เท่านั้น ไม่รับยอดจาก browser และจะแสดงเมื่อทั้ง PromptPay กับผู้ให้บริการตรวจสลิปพร้อม โดยไม่มีรายการชำระที่กำลังดำเนินการ เพื่อไม่ให้ผู้พักโอนเข้ากระบวนการที่ยังตรวจยืนยันไม่ได้
-- LINE: กรอก Channel access token, จำนวน retry 1–20 ครั้ง และ batch size 1–100 งาน พร้อมผูก `line_user_id` ที่ถูกต้องให้ผู้เช่าในขั้นตอนย้ายเข้า ระบบส่งเฉพาะ `https://api.line.me/v2/bot/message/push`; retry ใช้ `X-Line-Retry-Key` เดิมและ HTTP 409 หมายถึง request เดิมได้รับแล้ว
+- LINE: กรอก Channel access token, จำนวน retry 1–20 ครั้ง และ batch size 1–100 งาน จากนั้นให้ผู้พักผูก `line_user_id` เองในหน้าโปรไฟล์ด้วย PIN ปัจจุบันและรหัสยืนยัน 6 หลัก ระบบส่งเฉพาะ `https://api.line.me/v2/bot/message/push`; retry ใช้ `X-Line-Retry-Key` เดิมและ HTTP 409 หมายถึง request เดิมได้รับแล้ว
 - SlipOK: เลือก provider เป็น SlipOK แล้วกรอก API key, Branch ID และบัญชีปลายทาง
 - EasySlip: เลือก provider เป็น EasySlip แล้วกรอก API key และบัญชีปลายทาง
 - การอัปโหลดสลิปตั้งขนาดได้ 1,024–4,194,304 bytes และช่วงผ่อนผันเวลา 0–3,600 วินาที (ค่าเริ่มต้น 300) เวลา provider ที่หาย/parse ไม่ได้ หรือยังยืนยันบัญชีผู้รับกับค่าที่ตั้งไว้ไม่ได้จะคง `pending` เพื่อไม่ fail-open
@@ -230,7 +231,9 @@ MySQL ตีความ `_` และ `%` ในขอบเขต database ข
 
 LINE token, SlipOK API key และ EasySlip API key ถูกเข้ารหัสแบบ AES-256-GCM โดย derive key จาก `APP_KEY` และผูก AAD แยกตามชื่อ field ฐานข้อมูลจึงไม่เก็บ plaintext และ API หลังบ้านไม่คืนทั้ง plaintext หรือ ciphertext แต่คืนเฉพาะ `configured` กับ hint แบบปิดบัง ช่องค่าลับที่เว้นว่าง/ส่ง `null` จะเก็บค่าเดิมไว้ การลบต้องเลือก “ล้างค่า” (`*_clear=true`) อย่างชัดเจน และห้ามส่งค่าลับใหม่พร้อมคำสั่งล้างใน request เดียวกัน
 
-Docker Compose รัน service `worker` ให้อัตโนมัติผ่าน `sh scripts/start-worker.sh` ซึ่งมี bounded exponential backoff เมื่อ process ล้มชั่วคราว ตรวจด้วย `docker compose ps worker` และ `docker compose logs worker` หากไม่ใช้ Docker ให้ supervisor บน Linux รัน wrapper นี้เป็น process เบื้องหลัง; สำหรับ Windows Task Scheduler ให้รัน `php scripts/process_notifications.php` แบบ one-shot อย่างน้อยทุกนาที มิฉะนั้นรายการจะค้างที่ “รอส่ง”
+ผู้พักต้องผูก LINE จากหน้าโปรไฟล์ของตนเองโดยยืนยัน PIN ปัจจุบันก่อน ระบบจะส่งรหัสใช้ครั้งเดียว 6 หลักไปยัง LINE User ID และยอมให้ส่งบิลหลังกรอกรหัสถูกต้องภายใน 10 นาทีเท่านั้น ผู้ดูแลไม่สามารถกรอก LINE User ID แทนผู้พักได้ ค่า LINE เดิมที่ไม่มี audit การยืนยันจะขึ้นว่า “รอยืนยันใหม่” และ worker จะไม่ส่งจนกว่าจะผ่านขั้นตอนนี้
+
+Docker image เลือก process จาก `RUNTIME_ROLE` แบบ fail-closed: `web` เปิด Apache, `worker` รัน notification worker และค่าที่ไม่รู้จักจะหยุดทันที Docker Compose กำหนด role ให้ทั้งสอง service อัตโนมัติ ตรวจด้วย `docker compose ps worker` และ `docker compose logs worker` หากไม่ใช้ Docker ให้ supervisor บน Linux รัน `scripts/start-worker.sh` เป็น process เบื้องหลัง; สำหรับ Windows Task Scheduler ให้รัน `php scripts/process_notifications.php` แบบ one-shot อย่างน้อยทุกนาที มิฉะนั้นรายการจะค้างที่ “รอส่ง”
 
 endpoint ผู้ให้บริการเป็น HTTPS allowlist แบบคงที่: SlipOK `https://api.slipok.com/api/line/apikey/{branch-id}` และ EasySlip `https://api.easyslip.com/v2/verify/bank`; ระบบปิด redirect ก่อนเปลี่ยน provider ให้ทดสอบด้วยบิลจำนวนน้อย ตรวจรูปแบบ receiver reference ของบัญชีจริง และเก็บหลักฐาน reconcile ระบบจะรับเป็น “ชำระแล้ว” ก็ต่อเมื่อยอดตรงถึง 1 สตางค์ บัญชีปลายทางตรง และ transaction reference ไม่เคยใช้มาก่อน
 
@@ -253,7 +256,7 @@ docker compose exec app php scripts/check_requirements.php --db --strict
 docker compose exec worker php scripts/check_requirements.php --db --strict
 ```
 
-`--db` ตรวจ MySQL version, schema guards ที่บัญชี runtime มองเห็น และ allowlist สิทธิ์ global `USAGE` กับ `SELECT`/`INSERT`/`UPDATE` เฉพาะฐานระบบ โดยถือว่า `DELETE` หรือสิทธิ์ DDL เป็นสิทธิ์เกินจำเป็น ส่วน `--strict` ให้คำเตือนทำให้ exit code เป็น failure เหมาะกับ deployment gate ตัวตรวจจะรายงานเฉพาะชื่อ config ที่ผิดและไม่พิมพ์ secret ค่า `RUNTIME_ROLE=web|worker` ถูกกำหนดให้แต่ละ service โดย Compose; การติดตั้งแบบรวม process ใช้ค่าเริ่มต้น `all`
+`--db` ตรวจ MySQL version, schema guards ที่บัญชี runtime มองเห็น และ allowlist สิทธิ์ global `USAGE` กับ `SELECT`/`INSERT`/`UPDATE` เฉพาะฐานระบบ โดยถือว่า `DELETE` หรือสิทธิ์ DDL เป็นสิทธิ์เกินจำเป็น ส่วน `--strict` ให้คำเตือนทำให้ exit code เป็น failure เหมาะกับ deployment gate ตัวตรวจจะรายงานเฉพาะชื่อ config ที่ผิดและไม่พิมพ์ secret ค่า `RUNTIME_ROLE=web|worker` ถูกกำหนดให้แต่ละ service โดย Compose; ค่า `all` ใช้ได้เฉพาะการตรวจเครื่อง local/non-production ส่วน production ต้องระบุ `web`, `worker` หรือ `job`
 
 ทดสอบ workflow อย่างน้อยหนึ่งรอบบน staging: จองห้อง → ยืนยัน → ย้ายเข้า → จดมิเตอร์สองประเภท → preview/bulk bill → เปิด QR → ส่ง LINE → อัปโหลดสลิป → ตรวจสถานะ paid และ audit log
 
@@ -278,7 +281,7 @@ docker compose exec worker php scripts/check_requirements.php --db --strict
 - `could not find driver`: เปิด `pdo_mysql` ใน `php.ini` ของ PHP/Apache ตัวที่กำลังรันจริง
 - import SQL ไม่ผ่าน: ตรวจว่าเป็น MySQL 8.0.16+ ไม่ใช่ MariaDB; ฐานใหม่ชื่อ `dormitory` ให้ใช้ `install.sql` ไฟล์เดียว หรือวิธีขั้นสูงต้องเลือกฐานก่อนแล้ว import `schema.sql` ก่อน `defaults.sql`; `demo.sql` ไม่จำเป็นต่อการทำงาน
 - อัปโหลดสลิปไม่ได้: ตรวจ `file_uploads`, `upload_max_filesize >= 4M`, `post_max_size >= 5M` (เผื่อ multipart overhead) และสิทธิ์เขียน `storage/private/slips`
-- ส่ง LINE ไม่ได้: ตรวจ token, `line_user_id`, quota และรายการ retry โดยไม่พิมพ์ token ลง log
+- ส่ง LINE ไม่ได้: ตรวจ token, สถานะ OTP ของ `line_user_id`, quota และรายการ retry โดยไม่พิมพ์ token ลง log
 - สลิปถูกปฏิเสธ: ตรวจยอด 2 ตำแหน่งทศนิยม, เลขท้ายบัญชี, provider config และ transaction reference ซ้ำ
 - หน้า Settings แจ้งว่า integration ยังไม่พร้อม: ฐานใหม่ให้ import `install.sql` (หรือ `schema.sql` + `defaults.sql` แบบขั้นสูง); ฐานเดิมต้องรัน `001_integration_settings.sql` เมื่อจำเป็น, `002_operational_hardening.sql` หนึ่งครั้ง และ `003_append_only_guards.sql` (รันซ้ำได้) จากนั้น login ด้วย role `owner`; ช่อง secret ว่างหมายถึงเก็บค่าเดิม ไม่ได้ล้างค่า
 

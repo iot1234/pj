@@ -18,6 +18,16 @@ final class BookingService
     /** @return array<string,mixed> */
     public function createPublic(array $input): array
     {
+        return $this->resolveOutcome($this->createPublicOutcome($input));
+    }
+
+    /**
+     * Route-level transactions use this outcome form so an automatic expiry
+     * can commit before the HTTP conflict is raised outside the transaction.
+     * @return array<string,mixed>
+     */
+    public function createPublicOutcome(array $input): array
+    {
         Validator::only($input, ['room_id','full_name','phone','idempotency_key']);
         $roomId = Validator::id($input['room_id'] ?? null, 'room_id');
         $fullName = Validator::string($input['full_name'] ?? null, 'full_name', 2, 120);
@@ -27,31 +37,28 @@ final class BookingService
             throw new HttpException(422, 'idempotency_key ไม่ถูกต้อง', 'VALIDATION_ERROR', ['field'=>'idempotency_key']);
         }
 
+        $this->expirePending();
+
         return $this->app->database()->transaction(function (PDO $pdo) use ($roomId,$fullName,$phone,$idempotency): array {
             // Do not gap-lock a missing idempotency key before locking the
             // room: concurrent bookings for one room could otherwise deadlock.
-            $existing = $pdo->prepare('SELECT id,reference_no,room_id,full_name,phone_norm,booked_monthly_rent,status,created_at FROM bookings WHERE idempotency_key=? LIMIT 1');
-            $lockedExisting=$pdo->prepare('SELECT id,reference_no,room_id,full_name,phone_norm,booked_monthly_rent,status,created_at FROM bookings WHERE idempotency_key=? LIMIT 1 FOR UPDATE');
+            $existing = $pdo->prepare('SELECT * FROM bookings WHERE idempotency_key=? LIMIT 1');
+            $lockedExisting=$pdo->prepare('SELECT * FROM bookings WHERE idempotency_key=? LIMIT 1 FOR UPDATE');
             $existing->execute([$idempotency]);
             if ($row = $existing->fetch()) {
-                if((int)$row['room_id']!==$roomId||!hash_equals((string)$row['full_name'],$fullName)||!hash_equals((string)$row['phone_norm'],$phone)){
-                    throw new HttpException(409,'Idempotency key was already used for a different booking','IDEMPOTENCY_KEY_REUSED');
-                }
-                return $this->map($row);
+                return $this->replay($pdo,$row,$roomId,$fullName,$phone);
             }
             $room = $pdo->prepare('SELECT id,monthly_rent FROM rooms WHERE id=? AND deleted_at IS NULL FOR UPDATE');
             $room->execute([$roomId]);
             $roomRow=$room->fetch();if (!$roomRow) throw new HttpException(404, 'ไม่พบห้อง', 'ROOM_NOT_FOUND');
+            $this->expirePending($roomId);
 
             // The room lock serializes same-room requests. Recheck after a
             // possible wait with a current locking read so a same-key replay
             // returns its original row even under REPEATABLE READ.
             $lockedExisting->execute([$idempotency]);
             if ($row = $lockedExisting->fetch()) {
-                if((int)$row['room_id']!==$roomId||!hash_equals((string)$row['full_name'],$fullName)||!hash_equals((string)$row['phone_norm'],$phone)){
-                    throw new HttpException(409,'Idempotency key was already used for a different booking','IDEMPOTENCY_KEY_REUSED');
-                }
-                return $this->map($row);
+                return $this->replay($pdo,$row,$roomId,$fullName,$phone);
             }
 
             $occupied = $pdo->prepare("SELECT id FROM occupancies WHERE room_id=? AND status='active' LIMIT 1 FOR UPDATE");
@@ -72,17 +79,16 @@ final class BookingService
                 $insert->execute([$reference,$roomId,$fullName,$phone,$roomRow['monthly_rent'],$idempotency]);
             } catch (\PDOException $error) {
                 if (($error->errorInfo[1] ?? null) === 1062) {
-                    $conflict=$pdo->prepare('SELECT id,reference_no,room_id,full_name,phone_norm,booked_monthly_rent,status,created_at FROM bookings WHERE idempotency_key=? LIMIT 1 FOR UPDATE');
+                    $conflict=$pdo->prepare('SELECT * FROM bookings WHERE idempotency_key=? LIMIT 1 FOR UPDATE');
                     $conflict->execute([$idempotency]);
                     if($row=$conflict->fetch()){
-                        if((int)$row['room_id']===$roomId&&hash_equals((string)$row['full_name'],$fullName)&&hash_equals((string)$row['phone_norm'],$phone))return $this->map($row);
-                        throw new HttpException(409,'Idempotency key was already used for a different booking','IDEMPOTENCY_KEY_REUSED');
+                        return $this->replay($pdo,$row,$roomId,$fullName,$phone);
                     }
                     throw new HttpException(409, 'ห้องนี้ถูกจองพร้อมกันโดยผู้ใช้อื่น', 'ROOM_NOT_AVAILABLE');
                 }
                 throw $error;
             }
-            $created=$pdo->prepare('SELECT id,reference_no,room_id,full_name,phone_norm,booked_monthly_rent,status,created_at FROM bookings WHERE id=?');
+            $created=$pdo->prepare('SELECT * FROM bookings WHERE id=?');
             $created->execute([(int)$pdo->lastInsertId()]);
             return $this->map($created->fetch());
         });
@@ -92,6 +98,7 @@ final class BookingService
     public function all(?string $status=null,int $offset=0,int $limit=100): array
     {
         if($offset<0||$offset>1000000||$limit<1||$limit>200)throw new HttpException(422,'Invalid booking pagination','VALIDATION_ERROR');
+        $this->expirePending();
         $params=[];$where='';
         if($status!==null&&$status!==''){
             if(!in_array($status,['pending','confirmed','cancelled','moved_in'],true))throw new HttpException(422,'Invalid booking status','VALIDATION_ERROR');
@@ -115,6 +122,12 @@ final class BookingService
     /** @return array<string,mixed> */
     public function confirm(int $id, int $adminId): array
     {
+        return $this->resolveOutcome($this->confirmOutcome($id,$adminId));
+    }
+
+    /** @return array<string,mixed> */
+    public function confirmOutcome(int $id, int $adminId): array
+    {
         return $this->transition($id, ['pending'], 'confirmed', function (PDO $pdo, array $booking) use ($adminId): void {
             $statement = $pdo->prepare("UPDATE bookings SET status='confirmed',confirmed_by=?,confirmed_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP() WHERE id=?");
             $statement->execute([$adminId,$booking['id']]);
@@ -134,7 +147,7 @@ final class BookingService
     /** @return array<string,mixed> */
     public function moveIn(int $id, int $adminId, array $input): array
     {
-        Validator::only($input, ['pin','email','line_user_id','move_in_date','reuse_resident_id']);
+        Validator::only($input, ['pin','email','move_in_date','reuse_resident_id']);
         $pin = (string) ($input['pin'] ?? '');
         Password::assertPin($pin);
         $emailProvided=array_key_exists('email',$input);
@@ -144,14 +157,9 @@ final class BookingService
         if($moveIn>(new \DateTimeImmutable('today',$timezone))->format('Y-m-d')){
             throw new HttpException(422,'move_in_date cannot be in the future','VALIDATION_ERROR',['field'=>'move_in_date']);
         }
-        $lineUserIdProvided=array_key_exists('line_user_id',$input);
-        $lineUserId=$lineUserIdProvided?(trim((string)$input['line_user_id'])?:null):null;
         $reuseResidentId=array_key_exists('reuse_resident_id',$input)?Validator::id($input['reuse_resident_id'],'reuse_resident_id'):null;
-        if ($lineUserId !== null && !preg_match('/^U[0-9A-Za-z_-]{20,80}$/', $lineUserId)) {
-            throw new HttpException(422, 'LINE user id ไม่ถูกต้อง', 'VALIDATION_ERROR', ['field'=>'line_user_id']);
-        }
 
-        return $this->app->database()->transaction(function (PDO $pdo) use ($id,$adminId,$pin,$email,$emailProvided,$moveIn,$lineUserId,$lineUserIdProvided,$reuseResidentId,$timezone): array {
+        return $this->app->database()->transaction(function (PDO $pdo) use ($id,$adminId,$pin,$email,$emailProvided,$moveIn,$reuseResidentId,$timezone): array {
             $lock = $pdo->prepare("SELECT b.*,r.monthly_rent,r.deleted_at FROM bookings b JOIN rooms r ON r.id=b.room_id WHERE b.id=? FOR UPDATE");
             $lock->execute([$id]);
             $booking = $lock->fetch();
@@ -188,12 +196,13 @@ final class BookingService
                 $hasOccupancy->execute([$residentId]);
                 if ($hasOccupancy->fetch()) throw new HttpException(409, 'เบอร์นี้ผูกกับผู้เช่าที่มีห้องอยู่แล้ว', 'RESIDENT_ALREADY_OCCUPIED');
                 $residentEmail=$emailProvided?$email:$resident['email'];
-                $residentLineUserId=$lineUserIdProvided?$lineUserId:$resident['line_user_id'];
                 $update = $pdo->prepare('UPDATE residents SET full_name=?,email=?,line_user_id=?,pin_hash=?,active=1,auth_version=auth_version+1,updated_at=UTC_TIMESTAMP() WHERE id=?');
-                $update->execute([$booking['full_name'],$residentEmail,$residentLineUserId,Password::hash($pin),$residentId]);
+                // A returning resident must prove control of the LINE account
+                // again instead of inheriting a potentially stale binding.
+                $update->execute([$booking['full_name'],$residentEmail,null,Password::hash($pin),$residentId]);
             } else {
                 $insertResident = $pdo->prepare('INSERT INTO residents (full_name,phone_norm,email,pin_hash,line_user_id,auth_version,active,created_at,updated_at) VALUES (?,?,?,?,?,1,1,UTC_TIMESTAMP(),UTC_TIMESTAMP())');
-                $insertResident->execute([$booking['full_name'],$booking['phone_norm'],$email,Password::hash($pin),$lineUserId]);
+                $insertResident->execute([$booking['full_name'],$booking['phone_norm'],$email,Password::hash($pin),null]);
                 $residentId = (int) $pdo->lastInsertId();
             }} catch (\PDOException $error) {
                 if (($error->errorInfo[1] ?? null) === 1062) throw new HttpException(409,'Phone or LINE account is already assigned to another resident','RESIDENT_IDENTITY_CONFLICT');
@@ -228,8 +237,15 @@ final class BookingService
             if (!$booking) throw new HttpException(404, 'ไม่พบการจอง', 'BOOKING_NOT_FOUND');
             $room = $pdo->prepare('SELECT id FROM rooms WHERE id=? FOR UPDATE');
             $room->execute([$booking['room_id']]);
+            if($target==='confirmed'&&$booking['status']==='cancelled'&&$this->wasAutomaticallyExpired($booking)){
+                return $this->errorOutcome(409,'Booking hold expired; refresh the booking list','BOOKING_EXPIRED');
+            }
             if (!in_array($booking['status'], $allowed, true)) {
                 throw new HttpException(409, 'เปลี่ยนสถานะการจองจากสถานะปัจจุบันไม่ได้', 'BOOKING_BAD_STATE', ['status'=>$booking['status'],'target'=>$target]);
+            }
+            if($target==='confirmed'&&$this->isPendingExpired($pdo,$booking)){
+                $this->cancelExpiredBooking($pdo,$booking);
+                return $this->errorOutcome(409,'Booking hold expired; refresh the booking list','BOOKING_EXPIRED');
             }
             $mutation($pdo, $booking);
             $fresh=$pdo->prepare('SELECT * FROM bookings WHERE id=?');$fresh->execute([$id]);
@@ -242,18 +258,109 @@ final class BookingService
      */
     private function map(array $row): array
     {
+        $expiresAt=null;
+        if(($row['status']??null)==='pending'&&isset($row['created_at'])){
+            $created=new \DateTimeImmutable((string)$row['created_at'],new \DateTimeZone('UTC'));
+            $expiresAt=$created->modify('+'.$this->bookingHoldSeconds().' seconds')->format('Y-m-d\TH:i:s\Z');
+        }
         return [
             'id'=>(int)$row['id'],'reference_no'=>$row['reference_no'],'reference'=>$row['reference_no'],'room_id'=>(int)$row['room_id'],
             'room_code'=>$row['room_code']??null,'full_name'=>$row['full_name'],'phone'=>$row['phone_norm'],
             'status'=>$row['status'],'confirmed_at'=>$row['confirmed_at']??null,
             'cancelled_at'=>$row['cancelled_at']??null,'cancel_reason'=>$row['cancel_reason']??null,
             'moved_in_at'=>$row['moved_in_at']??null,'resident_id'=>isset($row['resident_id'])?(int)$row['resident_id']:null,
-            'created_at'=>$row['created_at']??null,
+            'created_at'=>$row['created_at']??null,'expires_at'=>$expiresAt,
             'booked_monthly_rent'=>isset($row['booked_monthly_rent'])?(string)$row['booked_monthly_rent']:null,
             'existing_resident'=>isset($row['existing_resident_id'])&&$row['existing_resident_id']!==null?[
                 'id'=>(int)$row['existing_resident_id'],'full_name'=>$row['existing_resident_name'],
                 'email'=>$row['existing_resident_email']??null,'line_user_id'=>$row['existing_resident_line_user_id']??null,
             ]:null,
         ];
+    }
+
+    /** @return array<string,mixed> */
+    private function replay(PDO $pdo,array $candidate,int $roomId,string $fullName,string $phone): array
+    {
+        $lock=$pdo->prepare('SELECT * FROM bookings WHERE id=? FOR UPDATE');
+        $lock->execute([(int)$candidate['id']]);
+        $row=$lock->fetch();
+        if(!$row)return $this->errorOutcome(409,'Booking changed while replaying the request','BOOKING_INACTIVE');
+        if((int)$row['room_id']!==$roomId||!hash_equals((string)$row['full_name'],$fullName)||!hash_equals((string)$row['phone_norm'],$phone)){
+            return $this->errorOutcome(409,'Idempotency key was already used for a different booking','IDEMPOTENCY_KEY_REUSED');
+        }
+        if($row['status']==='pending'&&$this->isPendingExpired($pdo,$row)){
+            $this->cancelExpiredBooking($pdo,$row);
+            return $this->errorOutcome(409,'Booking hold expired; submit a new request','BOOKING_EXPIRED');
+        }
+        if(!in_array($row['status'],['pending','confirmed'],true)){
+            $expired=$row['status']==='cancelled'&&$this->wasAutomaticallyExpired($row);
+            return $this->errorOutcome(409,$expired?'Booking hold expired; submit a new request':'Booking is no longer active; submit a new request',$expired?'BOOKING_EXPIRED':'BOOKING_INACTIVE');
+        }
+        return $this->map($row);
+    }
+
+    private function expirePending(?int $roomId=null): void
+    {
+        $seconds=$this->bookingHoldSeconds();
+        $reason=$this->automaticExpiryReason();
+        $roomSql=$roomId===null?'':' AND room_id=?';
+        $statement=$this->app->database()->pdo()->prepare("UPDATE bookings
+            SET status='cancelled',cancelled_at=UTC_TIMESTAMP(),cancel_reason=?,updated_at=UTC_TIMESTAMP()
+            WHERE status='pending' AND created_at<=DATE_SUB(UTC_TIMESTAMP(),INTERVAL {$seconds} SECOND){$roomSql}");
+        $parameters=[$reason];if($roomId!==null)$parameters[]=$roomId;
+        $statement->execute($parameters);
+    }
+
+    /** @param array<string,mixed> $booking */
+    private function cancelExpiredBooking(PDO $pdo,array $booking): void
+    {
+        $statement=$pdo->prepare("UPDATE bookings SET status='cancelled',cancelled_at=UTC_TIMESTAMP(),cancel_reason=?,updated_at=UTC_TIMESTAMP() WHERE id=? AND status='pending'");
+        $statement->execute([$this->automaticExpiryReason(),(int)$booking['id']]);
+    }
+
+    /** @param array<string,mixed> $booking */
+    private function wasAutomaticallyExpired(array $booking): bool
+    {
+        return str_starts_with((string)($booking['cancel_reason']??''),'Automatically expired after ');
+    }
+
+    private function automaticExpiryReason(): string
+    {
+        return 'Automatically expired after '.$this->bookingHoldSeconds().' seconds';
+    }
+
+    /** @return array<string,mixed> */
+    private function errorOutcome(int $status,string $message,string $code,array $details=[]): array
+    {
+        return ['_booking_error'=>['status'=>$status,'message'=>$message,'code'=>$code,'details'=>$details]];
+    }
+
+    /** @param array<string,mixed> $outcome */
+    public function isErrorOutcome(array $outcome): bool
+    {
+        return is_array($outcome['_booking_error']??null);
+    }
+
+    /** @param array<string,mixed> $outcome @return array<string,mixed> */
+    public function resolveOutcome(array $outcome): array
+    {
+        if(!$this->isErrorOutcome($outcome))return $outcome;
+        $error=$outcome['_booking_error'];
+        throw new HttpException((int)($error['status']??409),(string)($error['message']??'Booking conflict'),(string)($error['code']??'BOOKING_CONFLICT'),is_array($error['details']??null)?$error['details']:[]);
+    }
+
+    /** @param array<string,mixed> $booking */
+    private function isPendingExpired(PDO $pdo,array $booking): bool
+    {
+        if(($booking['status']??null)!=='pending'||!isset($booking['created_at']))return false;
+        $seconds=$this->bookingHoldSeconds();
+        $statement=$pdo->prepare("SELECT created_at<=DATE_SUB(UTC_TIMESTAMP(),INTERVAL {$seconds} SECOND) FROM bookings WHERE id=?");
+        $statement->execute([(int)$booking['id']]);
+        return (bool)$statement->fetchColumn();
+    }
+
+    private function bookingHoldSeconds(): int
+    {
+        return $this->app->config->intInRange('BOOKING_HOLD_SECONDS',86400,900,604800);
     }
 }

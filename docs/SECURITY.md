@@ -13,8 +13,8 @@
 
 - Admin ใช้ username/password ความยาว 12-200 ตัว ผู้เช่าใช้เบอร์โทรที่ normalize แล้วร่วมกับ PIN ตัวเลข 6-12 หลัก; PIN ที่ซ้ำทั้งชุดหรือลำดับพื้นฐานถูกปฏิเสธ
 - password/PIN เก็บด้วย `password_hash()` โดยเลือก Argon2id เมื่อ runtime รองรับและ fallback เป็น bcrypt ไม่มี plaintext credential หรือ reusable seed hash ใน SQL
-- login error เป็นข้อความรวมและใช้ dummy hash เพื่อลด username/phone enumeration พร้อม random delay
-- rate limit เก็บใน MySQL และ lock ด้วย transactionทั้งต่อ IP และบัญชีที่มีจริง; bucket key เป็น HMAC จึงไม่เก็บ phone/username ตรง ๆ ส่วน username/phone ที่ไม่มีจริงหรือรูปแบบผิดจะรวมเป็น unknown bucket ต่อ IP เพื่อไม่ให้ผู้โจมตีสร้างแถวไม่จำกัด การ block ถูกแปลงเป็น generic credential failure หลัง dummy/actual verify และ delay เดียวกัน จึงไม่เป็น account-enumeration oracle และรหัสที่เดาถูกไม่ข้าม bucket ที่ block แล้ว
+- login error เป็นข้อความรวมและใช้ fixed dummy hash โดยทำงาน Argon2id/bcrypt จำนวนเท่ากันสำหรับบัญชีปัจจุบัน บัญชี legacy และบัญชีที่ไม่พบ เพื่อลด username/phone enumeration พร้อม random delay
+- rate limit เก็บใน MySQL และ lock ด้วย transactionทั้งต่อ IP, คู่บัญชี+source และบัญชีที่มีจริงสำหรับการโจมตีแบบกระจาย; bucket key เป็น HMAC จึงไม่เก็บ phone/username ตรง ๆ ส่วน username/phone ที่ไม่มีจริงหรือรูปแบบผิดจะรวมเป็น unknown bucket ต่อ IP และผ่านจำนวน DB operations เท่ากัน การ block ถูกแปลงเป็น generic credential failure หลัง dummy/actual verify และ delay เดียวกัน บัญชีที่เคย login สำเร็จบน browser เดิมใช้ signed HttpOnly trusted-device cookie เพื่อให้ credential ที่ถูกต้องข้ามเฉพาะ account bucket ที่ถูกโจมตีได้ โดยยังผ่าน IP limit และ cookie ผูก `type/id/auth_version` อายุ 30 วัน ไม่ใช่ token สำหรับ login และหมดผลเมื่อหมุน credential
 - session ID ถูก rotate เมื่อ login และล้างเมื่อ logout ใช้ strict mode, cookie only, HttpOnly, SameSite=Lax และ Secure เมื่อเปิด HTTPS; บังคับหมดอายุทั้งแบบ idle และอายุรวมตาม `SESSION_LIFETIME_SECONDS` และเริ่ม file session แบบ lazy เฉพาะเมื่อมี session ที่บันทึกอยู่หรือ login สำเร็จ Anonymous GET จึงไม่สร้างไฟล์ใหม่
 - ทุก request ที่มี session จะตรวจ `active` และ `auth_version` กับฐานข้อมูล การปิดบัญชี เปลี่ยนรหัส/PIN หรือเพิ่ม auth version จึง revoke session เก่าได้
 - Route guard แยก Guest, Resident, Admin และ owner; เฉพาะ owner จัดการบัญชี admin และเปลี่ยนค่า PromptPay/LINE/slip integrations ส่วน service ต้องกันการปิด/ลบ owner คนสุดท้าย
@@ -73,7 +73,8 @@ constraint ไม่สามารถกัน active booking กับ active 
 - cURL จำกัด protocol เป็น HTTPS, ปิด redirect, connect timeout 5 วินาที, total timeout จำกัด, จำกัดขนาด/depth response และ reject malformed JSON
 - secret ส่งใน header ไป host ที่กำหนดเท่านั้นและต้องไม่อยู่ใน error/audit/browser response
 - LINE ใช้ UUID v4 ที่บันทึกใน outbox เป็น `X-Line-Retry-Key` เดิมทุก retry; HTTP 409 หมายถึง request เดิมได้รับแล้วและต้อง finalize เป็น sent ไม่ส่งใหม่ด้วย key ใหม่
-- outbox ใช้ `FOR UPDATE SKIP LOCKED`, processing timeout recovery, exponential backoff และ maximum attempts เพื่อลดทั้ง duplicate และ retry storm
+- LINE User ID ต้องผูกโดยผู้พักที่ login อยู่และยืนยัน PIN ปัจจุบัน จากนั้นกรอก OTP 6 หลักภายใน 10 นาที; audit แบบ append-only เก็บ HMAC ของ resident+LINE ID และการ unlink โดยไม่เก็บ OTP/PIN worker ตรวจ audit ล่าสุดกับ ID ปัจจุบันก่อนส่งทุกครั้ง ค่า legacy ที่ไม่มีหลักฐานนี้จึง fail-closed
+- outbox ใช้ `FOR UPDATE SKIP LOCKED`, processing timeout recovery, exponential backoff และ maximum attempts เพื่อลดทั้ง duplicate และ retry storm; worker กับขั้นตอน confirm/unlink ใช้ MySQL advisory lock แยกตาม resident เพื่อไม่ให้การส่งไป LINE ID เดิมแข่งกับการเปลี่ยนหรือยกเลิกการผูก
 
 ## การปกป้อง integration settings
 
@@ -97,7 +98,7 @@ constraint ไม่สามารถกัน active booking กับ active 
 - Compose bind พอร์ต HTTP ของแอปกับ loopback (`APP_BIND=127.0.0.1`) เป็นค่าเริ่มต้น ให้ reverse proxy เป็น public ingress ห้ามเปลี่ยนเป็น `0.0.0.0` โดยไม่มี firewall/network policy และการทบทวน exposure
 - container เปิด `no-new-privileges`; ควรเพิ่ม network policy, read-only root filesystem/secret mount และ resource limits ตาม platform ที่ deploy
 
-การหมุน `APP_KEY` ทำให้ integration credential ที่เข้ารหัสด้วย key เดิมถอดไม่ได้ทันที และไม่ได้ invalidate PHP session file โดยอัตโนมัติ จึงต้องทำเป็น migration ที่ทดสอบแล้ว ทางเลือกที่ไม่ต้องสร้างเครื่องมือ re-encrypt คือใช้ key เดิมเปลี่ยน provider เป็น `none` และ explicit-clear credential ทั้งหมดก่อนเปลี่ยน key จากนั้นตั้ง `APP_KEY` ใหม่ให้ web/worker พร้อมกันและกรอก credential ใหม่ หากเหตุการณ์ต้องบังคับ logout ให้ล้าง server-side session store และเพิ่ม `auth_version` พร้อมวางแผนผลต่อ rate-limit bucket, slip HMAC และ retry เป็น incident ที่ตรวจสอบได้
+การหมุน `APP_KEY` ทำให้ integration credential ที่เข้ารหัสด้วย key เดิมถอดไม่ได้ทันที และทำให้หลักฐาน HMAC ของ LINE binding เดิมไม่ผ่านจนผู้พักยืนยันใหม่ แต่ไม่ได้ invalidate PHP session file โดยอัตโนมัติ จึงต้องทำเป็น migration ที่ทดสอบแล้ว ทางเลือกที่ไม่ต้องสร้างเครื่องมือ re-encrypt คือใช้ key เดิมเปลี่ยน provider เป็น `none` และ explicit-clear credential ทั้งหมดก่อนเปลี่ยน key จากนั้นตั้ง `APP_KEY` ใหม่ให้ web/worker พร้อมกัน กรอก credential ใหม่ และแจ้งผู้พักยืนยัน LINE ใหม่ หากเหตุการณ์ต้องบังคับ logout ให้ล้าง server-side session store และเพิ่ม `auth_version` พร้อมวางแผนผลต่อ rate-limit bucket, slip HMAC และ retry เป็น incident ที่ตรวจสอบได้
 
 ## Logs, audit และข้อมูลส่วนบุคคล
 
