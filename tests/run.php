@@ -399,7 +399,22 @@ $test('login rehash is compare-and-swap with layered account throttling',functio
 });
 $test('booking holds use the database clock and inactive replays fail closed',function()use($same):void{
     $source=file_get_contents(dirname(__DIR__).'/src/Domain/BookingService.php');if(!is_string($source))throw new RuntimeException('cannot read BookingService');
-    $same(true,substr_count($source,'SELECT * FROM bookings WHERE idempotency_key=?')>=3);
+    $same(true,substr_count($source,'SELECT * FROM bookings WHERE idempotency_key=?')>=1);
+    $same(true,str_contains($source,'SELECT id FROM bookings WHERE idempotency_key=? LIMIT 1 FOR UPDATE'));
+    $same(false,str_contains($source,'$lockedExisting'));
+    $same(true,str_contains($source,"SELECT * FROM bookings WHERE room_id=? AND status IN ('pending','confirmed') LIMIT 1"));
+    $same(false,str_contains($source,"SELECT * FROM bookings WHERE room_id=? AND status IN ('pending','confirmed') LIMIT 1 FOR UPDATE"));
+    $same(true,str_contains($source,"hash_equals((string)\$reservedRow['idempotency_key'],\$idempotency)"));
+    $createStart=strpos($source,'public function createPublicOutcome');
+    $transactionStart=strpos($source,'return $this->app->database()->transaction',$createStart===false?0:$createStart);
+    if($createStart===false||$transactionStart===false)throw new RuntimeException('cannot isolate public booking pre-transaction path');
+    $same(false,str_contains(substr($source,$createStart,$transactionStart-$createStart),'$this->expirePending();'));
+    $same(true,str_contains($source,'$this->expirePending($roomId);'));
+    $same(true,str_contains($source,'public function expirePublicPhoneHolds(mixed $rawPhone): void'));
+    $same(true,str_contains($source,"WHERE phone_norm=? AND status='pending'"));
+    $same(true,str_contains($source,"WHERE room_id=? AND status='pending'"));
+    $same(true,str_contains($source,"WHERE id=? AND status='pending'"));
+    $same(false,str_contains($source,'{$roomSql}'));
     $same(true,str_contains($source,'created_at<=DATE_SUB(UTC_TIMESTAMP(),INTERVAL'));
     $same(true,str_contains($source,"'BOOKING_INACTIVE'"));
     $same(true,str_contains($source,"'BOOKING_PHONE_ACTIVE'"));
@@ -435,6 +450,9 @@ $test('booking holds use the database clock and inactive replays fail closed',fu
     ] as $invalidExpression)$same(null,SchemaGuard::activePhoneGenerationExpression($invalidExpression));
     $routes=file_get_contents(dirname(__DIR__).'/src/Http/Routes.php');if(!is_string($routes))throw new RuntimeException('cannot read Routes');
     $same(true,str_contains($routes,"'public-booking-attempt-ip'"));
+    $preflightExpiry=strpos($routes,'expirePublicPhoneHolds');
+    $routeBookingTransaction=strpos($routes,'$outcome=$app->database()->transaction',$preflightExpiry===false?0:$preflightExpiry);
+    $same(true,$preflightExpiry!==false&&$routeBookingTransaction!==false&&$preflightExpiry<$routeBookingTransaction);
     $same(true,str_contains($routes,"\$replay?200:201"));
     $same(true,str_contains($routes,"&&!\$replay"));
     $same(true,str_contains($source,"hit('public-booking-ip',\$clientIp,5,86400)"));
@@ -442,9 +460,27 @@ $test('booking holds use the database clock and inactive replays fail closed',fu
     $same(true,str_contains($source,"\$error->status!==429||\$error->errorCode!=='RATE_LIMITED'"));
     $same(true,str_contains($source,"return \$this->errorOutcome(\$error->status,\$error->getMessage(),\$error->errorCode,\$error->details)"));
     $same(true,str_contains($source,"refundHit('public-booking-ip',\$clientIp)"));
-    $phoneLock=strpos($source,"lockBucket('public-booking-phone',\$phone)");
-    $firstIdempotencyRead=strpos($source,'SELECT * FROM bookings WHERE idempotency_key=? LIMIT 1');
-    $same(true,$phoneLock!==false&&$firstIdempotencyRead!==false&&$phoneLock<$firstIdempotencyRead);
+    $createEnd=strpos($source,'public function all',$createStart);
+    if($createEnd===false)throw new RuntimeException('cannot isolate public booking method');
+    $createBlock=substr($source,$createStart,$createEnd-$createStart);
+    $same(false,str_contains($createBlock,"lockBucket('public-booking-phone',\$phone)"));
+    $roomLock=strpos($createBlock,"SELECT id,monthly_rent,deleted_at FROM rooms WHERE id=? FOR UPDATE");
+    $firstIdempotencyRead=strpos($createBlock,'SELECT * FROM bookings WHERE idempotency_key=? LIMIT 1');
+    $deletedGuard=strpos($createBlock,"\$roomRow['deleted_at']!==null");
+    $scopedExpiry=strpos($createBlock,'$this->expirePending($roomId);');
+    $activePhoneRead=strpos($createBlock,'SELECT id FROM bookings WHERE active_phone_norm=? LIMIT 1');
+    $ipHit=strpos($createBlock,"hit('public-booking-ip',\$clientIp,5,86400)");
+    $phoneHit=strpos($createBlock,"hit('public-booking-phone',\$phone,2,86400)");
+    $same(true,$roomLock!==false&&$firstIdempotencyRead!==false&&$deletedGuard!==false
+        &&$scopedExpiry!==false&&$activePhoneRead!==false&&$ipHit!==false&&$phoneHit!==false
+        &&$roomLock<$firstIdempotencyRead&&$firstIdempotencyRead<$deletedGuard
+        &&$deletedGuard<$scopedExpiry&&$scopedExpiry<$activePhoneRead
+        &&$activePhoneRead<$ipHit&&$ipHit<$phoneHit);
+    $same(true,str_contains($createBlock,"'uq_bookings_idempotency_key'"));
+    $same(true,str_contains($createBlock,"'uq_bookings_one_active_per_phone'"));
+    $same(true,str_contains($createBlock,"'uq_bookings_one_active_per_room'"));
+    $same(false,str_contains($createBlock,"WHERE phone_norm=? AND status IN ('pending','confirmed') LIMIT 1 FOR UPDATE"));
+    $same(false,str_contains(substr($createBlock,0,$ipHit),'SELECT id FROM bookings WHERE active_phone_norm=? LIMIT 1 FOR UPDATE'));
     $insertCatchStart=strpos($source,'} catch (\\PDOException $error)');
     $createdRead=strpos($source,"\$created=\$pdo->prepare('SELECT * FROM bookings WHERE id=?')",$insertCatchStart===false?0:$insertCatchStart);
     if($insertCatchStart===false||$createdRead===false)throw new RuntimeException('cannot isolate booking duplicate-key handler');
@@ -452,6 +488,24 @@ $test('booking holds use the database clock and inactive replays fail closed',fu
     $same(true,str_contains($insertCatch,"'BOOKING_RETRY'"));
     $same(false,str_contains($insertCatch,'return $this->replay'));
     $same(true,str_contains($source,'private function replay(PDO $pdo'));
+    $moveInStart=strpos($source,'public function moveIn');
+    $transitionStart=strpos($source,'private function transition');
+    if($moveInStart===false||$transitionStart===false)throw new RuntimeException('cannot isolate booking mutators');
+    $moveInBlock=substr($source,$moveInStart,$transitionStart-$moveInStart);
+    $moveInLookup=strpos($moveInBlock,'SELECT room_id FROM bookings WHERE id=?');
+    $moveInRoomLock=strpos($moveInBlock,'SELECT id,deleted_at FROM rooms WHERE id=? FOR UPDATE');
+    $moveInBookingLock=strpos($moveInBlock,'SELECT * FROM bookings WHERE id=? FOR UPDATE');
+    $same(true,$moveInLookup!==false&&$moveInRoomLock!==false&&$moveInBookingLock!==false
+        &&$moveInLookup<$moveInRoomLock&&$moveInRoomLock<$moveInBookingLock);
+    $transitionEnd=strpos($source,'private function map',$transitionStart);
+    if($transitionEnd===false)throw new RuntimeException('cannot isolate booking transition');
+    $transitionBlock=substr($source,$transitionStart,$transitionEnd-$transitionStart);
+    $transitionLookup=strpos($transitionBlock,'SELECT room_id FROM bookings WHERE id=?');
+    $transitionRoomLock=strpos($transitionBlock,'SELECT id FROM rooms WHERE id=? FOR UPDATE');
+    $transitionBookingLock=strpos($transitionBlock,'SELECT * FROM bookings WHERE id=? FOR UPDATE');
+    $same(true,$transitionLookup!==false&&$transitionRoomLock!==false&&$transitionBookingLock!==false
+        &&$transitionLookup<$transitionRoomLock&&$transitionRoomLock<$transitionBookingLock);
+    $same(false,str_contains($source,'SELECT b.*,r.monthly_rent,r.deleted_at'));
     $rooms=file_get_contents(dirname(__DIR__).'/src/Domain/RoomService.php');if(!is_string($rooms))throw new RuntimeException('cannot read RoomService');
     $same(false,str_contains($rooms,'created_at>=DATE_SUB'));
     $same(true,str_contains($rooms,'created_at>DATE_SUB'));
