@@ -109,12 +109,12 @@ case "$mode" in
       "$database" mysql --batch --skip-column-names \
       --host=127.0.0.1 --user=root --database="$CI_DB_DATABASE" \
       --execute="SELECT COUNT(*) FROM bookings WHERE phone_norm='0899999999'")"
-    eighth_room_bookings="$(docker exec \
+    denied_phone_booking_count="$(docker exec \
       --env MYSQL_PWD="$CI_DBA_PASSWORD" \
       "$database" mysql --batch --skip-column-names \
       --host=127.0.0.1 --user=root --database="$CI_DB_DATABASE" \
-      --execute="SELECT COUNT(*) FROM bookings b JOIN rooms r ON r.id=b.room_id
-        WHERE r.room_code='CI-RATE-8'")"
+      --execute="SELECT COUNT(*) FROM bookings
+        WHERE idempotency_key='ci-phone-rate-000003'")"
     committed_phone_block="$(docker exec \
       --env MYSQL_PWD="$CI_DBA_PASSWORD" \
       "$database" mysql --batch --skip-column-names \
@@ -131,10 +131,13 @@ case "$mode" in
           SUM(hits=3 AND blocked_until IS NOT NULL),'|',
           SUM(hits=3 AND blocked_until IS NULL))
         FROM rate_limits")"
-    [ "$phone_booking_count" = 2 ]
-    [ "$eighth_room_bookings" = 0 ]
-    [ "$committed_phone_block" = 1 ]
-    [ "$phone_quota_bucket_shape" = '3|1|1|1' ]
+    if [[ "$phone_booking_count" != 2 \
+        || "$denied_phone_booking_count" != 0 \
+        || "$committed_phone_block" != 1 \
+        || "$phone_quota_bucket_shape" != '3|1|1|1' ]]; then
+      echo "Unexpected phone quota state: bookings=$phone_booking_count denied=$denied_phone_booking_count block=$committed_phone_block buckets=$phone_quota_bucket_shape" >&2
+      exit 1
+    fi
     ;;
   post)
     if [[ -z "$web" ]]; then

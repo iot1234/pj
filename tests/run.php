@@ -510,6 +510,13 @@ $test('booking holds use the database clock and inactive replays fail closed',fu
     $same(false,str_contains($rooms,'created_at>=DATE_SUB'));
     $same(true,str_contains($rooms,'created_at>DATE_SUB'));
 });
+$test('booking quota CI checks isolate the denied request',function()use($same):void{
+    $script=file_get_contents(dirname(__DIR__).'/scripts/ci-booking-edge-tests.sh');
+    if(!is_string($script))throw new RuntimeException('cannot read booking edge-test script');
+    $same(true,str_contains($script,"WHERE idempotency_key='ci-phone-rate-000003'"));
+    $same(false,str_contains($script,"WHERE r.room_code='CI-RATE-8'"));
+    $same(true,str_contains($script,'Unexpected phone quota state:'));
+});
 $test('resident lifecycle blocks unbilled months and same-period re-entry',function()use($same):void{
     $resident=file_get_contents(dirname(__DIR__).'/src/Domain/ResidentService.php');
     $booking=file_get_contents(dirname(__DIR__).'/src/Domain/BookingService.php');
