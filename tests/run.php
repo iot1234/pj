@@ -57,16 +57,20 @@ $same=static function(mixed $expected,mixed $actual):void{if($expected!==$actual
 $throws=static function(callable $callback,string $code):void{try{$callback();}catch(HttpException $e){if($e->errorCode!==$code)throw new RuntimeException("expected {$code}, got {$e->errorCode}");return;}throw new RuntimeException("expected exception {$code}");};
 $throwsHttp=static function(callable $callback,string $code,int $status):void{try{$callback();}catch(HttpException $e){if($e->errorCode!==$code||$e->status!==$status)throw new RuntimeException("expected {$status} {$code}, got {$e->status} {$e->errorCode}");return;}throw new RuntimeException("expected exception {$status} {$code}");};
 
-$test('session release persists state and frees the file lock',function()use($same,$app):void{
-    $manager=$app->session();$cookieName=session_name();$sessionId='';$sessionFile='';
+$test('session release persists state and resident idle/absolute limits expire behaviorally',function()use($same,$app):void{
+    $manager=$app->session();$cookieName=session_name();$sessionFiles=[];
+    $rememberSession=static function()use(&$sessionFiles):string{
+        $sessionId=session_id();
+        if(!preg_match('/^[A-Za-z0-9,-]{22,128}$/D',$sessionId))throw new RuntimeException('unexpected test session id');
+        $sessionFiles[$sessionId]=rtrim((string)ini_get('session.save_path'),'/\\').DIRECTORY_SEPARATOR.'sess_'.$sessionId;
+        return $sessionId;
+    };
     try{
         $same(PHP_SESSION_NONE,session_status());
         $challenge=['resident_id'=>7,'nonce'=>'release-lock-test','attempts'=>0];
         $manager->storeLineLinkChallenge($challenge);
         $same(PHP_SESSION_ACTIVE,session_status());
-        $sessionId=session_id();
-        if(!preg_match('/^[A-Za-z0-9,-]{22,128}$/D',$sessionId))throw new RuntimeException('unexpected test session id');
-        $sessionFile=rtrim((string)ini_get('session.save_path'),'/\\').DIRECTORY_SEPARATOR.'sess_'.$sessionId;
+        $sessionId=$rememberSession();$sessionFile=$sessionFiles[$sessionId];
 
         $manager->release();
         $same(PHP_SESSION_NONE,session_status());
@@ -78,16 +82,38 @@ $test('session release persists state and frees the file lock',function()use($sa
         $same($challenge,$manager->lineLinkChallenge());
         $manager->clearLineLinkChallenge();
         $same(null,$manager->lineLinkChallenge());
+
+        $resident=['type'=>'resident','id'=>7,'auth_version'=>1];
+        $manager->login($resident);
+        $absoluteSessionId=$rememberSession();
+        $_SESSION['dormitory_created_at']=time()-3601;
+        $_SESSION['dormitory_last_seen_at']=time();
+        $manager->release();$_COOKIE[$cookieName]=$absoluteSessionId;
+        $same(null,$manager->actor());
+        $replacementId=$rememberSession();
+        $same(false,hash_equals($absoluteSessionId,$replacementId));
         $manager->logout();
+
+        unset($_COOKIE[$cookieName]);
+        $manager->login($resident);
+        $idleSessionId=$rememberSession();
+        $_SESSION['dormitory_created_at']=time();
+        $_SESSION['dormitory_last_seen_at']=time()-901;
+        $manager->release();$_COOKIE[$cookieName]=$idleSessionId;
+        $same(null,$manager->actor());
+        $replacementId=$rememberSession();
+        $same(false,hash_equals($idleSessionId,$replacementId));
+        $manager->logout();
+
         $same(PHP_SESSION_NONE,session_status());
-        clearstatcache(true,$sessionFile);$same(false,is_file($sessionFile));
+        foreach($sessionFiles as$path){clearstatcache(true,$path);$same(false,is_file($path));}
     }finally{
-        if($sessionId!==''&&session_status()!==PHP_SESSION_ACTIVE)$_COOKIE[$cookieName]=$sessionId;
-        if(session_status()===PHP_SESSION_ACTIVE||($sessionId!==''&&is_file($sessionFile))){
+        if(session_status()===PHP_SESSION_ACTIVE){
+            $rememberSession();
             try{$manager->logout();}catch(Throwable){if(session_status()===PHP_SESSION_ACTIVE){$_SESSION=[];@session_destroy();}}
         }
         unset($_COOKIE[$cookieName]);
-        if($sessionFile!=='')@unlink($sessionFile);
+        foreach($sessionFiles as$path)if(is_file($path))@unlink($path);
     }
 });
 
@@ -103,7 +129,7 @@ $test('FR-10 resident lifecycle endpoints are explicitly allowlisted',function()
     $routes=$property->getValue(Dormitory\Http\Routes::build($app));
     $methods=[];
     foreach($routes as$route){if(str_contains($route['regex'],'api/admin/residents'))$methods[]=$route['method'];}
-    $same(['GET','PUT','POST','POST'],$methods);
+    $same(['GET','PUT','POST'],$methods);
 });
 $test('FR-16 payment recovery has no manual paid endpoint',function()use($same,$app):void{
     $property=new ReflectionProperty(Dormitory\Http\Router::class,'routes');
@@ -145,9 +171,51 @@ $test('critical usability guards remain in the web UI',function()use($same):void
     if(!is_string($js)||!is_string($admin))throw new RuntimeException('cannot read UI sources');
     $same(1,preg_match('/paymentConfigurationReady\s*=\s*promptPayReady\s*&&\s*slipReady/',$js));
     $same(1,preg_match('/function applySavedMeterResult\s*\(/',$js));
-    $same(1,preg_match('/name="confirm_pin"[^>]*required/',$admin));
+    $same(0,preg_match('/name="confirm_pin"[^>]*required/',$admin));
     $same(1,preg_match('/จำนวนเงินอื่น \/ ห้อง/',$admin));
     $same(1,preg_match('/water_units.*water_rate.*water_amount/s',$js));
+});
+$test('resident PIN surfaces are retired with a rolling-safe schema contract',function()use($same,$app):void{
+    $root=dirname(__DIR__);
+    $auth=file_get_contents($root.'/src/Domain/AuthService.php');
+    $resident=file_get_contents($root.'/src/Domain/ResidentService.php');
+    $booking=file_get_contents($root.'/src/Domain/BookingService.php');
+    $routes=file_get_contents($root.'/src/Http/Routes.php');
+    $login=file_get_contents($root.'/templates/resident/login.php');
+    $portal=file_get_contents($root.'/templates/resident/portal.php');
+    $admin=file_get_contents($root.'/templates/admin/console.php');
+    $js=file_get_contents($root.'/public/assets/js/app.js');
+    $schema=file_get_contents($root.'/database/schema.sql');
+    $installer=file_get_contents($root.'/database/install.sql');
+    $migration=file_get_contents($root.'/database/migrations/006_remove_resident_pin.sql');
+    foreach(compact('auth','resident','booking','routes','login','portal','admin','js','schema','installer','migration')as$name=>$source){
+        if(!is_string($source))throw new RuntimeException("cannot read {$name} PIN-removal source");
+    }
+    $same(false,str_contains($auth,'pin_hash'));
+    $same(false,str_contains($resident,'current_pin'));
+    $same(false,str_contains($resident,'changePin'));
+    $same(false,str_contains($resident,'resetPin'));
+    $same(false,str_contains($routes,'/api/resident/profile/pin'));
+    $same(false,str_contains($routes,'reset-pin'));
+    $same(false,str_contains($schema,'pin_hash'));
+    $same(false,str_contains($installer,'pin_hash'));
+    $same(true,str_contains($migration,'ALTER TABLE residents DROP COLUMN pin_hash'));
+    $same(true,str_contains($migration,'DORMITORY_MIGRATION_006_ABORT_RESIDENTS_TABLE_MISSING'));
+    $same(true,str_contains($migration,'DORMITORY_MIGRATION_006_ABORT_PIN_COLUMN_REMAINS'));
+    $same(true,str_contains($booking,'hasLegacyResidentCredentialColumn'));
+    $same(true,str_contains($booking,'Password::hash(bin2hex(random_bytes(32)))'));
+    $requirements=file_get_contents($root.'/scripts/check_requirements.php');if(!is_string($requirements))throw new RuntimeException('cannot read requirements checker');
+    $same(true,str_contains($requirements,"column_name='pin_hash'"));
+    $same(true,str_contains($requirements,'schema ยังมี residents.pin_hash'));
+    foreach([$login,$portal,$admin,$js]as$surface)$same(0,preg_match('/\bPIN\b/i',$surface));
+    $routesProperty=new ReflectionProperty(Dormitory\Http\Router::class,'routes');
+    $registered=$routesProperty->getValue(Dormitory\Http\Routes::build($app));
+    foreach($registered as$route){
+        if(preg_match('/(?:profile\/pin|reset.pin)/i',$route['regex']))throw new RuntimeException('retired resident PIN route remains registered');
+    }
+    $session=file_get_contents($root.'/src/Security/SessionManager.php');if(!is_string($session))throw new RuntimeException('cannot read SessionManager');
+    $same(true,str_contains($session,'private const RESIDENT_ABSOLUTE_LIFETIME = 3600'));
+    $same(true,str_contains($session,'private const RESIDENT_IDLE_LIFETIME = 900'));
 });
 $test('Apache permits the hidden-file access guard',function()use($same):void{
     $root=dirname(__DIR__);
@@ -222,9 +290,8 @@ $test('anonymous CSRF and actor lookup do not create file sessions',function()us
     $throws(fn()=>$app->security()->assertMutation($invalid),'CSRF_INVALID');
     $same(count($before),count(glob($directory.'/sess_*')?:[]));
 });
-$test('weak PIN rejection',fn()=>$throws(fn()=>Password::assertPin('123456'),'WEAK_PIN'));
-$test('sequential PIN and weak admin passwords are rejected',function()use($throws):void{
-    $throws(fn()=>Password::assertPin('012345'),'WEAK_PIN');
+$test('resident PIN validator is removed and weak admin passwords are rejected',function()use($same,$throws):void{
+    $same(false,method_exists(Password::class,'assertPin'));
     $throws(fn()=>Password::assertAdmin(str_repeat(' ',12),'owner'),'WEAK_PASSWORD');
     $throws(fn()=>Password::assertAdmin('OwnerPassword!2026','owner'),'WEAK_PASSWORD');
     Password::assertAdmin('Safe-Console#2026','owner');
@@ -363,10 +430,9 @@ $test('production APP_KEY requires random 32-byte key material',function()use($s
     try{Config::validatedAppKey(str_repeat('Ab3!',300),true);throw new RuntimeException('oversized APP_KEY was accepted');}
     catch(RuntimeException $error){if($error->getMessage()==='oversized APP_KEY was accepted')throw $error;}
 });
-$test('login rehash is compare-and-swap with layered account throttling',function()use($same,$app):void{
+$test('admin rehash and phone-only resident login use layered throttling',function()use($same,$app):void{
     $source=file_get_contents(dirname(__DIR__).'/src/Domain/AuthService.php');if(!is_string($source))throw new RuntimeException('cannot read AuthService');
     $same(1,preg_match('/UPDATE admin_users SET password_hash=\?,updated_at=UTC_TIMESTAMP\(\) WHERE id=\? AND password_hash=\? AND auth_version=\?/',$source));
-    $same(1,preg_match('/UPDATE residents SET pin_hash=\?,updated_at=UTC_TIMESTAMP\(\) WHERE id=\? AND pin_hash=\? AND auth_version=\?/',$source));
     $same(true,str_contains($source,'(!$accountAllowed&&!$trustedDevice)'));
     foreach(['admin-login-account-source','admin-login-account','resident-login-account-source','resident-login-account']as$scope)$same(true,str_contains($source,$scope));
     $same(true,str_contains($source,'DUMMY_ARGON2ID_HASH'));
@@ -376,6 +442,20 @@ $test('login rehash is compare-and-swap with layered account throttling',functio
     $same(true,str_contains($source,"\$scope.'-timing-pad'"));
     $same(true,str_contains($source,'private static function verifyCredential'));
     $same(false,str_contains($source,"Password::hash('dummy-password"));
+    $residentStart=strpos($source,'public function residentLogin');$residentEnd=strpos($source,'public function logout',$residentStart===false?0:$residentStart);
+    if($residentStart===false||$residentEnd===false)throw new RuntimeException('cannot isolate resident login');
+    $residentBlock=substr($source,$residentStart,$residentEnd-$residentStart);
+    $same(true,str_contains($residentBlock,"Validator::only(\$input, ['phone'])"));
+    $same(true,str_contains($residentBlock,"'resident-login-ip-daily'"));
+    $same(true,str_contains($residentBlock,"'auth_method' => 'phone_only'"));
+    $same(true,str_contains($residentBlock,"'assurance' => 'low'"));
+    $same(true,str_contains($residentBlock,'writeStrict'));
+    $same(true,str_contains($residentBlock,"JOIN occupancies o ON o.resident_id=r.id AND o.status='active'"));
+    $same(true,str_contains($residentBlock,'JOIN rooms rm ON rm.id=o.room_id AND rm.deleted_at IS NULL'));
+    $same(false,str_contains($residentBlock,'pin_hash'));
+    $same(false,str_contains($residentBlock,'trustedDevice'));
+    $same(false,str_contains($residentBlock,"limiter()->clear('resident-login"));
+    $same(false,str_contains($residentBlock,"rememberLoginDevice('resident'"));
     $auth=new Dormitory\Domain\AuthService($app);$create=new ReflectionMethod($auth,'createLoginDeviceToken');$valid=new ReflectionMethod($auth,'validLoginDeviceToken');$now=time();
     $verifyCredential=new ReflectionMethod($auth,'verifyCredential');$credential='Timing-safe-test-password-48!';$credentialHash=Password::hash($credential);
     $same(true,$verifyCredential->invoke($auth,$credential,$credentialHash));
@@ -559,9 +639,11 @@ $test('LINE bill delivery requires an authenticated one-time-code link flow',fun
     $resident=file_get_contents(dirname(__DIR__).'/src/Domain/ResidentService.php');$booking=file_get_contents(dirname(__DIR__).'/src/Domain/BookingService.php');
     if(!is_string($resident)||!is_string($booking))throw new RuntimeException('cannot read LINE binding sources');
     $same(1,preg_match("/updateProfile.*?Validator::only\\(\\\$input,\\['full_name','email'\\]\\)/s",$resident));
-    $same(1,preg_match("/moveIn.*?Validator::only\\(\\\$input, \\['pin','email','move_in_date','reuse_resident_id'\\]\\)/s",$booking));
+    $same(1,preg_match("/moveIn.*?Validator::only\\(\\\$input, \\['email','move_in_date','reuse_resident_id'\\]\\)/s",$booking));
     $same(true,str_contains($resident,'lineLinkDigest'));
-    $same(true,str_contains($resident,"Validator::only(\$input,['line_user_id','current_pin'])"));
+    $same(true,str_contains($resident,"Validator::only(\$input,['line_user_id'])"));
+    $same(true,str_contains($resident,"Validator::only(\$input,[])"));
+    $same(false,str_contains($resident,'current_pin'));
     $notification=file_get_contents(dirname(__DIR__).'/src/Domain/NotificationService.php');if(!is_string($notification))throw new RuntimeException('cannot read NotificationService');
     $same(true,str_contains($notification,'isLineBindingVerified'));
     $same(true,str_contains($notification,"resident.line_link_verified','resident.line_unlinked"));

@@ -11,16 +11,16 @@
 
 ## Authentication และ authorization
 
-- Admin ใช้ username/password ความยาว 12-200 ตัว ผู้เช่าใช้เบอร์โทรที่ normalize แล้วร่วมกับ PIN ตัวเลข 6-12 หลัก; PIN ที่ซ้ำทั้งชุดหรือลำดับพื้นฐานถูกปฏิเสธ
-- password/PIN เก็บด้วย `password_hash()` โดยเลือก Argon2id เมื่อ runtime รองรับและ fallback เป็น bcrypt ไม่มี plaintext credential หรือ reusable seed hash ใน SQL
-- login error เป็นข้อความรวมและใช้ fixed dummy hash โดยทำงาน Argon2id/bcrypt จำนวนเท่ากันสำหรับบัญชีปัจจุบัน บัญชี legacy และบัญชีที่ไม่พบ เพื่อลด username/phone enumeration พร้อม random delay
-- rate limit เก็บใน MySQL และ lock ด้วย transactionทั้งต่อ IP, คู่บัญชี+source และบัญชีที่มีจริงสำหรับการโจมตีแบบกระจาย; bucket key เป็น HMAC จึงไม่เก็บ phone/username ตรง ๆ ส่วน username/phone ที่ไม่มีจริงหรือรูปแบบผิดจะรวมเป็น unknown bucket ต่อ IP และผ่านจำนวน DB operations เท่ากัน การ block ถูกแปลงเป็น generic credential failure หลัง dummy/actual verify และ delay เดียวกัน บัญชีที่เคย login สำเร็จบน browser เดิมใช้ signed HttpOnly trusted-device cookie เพื่อให้ credential ที่ถูกต้องข้ามเฉพาะ account bucket ที่ถูกโจมตีได้ โดยยังผ่าน IP limit และ cookie ผูก `type/id/auth_version` อายุ 30 วัน ไม่ใช่ token สำหรับ login และหมดผลเมื่อหมุน credential
-- session ID ถูก rotate เมื่อ login และล้างเมื่อ logout ใช้ strict mode, cookie only, HttpOnly, SameSite=Lax และ Secure เมื่อเปิด HTTPS; บังคับหมดอายุทั้งแบบ idle และอายุรวมตาม `SESSION_LIFETIME_SECONDS` และเริ่ม file session แบบ lazy เฉพาะเมื่อมี session ที่บันทึกอยู่หรือ login สำเร็จ Anonymous GET จึงไม่สร้างไฟล์ใหม่
-- ทุก request ที่มี session จะตรวจ `active` และ `auth_version` กับฐานข้อมูล การปิดบัญชี เปลี่ยนรหัส/PIN หรือเพิ่ม auth version จึง revoke session เก่าได้
+- Admin/Owner ใช้ username/password ความยาว 12-200 ตัวตามเดิมและ password เก็บด้วย `password_hash()` โดยเลือก Argon2id เมื่อ runtime รองรับและ fallback เป็น bcrypt ไม่มี default password หรือ plaintext credential ใน SQL
+- Resident ใช้เพียงเบอร์โทรไทยที่ normalize แล้ว ซึ่งต้องตรงกับ resident และ occupancy ที่ active ไม่มี PIN/password/OTP login และไม่มี resident trusted-device bypass; API รับเฉพาะ `{phone}` และปฏิเสธ field เกินรวมถึง `pin`
+- login error เป็นข้อความรวมพร้อม delay เพื่อลด phone enumeration; ฝั่ง Admin ยังใช้ fixed dummy hash และจำนวนงาน KDF ที่ใกล้เคียงกันสำหรับ username ที่พบ/ไม่พบ
+- rate limit เก็บใน MySQL และ lock ด้วย transactionทั้งต่อ IP และคู่บัญชี+source โดย bucket key เป็น HMAC จึงไม่เก็บ phone/username ตรง ๆ ค่า malformed/ไม่พบถูกจัดการแบบ fail-closed และไม่บอกว่าบัญชีใดมีจริง Signed HttpOnly trusted-device cookie ใช้ได้เฉพาะ Admin ที่เคยยืนยัน password สำเร็จ ไม่ใช้กับ Resident
+- session ID ถูก rotate เมื่อ login และล้างเมื่อ logout ใช้ strict mode, cookie only, HttpOnly, SameSite=Lax และ Secure เมื่อเปิด HTTPS; Resident session หมดอายุเมื่อ idle 15 นาทีหรืออายุรวม 1 ชั่วโมง ส่วน Admin ใช้นโยบาย session ที่ตั้งไว้ ระบบเริ่ม file session แบบ lazy เฉพาะเมื่อมี session ที่บันทึกอยู่หรือ login สำเร็จ Anonymous GET จึงไม่สร้างไฟล์ใหม่
+- ทุก request ที่มี session จะตรวจ `active` และ `auth_version` กับฐานข้อมูล การปิดบัญชี, เปลี่ยน password Admin, เปลี่ยนเบอร์ Resident หรือเพิ่ม auth version จึง revoke session เก่าได้
 - Route guard แยก Guest, Resident, Admin และ owner; เฉพาะ owner จัดการบัญชี admin และเปลี่ยนค่า PromptPay/LINE/slip integrations ส่วน service ต้องกันการปิด/ลบ owner คนสุดท้าย
 - Query ของผู้เช่าต้อง bind `resident_id` จาก session เสมอ ห้ามเชื่อ bill/resident/room ID จาก URL เพียงอย่างเดียว
 
-ข้อจำกัด: ระบบใช้ PIN ไม่ได้มี OTP/MFA ใน scope FR-01–FR-16 เจ้าของระบบควรแจก PIN ผ่านช่องทางที่พิสูจน์ตัวบุคคล บังคับเปลี่ยนเมื่อสงสัยว่ารั่ว และพิจารณาเพิ่ม MFA เป็นโครงการแยกหากระดับความเสี่ยงต้องการ
+ข้อจำกัดสำคัญ: เบอร์โทรอย่างเดียวไม่ใช่หลักฐานว่าผู้ใช้เป็นเจ้าของเบอร์หรือเป็นผู้พัก ผู้ที่รู้เบอร์ของ resident active สามารถสวมบัญชี อ่านบิล แก้ชื่อ/email ผูก LINE ของตน และส่งสลิปในนามผู้พักได้ทันที Rate limit ช่วยลดการไล่ยิงจำนวนมากแต่ป้องกัน takeover ครั้งแรกที่ใช้เบอร์ถูกต้องไม่ได้ หากความเสี่ยงนี้ยอมรับไม่ได้ ต้องเพิ่ม OTP/MFA หรือ credential อื่นก่อนเปิด production
 
 ## CSRF, origin และ input
 
@@ -54,6 +54,8 @@ MySQL ต้องเป็น 8.0.16+ เพื่อให้ `CHECK` ทำ�
 
 constraint ไม่สามารถกัน active booking กับ active occupancy ที่อยู่คนละตารางพร้อมกันได้ด้วย unique index ตัวเดียว service จึงต้อง lock ห้องและตรวจทั้งสองตารางใน transaction การแก้ business flow ต้องรักษา invariant นี้
 
+Fresh schema ไม่มี `residents.pin_hash` ฐาน production รุ่นเก่าอาจยังมีคอลัมน์ `NOT NULL` ชั่วคราวระหว่าง rolling deploy; แอปรุ่น phone-only จะใส่ค่า credential สุ่มที่ไม่เปิดเผยและไม่มี route ใดตรวจเฉพาะเพื่อรักษาความเข้ากันได้จน deploy เสร็จ จากนั้น DBA ต้องรัน `006_remove_resident_pin.sql` เพื่อลบคอลัมน์ สำรอง/ทดสอบ restore ก่อนเพราะหลังลบแล้วแอปรุ่น PIN เดิม rollback กลับมาใช้ schema นี้ไม่ได้
+
 ## Slip upload และการเปลี่ยนสถานะ paid
 
 - รับเฉพาะ JPEG/PNG/WebP ไม่เกิน 4 MiB; ตรวจ MIME ด้วย `finfo`, parse image จริง, จำกัด 4,096 px ต่อด้านและ 8 ล้านพิกเซล พร้อมตรวจ memory budget ก่อน decode เพื่อกัน decompression bomb/หน่วยความจำหมด
@@ -75,7 +77,7 @@ constraint ไม่สามารถกัน active booking กับ active 
 - LINE webhook จำกัดขนาด raw body/event, ตรวจ `X-Line-Signature` แบบ constant-time ก่อน parse JSON, รับเฉพาะ event active แบบ `follow` หรือข้อความตัวอักษรจาก source `user` โดยตรง และ deduplicate ด้วย `webhookEventId` ภายใต้ advisory lock; event กลุ่ม/ห้องและชนิดอื่นถูกข้าม
 - Bot ใช้ reply token ตอบ LINE User ID และวิธีผูกบัญชีเท่านั้น ไม่บันทึกข้อความที่ผู้ใช้ส่งหรือ LINE User ID ดิบลง audit; audit เก็บ event ID, ชนิด event และ HMAC ของ user ID เพื่อ reconcile โดยไม่เปิดเผย identifier
 - LINE ใช้ UUID v4 ที่บันทึกใน outbox เป็น `X-Line-Retry-Key` เดิมทุก retry; HTTP 409 หมายถึง request เดิมได้รับแล้วและต้อง finalize เป็น sent ไม่ส่งใหม่ด้วย key ใหม่
-- LINE User ID ต้องผูกโดยผู้พักที่ login อยู่และยืนยัน PIN ปัจจุบัน จากนั้นกรอก OTP 6 หลักภายใน 10 นาที; audit แบบ append-only เก็บ HMAC ของ resident+LINE ID และการ unlink โดยไม่เก็บ OTP/PIN worker ตรวจ audit ล่าสุดกับ ID ปัจจุบันก่อนส่งทุกครั้ง ค่า legacy ที่ไม่มีหลักฐานนี้จึง fail-closed
+- LINE User ID ต้องผูกโดย Resident ที่ login อยู่ จากนั้นกรอก OTP 6 หลักภายใน 10 นาที โดยไม่ใช้ PIN; OTP พิสูจน์เฉพาะการควบคุมบัญชี LINE ปลายทาง ไม่พิสูจน์ตัวผู้พักหรือความเป็นเจ้าของเบอร์โทร audit แบบ append-only เก็บ HMAC ของ resident+LINE ID และการ unlink โดยไม่เก็บ OTP worker ตรวจ audit ล่าสุดกับ ID ปัจจุบันก่อนส่งทุกครั้ง ค่า legacy ที่ไม่มีหลักฐานนี้จึง fail-closed
 - outbox ใช้ `FOR UPDATE SKIP LOCKED`, processing timeout recovery, exponential backoff และ maximum attempts เพื่อลดทั้ง duplicate และ retry storm; worker กับขั้นตอน confirm/unlink ใช้ MySQL advisory lock แยกตาม resident เพื่อไม่ให้การส่งไป LINE ID เดิมแข่งกับการเปลี่ยนหรือยกเลิกการผูก
 
 ## การปกป้อง integration settings
@@ -104,9 +106,9 @@ constraint ไม่สามารถกัน active booking กับ active 
 
 ## Logs, audit และข้อมูลส่วนบุคคล
 
-- audit เก็บ actor/action/entity/request ID/IP/user-agent และ redact key ที่สื่อถึง password, PIN, token, secret, authorization, slip
+- audit เก็บ actor/action/entity/request ID/IP/user-agent และ redact key ที่สื่อถึง password, token, secret, authorization, slip รวมถึงชื่อ field PIN แบบ legacy เพื่อไม่ให้ payload เก่ารั่ว
 - audit table มี trigger ห้าม update/delete แต่ DBA ยังเปลี่ยนหรือลบได้ ควรส่งสำเนาไป append-only log store ภายนอกสำหรับระบบที่ต้องการหลักฐานสูง
-- ห้าม log request body ของ login, `.env`, Authorization header, image/base64, PIN/password หรือ provider secret
+- ห้าม log request body ของ login, `.env`, Authorization header, image/base64, password หรือ provider secret รวมถึง payload PIN legacy
 - จำกัดผู้ที่อ่าน phone/email/LINE ID/slip/provider payload และกำหนด retention ตามวัตถุประสงค์และกฎหมายคุ้มครองข้อมูลส่วนบุคคล
 - schedule ให้บัญชี DBA/maintenance ลบ `rate_limits` ที่ `updated_at` เก่ากว่านโยบาย (ตัวอย่าง 30 วัน) โดยไม่ให้สิทธิ์ `DELETE` แก่ runtime; กำหนด capacity/retention ของ audit แยกกันเพราะ audit มี append-only trigger และต้อง archive/ลบผ่าน migration ที่ควบคุม
 - monitor อย่างน้อย: login fail/rate-limit surge, owner/admin change, booking conflict, bill generation failure, duplicate transaction, receiver mismatch, provider unavailable และ LINE terminal failure
@@ -122,7 +124,7 @@ constraint ไม่สามารถกัน active booking กับ active 
 ## Checklist ก่อนเปิด production
 
 - [ ] `php scripts/check_requirements.php --production` ผ่าน; Docker ต้องผ่านทั้ง service `app` และ `worker` ตาม README
-- [ ] ฐานข้อมูลใหม่ชื่อ `dormitory` import `install.sql` ไฟล์เดียว หรือฐานชื่ออื่นใช้วิธีขั้นสูงโดยเลือกฐานเป้าหมายแล้ว import `schema.sql` + `defaults.sql` ครบ หรือฐานข้อมูลเดิมสำรองแล้ว รัน `001` เมื่อจำเป็น → `002` หนึ่งครั้ง → `003` → `004` หลังแก้ LINE ID legacy → `005` หลังปิด active booking ซ้ำต่อเบอร์ พร้อมรัน `--db --strict` และ `--schema-audit`; ห้ามลบ trigger `DEFINER` หลังติดตั้ง
+- [ ] ฐานข้อมูลใหม่ชื่อ `dormitory` import `install.sql` ไฟล์เดียว หรือฐานชื่ออื่นใช้วิธีขั้นสูงโดยเลือกฐานเป้าหมายแล้ว import `schema.sql` + `defaults.sql` ครบและยืนยันว่าไม่มี `residents.pin_hash`; ฐานเดิมต้องสำรอง/ทดสอบ restore แล้วรัน `001` เมื่อจำเป็น → `002` หนึ่งครั้ง → `003` → `004` หลังแก้ LINE ID legacy → `005` หลังปิด active booking ซ้ำต่อเบอร์ → deploy แอป phone-only → `006_remove_resident_pin.sql` พร้อมรัน `--db --strict` และ `--schema-audit`; ห้ามลบ trigger `DEFINER` หลังติดตั้ง
 - [ ] HTTPS/HSTS/CSP/security headers ตรวจจากภายนอกแล้ว
 - [ ] `.env`, source และ `storage/private` เปิดผ่าน URL ไม่ได้
 - [ ] ไม่มี default credential, สร้าง Owner ผ่าน `--password-stdin`/secret store และลบตัวแปรรหัสผ่านชั่วคราวหลัง bootstrap

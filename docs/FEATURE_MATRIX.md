@@ -7,11 +7,13 @@
 | Actor | เข้าใช้ | ขอบเขต |
 |---|---|---|
 | Guest | ไม่ต้อง login | ดูห้องว่างและส่งจอง |
-| Resident | เบอร์โทร + PIN 6–12 หลัก | ดู/แก้ profile ของตน ดูบิลของตน เปิด QR และส่งสลิปของตน |
+| Resident | เบอร์โทรที่ผูกกับผู้พัก/ห้อง active เท่านั้น | ดู/แก้ชื่อและ email ของตน ดูบิลของตน เปิด QR และส่งสลิปของตน |
 | Admin | username + password | ห้อง การจอง ผู้เช่า มิเตอร์ บิล LINE และการชำระ |
 | Owner | Admin role `owner` | สิทธิ์ Admin ทั้งหมด จัดการบัญชีผู้ดูแล และเปลี่ยนค่า PromptPay/LINE/SlipOK/EasySlip |
 
 สถานะห้องไม่ใช่ field ที่แก้ตรง ๆ แต่คำนวณตามลำดับ: มี `occupancy active` = `occupied`; ไม่เช่นนั้นมี booking `pending/confirmed` = `reserved`; นอกนั้น = `available`
+
+Resident phone-only login เป็นการยืนยันตัวตนระดับต่ำ: ผู้ที่รู้เบอร์ของผู้พัก active สามารถสวมบัญชีได้ และ rate limit ป้องกันการ takeover ครั้งแรกไม่ได้ Resident ไม่มี trusted-device bypass และ session หมดอายุเมื่อ idle 15 นาทีหรืออายุรวม 1 ชั่วโมง บัญชี Admin/Owner ยังคงใช้ username/password
 
 ## Requirement coverage
 
@@ -19,14 +21,14 @@
 |---|---|---|---|---|
 | FR-01 | Guest ดูห้องว่างพร้อมประเภท ราคา สิ่งอำนวยความสะดวก รูป | `/`, `GET /api/public/rooms` | `rooms`; query คืนเฉพาะ derived `available` และไม่คืน soft-deleted room | ห้อง reserved/occupied/deleted ไม่ปรากฏ; amenities เป็น array และ image URL ไม่อ่าน path จากผู้ใช้ |
 | FR-02 | Guest จองด้วยชื่อ/เบอร์ แล้วห้องเป็น “จองแล้ว” รอ Admin | `POST /api/public/bookings` | `bookings`; normalized Thai phone, idempotency key, generated unique active room/phone, IP/phone rate limit, hold timeout จาก DB clock | request ซ้ำด้วย key เดิมคืน 200 โดยไม่สร้างรายการ/audit ซ้ำ; ห้องหรือเบอร์เดียวมี pending/confirmed ได้หนึ่งรายการ; invalid/unavailable room ไม่กิน successful-booking quota; pending หมดอายุคืนห้องและ replay ต้องใช้ key ใหม่ ไม่แจ้งว่าสำเร็จ |
-| FR-03 | Resident login ด้วยเบอร์ที่ผูกห้อง พร้อม PIN | `/resident/login`, `POST /api/auth/resident/login`, logout/me | `residents`, active `occupancies`; PIN hash, IP + account/source + distributed account rate limit, signed trusted-device recovery, generic error, session rotation | เบอร์+PIN ถูกและมี occupancy active เข้าได้; inactive/ไม่มีห้อง/PIN ผิดเข้าไม่ได้และไม่บอกว่าข้อมูลใดผิด; อุปกรณ์ใหม่ข้าม bucket ที่ block ไม่ได้ แต่อุปกรณ์ที่เคยสำเร็จใช้ credential ถูกต้องกู้จาก account-lockout DoS ได้โดยยังติด IP limit |
+| FR-03 | Resident login ด้วยเบอร์ที่ผูกห้อง | `/resident/login`, `POST /api/auth/resident/login` `{phone}`, logout/me | `residents`, active `occupancies`; normalized phone, IP + account/source rate limit, generic error, session rotation, ไม่มี resident trusted-device bypass | เบอร์ของ resident/occupancy active เข้าได้; malformed/inactive/ไม่มีห้องตอบ error รวม; request มี field PIN หรือ field เกินถูกปฏิเสธ; session idle 15 นาที/absolute 1 ชั่วโมง; ยอมรับข้อจำกัดว่าผู้รู้เบอร์สวมบัญชีครั้งแรกได้ |
 | FR-04 | Resident ดูประวัติบิลย้อนหลังและสถานะ | `/resident`, `GET /api/resident/bills`, `GET /api/resident/bills/{id}` | `bills`, `bill_items`, `payments`; query bind resident จาก session | เห็นเฉพาะบิลตนเอง เรียงย้อนหลัง แสดง pending/paid และ payment ล่าสุด; เปิด ID ของคนอื่นได้ 404/403 |
-| FR-05 | Resident ดูและแก้ข้อมูลส่วนตัว | `GET|PUT /api/resident/profile`, `POST /api/resident/profile/pin`, `POST /api/resident/profile/line/{start,confirm,unlink}`; Admin ใช้ `PUT /api/admin/residents/{id}` | `residents`; ชื่อ/email แก้ผ่าน allowlist, LINE ต้อง PIN ปัจจุบัน + OTP อายุ 10 นาที + audit HMAC, เบอร์เป็น login identity | Resident แก้ชื่อ/email และเปลี่ยน PIN ด้วย PIN เดิม; LINE ส่งบิลได้เมื่อ audit ล่าสุดยืนยัน ID ปัจจุบันเท่านั้น; legacy ID fail-closed; Admin เปลี่ยนเบอร์แล้ว revoke session เดิม |
+| FR-05 | Resident ดูและแก้ข้อมูลส่วนตัว | `GET|PUT /api/resident/profile`, `POST /api/resident/profile/line/{start,confirm,unlink}`; Admin ใช้ `PUT /api/admin/residents/{id}` | `residents`; ชื่อ/email แก้ผ่าน allowlist, LINE ใช้ OTP อายุ 10 นาที + audit HMAC, เบอร์เป็น login identity; ไม่มี route เปลี่ยน PIN | Resident แก้ชื่อ/email ได้; LINE ส่งบิลได้เมื่อ audit ล่าสุดยืนยัน ID ปัจจุบันเท่านั้น; OTP พิสูจน์เพียงการควบคุม LINE ปลายทาง ไม่พิสูจน์ตัวผู้พัก; legacy ID fail-closed; Admin เปลี่ยนเบอร์แล้ว revoke session เดิม |
 | FR-06 | เพิ่ม ลบ แก้บัญชีผู้ดูแล | `GET|POST /api/admin/users`, `PUT|DELETE /api/admin/users/{id}` | `admin_users`; owner-only, unique username, password hash, auth version | Admin ธรรมดาถูกปฏิเสธ; ปิด owner คนสุดท้ายไม่ได้; เปลี่ยน password/active/role revoke session เก่า |
 | FR-07 | เพิ่ม ลบ แก้ข้อมูลห้อง | `GET|POST /api/admin/rooms`, `PUT|DELETE /api/admin/rooms/{id}` | `rooms`; unique room code, JSON amenities, soft delete | validate floor/rent/type/amenities; ห้องที่มี booking/occupancy active ลบไม่ได้; public ไม่เห็น deleted |
 | FR-08 | แสดง Available/Occupied/Reserved | Admin room list และ public room list | derived จาก `rooms` + active `bookings` + active `occupancies` | precedence occupied > reserved > available ถูกต้อง และไม่มี endpoint รับ status จาก client |
-| FR-09 | ยืนยัน/ยกเลิก booking และย้ายเข้าเป็น occupied | `GET /api/admin/bookings`, `POST .../{id}/confirm`, `/cancel`, `/move-in` | `bookings`, `residents`, `occupancies`; transaction + row locks + state checks | pending→confirmed/cancelled; confirmed→moved_in สร้าง/ผูก resident+occupancy; race/replay ไม่สร้าง occupancy ซ้ำ; ผู้พักเดิมย้ายเข้าซ้ำในรอบเดือนที่เพิ่งย้ายออกไม่ได้จนกว่าจะมีนโยบายแบ่งค่าเช่า |
-| FR-10 | Admin ดูรายละเอียดผู้เช่าปัจจุบันของแต่ละห้อง พร้อมงานดูแลวงจรผู้พัก | `GET /api/admin/residents`, `PUT /api/admin/residents/{id}`, `POST .../{id}/reset-pin`, `POST .../{id}/move-out` | active `occupancies` join `residents`, `rooms`; transaction + row lock + `auth_version` | แก้ข้อมูลที่ยืนยันแล้ว/รีเซ็ต PIN พร้อม revoke session; ย้ายออกได้เมื่อมีบิลครบทุกเดือนตั้งแต่ย้ายเข้าถึงย้ายออก ชำระแล้วทั้งหมด ไม่มีบิลเดือนหลังวันที่ย้าย จากนั้นปิด occupancy/ผู้พัก ล้าง LINE binding เดิม และคืนห้องเป็นว่างอย่างเป็นชุดเดียว |
+| FR-09 | ยืนยัน/ยกเลิก booking และย้ายเข้าเป็น occupied | `GET /api/admin/bookings`, `POST .../{id}/confirm`, `/cancel`, `/move-in` `{email,move_in_date,reuse_resident_id?}` | `bookings`, `residents`, `occupancies`; transaction + row locks + state checks; move-in ไม่มี PIN | pending→confirmed/cancelled; confirmed→moved_in สร้าง/ผูก resident+occupancy; race/replay ไม่สร้าง occupancy ซ้ำ; ผู้พักเดิมย้ายเข้าซ้ำในรอบเดือนที่เพิ่งย้ายออกไม่ได้จนกว่าจะมีนโยบายแบ่งค่าเช่า |
+| FR-10 | Admin ดูรายละเอียดผู้เช่าปัจจุบันของแต่ละห้อง พร้อมงานดูแลวงจรผู้พัก | `GET /api/admin/residents`, `PUT /api/admin/residents/{id}`, `POST .../{id}/move-out` | active `occupancies` join `residents`, `rooms`; transaction + row lock + `auth_version`; ไม่มี route reset PIN | แก้ข้อมูลที่ยืนยันแล้วและเปลี่ยนเบอร์พร้อม revoke session; ย้ายออกได้เมื่อมีบิลครบทุกเดือนตั้งแต่ย้ายเข้าถึงย้ายออก ชำระแล้วทั้งหมด ไม่มีบิลเดือนหลังวันที่ย้าย จากนั้นปิด occupancy/ผู้พัก ล้าง LINE binding เดิม และคืนห้องเป็นว่างอย่างเป็นชุดเดียว |
 | FR-11 | บันทึกมิเตอร์น้ำ/ไฟรายห้องรายเดือน | `GET /api/admin/meters?period=YYYY-MM`, `POST /api/admin/meters` | `meter_readings`; unique room/type/period, decimal 2 ตำแหน่ง | เดือน/ห้องเดียวมี water/electric ได้ประเภทละหนึ่งแถว; input ติดลบ/ย้อน/เกิน 9,999,999 ถูกปฏิเสธ; usage เกิน 10,000 หน่วยรวบรวมเตือนทุกประเภทก่อนยืนยัน และแก้หลังออกบิลไม่ได้ |
 | FR-12 | ดึงเดือนก่อนและคำนวณหน่วยอัตโนมัติ | API มิเตอร์เดียวกับ FR-11 | previous reading ล่าสุดก่อน period; first baseline previous=current; DB CHECK `units=current-previous` | เดือนแรก units=0; เดือนถัดไป previous ตรง current ล่าสุด; client กำหนด previous/units เองไม่ได้ |
 | FR-13 | ออกบิลหลายห้อง รวมเช่า น้ำ ไฟ อื่น ๆ | `POST /api/admin/bills/preview`, `POST /api/admin/bills/bulk`, `GET /api/admin/bills` | `billing_settings`, `bills`, `bill_items`; immutable snapshots, unique occupancy/period, HMAC preview token | preview แจ้งห้องขาดมิเตอร์; bulk ต้องใช้ token อายุ 5 นาทีที่ผูกยอด/ผู้พัก/มิเตอร์และหยุดเมื่อข้อมูลเปลี่ยน; transaction/idempotent; total คำนวณ server และตรง snapshot 2 ตำแหน่ง |
@@ -49,7 +51,7 @@
 | พื้นที่ | การควบคุม |
 |---|---|
 | Mutation API | session CSRF สำหรับผู้ login หรือ signed stateless guest CSRF อายุ 2 ชั่วโมง + same-origin check, JSON/multipart size limit, allowlist input |
-| Session | lazy start สำหรับ anonymous, strict cookie, HttpOnly, SameSite, Secure บน HTTPS, rotate login, `auth_version` revocation |
+| Session | lazy start สำหรับ anonymous, strict cookie, HttpOnly, SameSite, Secure บน HTTPS, rotate login, `auth_version` revocation; Resident idle 15 นาที/absolute 1 ชั่วโมงและไม่มี trusted-device bypass |
 | SQL | PDO native prepared statements, InnoDB transactions, `SELECT ... FOR UPDATE`, FK/CHECK/unique/generated keys |
 | เงิน | integer/decimal scale 2, total คำนวณ server, bill snapshot immutable, transaction reference unique |
 | File | magic-byte MIME, image decode/dimension limits, random private path, 0600, content HMAC |
@@ -74,7 +76,7 @@
 1. สร้าง owner โดยไม่มี default password แล้ว login/logout และตรวจ session rotation
 2. ยิง booking สอง request พร้อมกันไปห้องเดียว รวม replay idempotency key
 3. ยืนยัน ยกเลิก และย้ายเข้า ตรวจ state transition/derived room status ทุกขั้น
-4. login resident แล้วลองเข้าบิล/profile ของ resident อื่น
+4. login resident ด้วยเบอร์ active เท่านั้น ตรวจ generic error/field PIN ถูกปฏิเสธ/session 15 นาที–1 ชั่วโมง แล้วลองเข้าบิล/profile ของ resident อื่น
 5. จด baseline และเดือนถัดไปทั้งน้ำ/ไฟ รวม rollback reading และ duplicate period
 6. preview/bulk บิลหลายห้อง รวมขาดมิเตอร์, ค่าอื่น, bulk ซ้ำ และ total mismatch จาก client
 7. ใช้ Owner บันทึก integration settings ตรวจว่า Admin ธรรมดาแก้ไม่ได้, API ไม่คืน secret, ช่องว่างเก็บค่าเดิม, explicit clear ลบจริง และ web/worker เห็นค่ารอบถัดไปโดยไม่ restart

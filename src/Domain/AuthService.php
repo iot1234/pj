@@ -48,13 +48,15 @@ final class AuthService
                 "SELECT r.id,r.full_name,r.phone_norm,r.email,r.line_user_id,r.auth_version,r.active,
                         o.id AS occupancy_id,rm.id AS room_id,rm.room_code
                    FROM residents r
-                   LEFT JOIN occupancies o ON o.resident_id=r.id AND o.status='active'
-                   LEFT JOIN rooms rm ON rm.id=o.room_id AND rm.deleted_at IS NULL
-                  WHERE r.id=? LIMIT 1"
+                   JOIN occupancies o ON o.resident_id=r.id AND o.status='active'
+                   JOIN rooms rm ON rm.id=o.room_id AND rm.deleted_at IS NULL
+                  WHERE r.id=? AND r.active=1
+                  ORDER BY o.id DESC LIMIT 2"
             );
             $statement->execute([(int) $sessionActor['id']]);
-            $row = $statement->fetch();
-            if (!$row || !(bool) $row['active'] || (int) $row['auth_version'] !== (int) $sessionActor['auth_version'] || !$row['occupancy_id']) {
+            $rows = $statement->fetchAll();
+            $row = count($rows) === 1 ? $rows[0] : false;
+            if (!$row || (int) $row['auth_version'] !== (int) $sessionActor['auth_version']) {
                 $this->app->session()->revokeLocal();
                 return null;
             }
@@ -64,6 +66,7 @@ final class AuthService
                 'line_user_id' => $row['line_user_id'], 'auth_version' => (int) $row['auth_version'],
                 'occupancy_id' => (int) $row['occupancy_id'], 'room_id' => (int) $row['room_id'],
                 'room_code' => $row['room_code'], 'role' => 'resident',
+                'auth_method' => 'phone_only', 'assurance' => 'low',
             ];
         }
         $this->app->session()->revokeLocal();
@@ -135,67 +138,56 @@ final class AuthService
     /** @return array<string,mixed> */
     public function residentLogin(Request $request, array $input): array
     {
-        Validator::only($input, ['phone', 'pin']);
-        $rawPhone = is_scalar($input['phone'] ?? null) ? (string) $input['phone'] : '';
-        try { $phone = Validator::phone($rawPhone); $phoneValid = true; }
+        Validator::only($input, ['phone']);
+        $rawPhone = is_string($input['phone'] ?? null) && strlen($input['phone']) <= 32
+            ? $input['phone']
+            : '';
+        try { $phone = Validator::phone($rawPhone); $phoneValid = $rawPhone !== ''; }
         catch (HttpException) { $phone = ''; $phoneValid = false; }
-        $pin = is_string($input['pin'] ?? null) ? $input['pin'] : '';
-        $wellFormed = $phoneValid && (bool) preg_match('/^\d{6,12}$/', $pin);
         $ip = $this->app->security()->clientIp($request);
-        $this->app->limiter()->hit('resident-login-ip', $ip, 30, 900, 900);
+        $this->app->limiter()->hit('resident-login-ip', $ip, 12, 900, 900);
+        $this->app->limiter()->hit('resident-login-ip-daily', $ip, 100, 86400, 3600);
 
         $row = false;
-        if ($wellFormed) {
+        if ($phoneValid) {
             $statement = $this->app->database()->pdo()->prepare(
-                "SELECT r.id,r.full_name,r.phone_norm,r.email,r.pin_hash,r.auth_version,r.active,
+                "SELECT r.id,r.full_name,r.phone_norm,r.email,r.auth_version,
                         o.id AS occupancy_id,o.room_id,rm.room_code
                    FROM residents r
-                   LEFT JOIN occupancies o ON o.resident_id=r.id AND o.status='active'
-                   LEFT JOIN rooms rm ON rm.id=o.room_id AND rm.deleted_at IS NULL
-                  WHERE r.phone_norm=? LIMIT 1"
+                   JOIN occupancies o ON o.resident_id=r.id AND o.status='active'
+                   JOIN rooms rm ON rm.id=o.room_id AND rm.deleted_at IS NULL
+                  WHERE r.phone_norm=? AND r.active=1
+                  ORDER BY o.id DESC LIMIT 2"
             );
             $statement->execute([$phone]);
-            $row = $statement->fetch();
+            $rows = $statement->fetchAll();
+            $row = count($rows) === 1 ? $rows[0] : false;
         }
         $accountIdentity=$row?(string)$row['phone_norm']:'unknown:'.$ip;
         $sourceIdentity=$accountIdentity.':'.$ip;
         $sourceAllowed=$this->accountAttemptAllowed('resident-login-account-source',$sourceIdentity,8,900,1800);
-        $globalAllowed=$this->globalAccountAttemptAllowed('resident-login-account',$accountIdentity,$sourceAllowed,$ip,60,900,1800);
+        $globalAllowed=$this->globalAccountAttemptAllowed('resident-login-account',$accountIdentity,$sourceAllowed,$ip,30,86400,3600);
         $accountAllowed=$sourceAllowed&&$globalAllowed;
-        $valid = self::verifyCredential($pin,is_string($row['pin_hash']??null)?(string)$row['pin_hash']:null);
-        $trustedDevice=$row&&$valid&&$this->hasTrustedLoginDevice('resident',(int)$row['id'],(int)$row['auth_version']);
         usleep(random_int(180000, 320000));
-        if ((!$accountAllowed&&!$trustedDevice) || !$row || !(bool) $row['active'] || !$row['occupancy_id'] || !$valid) {
+        if (!$accountAllowed || !$row) {
             $this->app->audit()->write($request, null, 'auth.resident_failed', 'resident', null, [
                 'principal_hash' => hash_hmac('sha256', $phoneValid?$phone:trim($rawPhone), $this->app->config->appKey()),
                 'account_rate_limited'=>!$accountAllowed,
             ]);
-            throw new HttpException(401, 'เบอร์โทรหรือ PIN ไม่ถูกต้อง', 'INVALID_CREDENTIALS');
-        }
-        if (Password::needsRehash((string) $row['pin_hash'])) {
-            $newHash = Password::hash($pin);
-            $rehash = $this->app->database()->pdo()->prepare(
-                'UPDATE residents SET pin_hash=?,updated_at=UTC_TIMESTAMP() WHERE id=? AND pin_hash=? AND auth_version=?'
-            );
-            $rehash->execute([$newHash, $row['id'], $row['pin_hash'], $row['auth_version']]);
-            if ($rehash->rowCount() !== 1) {
-                $this->app->audit()->write($request, null, 'auth.resident_stale_login', 'resident', $row['id']);
-                throw new HttpException(401, 'Phone number or PIN is invalid', 'INVALID_CREDENTIALS');
-            }
-            $row['pin_hash'] = $newHash;
+            throw new HttpException(401, 'ไม่สามารถเข้าสู่ระบบด้วยเบอร์นี้ได้', 'INVALID_CREDENTIALS');
         }
         $actor = [
             'type' => 'resident', 'id' => (int) $row['id'], 'full_name' => $row['full_name'],
             'name' => $row['full_name'], 'phone' => $row['phone_norm'], 'email' => $row['email'],
             'auth_version' => (int) $row['auth_version'], 'occupancy_id' => (int) $row['occupancy_id'],
             'room_id' => (int) $row['room_id'], 'room_code' => $row['room_code'], 'role' => 'resident',
+            'auth_method' => 'phone_only', 'assurance' => 'low',
         ];
+        $this->app->audit()->writeStrict($request, $actor, 'auth.resident_login', 'resident', $row['id'], [
+            'auth_method'=>'phone_only', 'assurance'=>'low',
+        ]);
         $this->app->session()->login($actor);
         $this->app->clearActorCache();
-        $this->app->limiter()->clear('resident-login-account', $accountIdentity);
-        $this->app->limiter()->clear('resident-login-account-source', $sourceIdentity);
-        $this->rememberLoginDevice('resident',(int)$row['id'],(int)$row['auth_version']);
-        $this->app->audit()->write($request, $actor, 'auth.resident_login', 'resident', $row['id']);
         return $actor;
     }
 

@@ -12,6 +12,8 @@ final class SessionManager
     private const CREATED_KEY = 'dormitory_created_at';
     private const LAST_SEEN_KEY = 'dormitory_last_seen_at';
     private const LINE_LINK_KEY = 'dormitory_line_link_challenge';
+    private const RESIDENT_ABSOLUTE_LIFETIME = 3600;
+    private const RESIDENT_IDLE_LIFETIME = 900;
     private string $name;
     private bool $initialized = false;
 
@@ -53,11 +55,18 @@ final class SessionManager
         }
         if($this->initialized)return true;
         $now = time();
-        $lifetime = $this->config->intInRange('SESSION_LIFETIME_SECONDS', 43200, 300, 604800);
+        $configuredLifetime = $this->config->intInRange('SESSION_LIFETIME_SECONDS', 43200, 300, 604800);
+        $residentSession = ($_SESSION[self::ACTOR_KEY]['type'] ?? null) === 'resident';
+        $absoluteLifetime = $residentSession
+            ? min($configuredLifetime, self::RESIDENT_ABSOLUTE_LIFETIME)
+            : $configuredLifetime;
+        $idleLifetime = $residentSession
+            ? min($configuredLifetime, self::RESIDENT_IDLE_LIFETIME)
+            : $configuredLifetime;
         $createdAt = (int) ($_SESSION[self::CREATED_KEY] ?? 0);
         $lastSeenAt = (int) ($_SESSION[self::LAST_SEEN_KEY] ?? 0);
-        if (($createdAt > 0 && $now - $createdAt > $lifetime)
-            || ($lastSeenAt > 0 && $now - $lastSeenAt > $lifetime)) {
+        if (($createdAt > 0 && $now - $createdAt > $absoluteLifetime)
+            || ($lastSeenAt > 0 && $now - $lastSeenAt > $idleLifetime)) {
             $_SESSION = [];
             session_regenerate_id(true);
         }

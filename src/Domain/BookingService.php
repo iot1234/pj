@@ -11,6 +11,8 @@ use PDO;
 
 final class BookingService
 {
+    private ?bool $legacyResidentCredentialColumn = null;
+
     public function __construct(private readonly Application $app)
     {
     }
@@ -221,9 +223,7 @@ final class BookingService
     /** @return array<string,mixed> */
     public function moveIn(int $id, int $adminId, array $input): array
     {
-        Validator::only($input, ['pin','email','move_in_date','reuse_resident_id']);
-        $pin = (string) ($input['pin'] ?? '');
-        Password::assertPin($pin);
+        Validator::only($input, ['email','move_in_date','reuse_resident_id']);
         $emailProvided=array_key_exists('email',$input);
         $email=$emailProvided?Validator::nullableEmail($input['email']):null;
         $moveIn = Validator::date($input['move_in_date'] ?? null, 'move_in_date');
@@ -233,7 +233,7 @@ final class BookingService
         }
         $reuseResidentId=array_key_exists('reuse_resident_id',$input)?Validator::id($input['reuse_resident_id'],'reuse_resident_id'):null;
 
-        return $this->app->database()->transaction(function (PDO $pdo) use ($id,$adminId,$pin,$email,$emailProvided,$moveIn,$reuseResidentId,$timezone): array {
+        return $this->app->database()->transaction(function (PDO $pdo) use ($id,$adminId,$email,$emailProvided,$moveIn,$reuseResidentId,$timezone): array {
             $lookup=$pdo->prepare('SELECT room_id FROM bookings WHERE id=?');
             $lookup->execute([$id]);
             $roomId=$lookup->fetchColumn();
@@ -298,13 +298,23 @@ final class BookingService
                     ]);
                 }
                 $residentEmail=$emailProvided?$email:$resident['email'];
-                $update = $pdo->prepare('UPDATE residents SET full_name=?,email=?,line_user_id=?,pin_hash=?,active=1,auth_version=auth_version+1,updated_at=UTC_TIMESTAMP() WHERE id=?');
                 // A returning resident must prove control of the LINE account
                 // again instead of inheriting a potentially stale binding.
-                $update->execute([$booking['full_name'],$residentEmail,null,Password::hash($pin),$residentId]);
+                if($this->hasLegacyResidentCredentialColumn($pdo)){
+                    $update = $pdo->prepare('UPDATE residents SET full_name=?,email=?,line_user_id=?,pin_hash=?,active=1,auth_version=auth_version+1,updated_at=UTC_TIMESTAMP() WHERE id=?');
+                    $update->execute([$booking['full_name'],$residentEmail,null,$this->disabledLegacyCredential(),$residentId]);
+                }else{
+                    $update = $pdo->prepare('UPDATE residents SET full_name=?,email=?,line_user_id=?,active=1,auth_version=auth_version+1,updated_at=UTC_TIMESTAMP() WHERE id=?');
+                    $update->execute([$booking['full_name'],$residentEmail,null,$residentId]);
+                }
             } else {
-                $insertResident = $pdo->prepare('INSERT INTO residents (full_name,phone_norm,email,pin_hash,line_user_id,auth_version,active,created_at,updated_at) VALUES (?,?,?,?,?,1,1,UTC_TIMESTAMP(),UTC_TIMESTAMP())');
-                $insertResident->execute([$booking['full_name'],$booking['phone_norm'],$email,Password::hash($pin),null]);
+                if($this->hasLegacyResidentCredentialColumn($pdo)){
+                    $insertResident = $pdo->prepare('INSERT INTO residents (full_name,phone_norm,email,pin_hash,line_user_id,auth_version,active,created_at,updated_at) VALUES (?,?,?,?,?,1,1,UTC_TIMESTAMP(),UTC_TIMESTAMP())');
+                    $insertResident->execute([$booking['full_name'],$booking['phone_norm'],$email,$this->disabledLegacyCredential(),null]);
+                }else{
+                    $insertResident = $pdo->prepare('INSERT INTO residents (full_name,phone_norm,email,line_user_id,auth_version,active,created_at,updated_at) VALUES (?,?,?,?,1,1,UTC_TIMESTAMP(),UTC_TIMESTAMP())');
+                    $insertResident->execute([$booking['full_name'],$booking['phone_norm'],$email,null]);
+                }
                 $residentId = (int) $pdo->lastInsertId();
             }} catch (\PDOException $error) {
                 if (($error->errorInfo[1] ?? null) === 1062) throw new HttpException(409,'Phone or LINE account is already assigned to another resident','RESIDENT_IDENTITY_CONFLICT');
@@ -325,6 +335,26 @@ final class BookingService
                 'occupancy_id'=>$occupancyId,'room_id'=>(int)$booking['room_id'],'move_in_date'=>$moveIn,
             ];
         });
+    }
+
+    /**
+     * The production column is removed by migration 006 after the new web
+     * release is active. Supporting both shapes keeps move-in available while
+     * Railway replaces replicas; the random value is never accepted by the
+     * phone-only login path and is not derived from resident data.
+     */
+    private function hasLegacyResidentCredentialColumn(PDO $pdo): bool
+    {
+        if($this->legacyResidentCredentialColumn!==null)return $this->legacyResidentCredentialColumn;
+        $statement=$pdo->query("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='residents' AND column_name='pin_hash'");
+        $count=$statement->fetchColumn();
+        if($count===false)throw new \RuntimeException('Unable to inspect the resident credential schema');
+        return $this->legacyResidentCredentialColumn=(int)$count===1;
+    }
+
+    private function disabledLegacyCredential(): string
+    {
+        return Password::hash(bin2hex(random_bytes(32)));
     }
 
     /** @param list<string> $allowed

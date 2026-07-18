@@ -116,11 +116,9 @@
     SLIP_NOT_CONFIGURED: 'ระบบตรวจสลิปยังตั้งค่าไม่ครบ กรุณาติดต่อผู้ดูแล',
     LINE_NOT_CONFIGURED: 'ยังไม่ได้ตั้งค่า LINE Messaging',
     LINE_NOT_VERIFIED: 'บัญชี LINE ยังไม่ผ่านรหัสยืนยัน',
-    LINE_LINK_STALE: 'PIN ถูกเปลี่ยนหลังขอรหัส LINE กรุณาขอรหัสใหม่',
+    LINE_LINK_STALE: 'ข้อมูลบัญชีเปลี่ยนหลังขอรหัส LINE กรุณาขอรหัสใหม่',
     METER_HISTORY_LOCKED: 'แก้เลขมิเตอร์นี้ไม่ได้ เพราะมีรอบเดือนถัดไปอ้างอิงแล้ว',
     METER_ALREADY_BILLED: 'แก้เลขมิเตอร์ไม่ได้หลังออกบิลแล้ว',
-    INVALID_CURRENT_PIN: 'PIN ปัจจุบันไม่ถูกต้อง',
-    PIN_UNCHANGED: 'PIN ใหม่ต้องไม่ซ้ำกับ PIN ปัจจุบัน',
     ADMIN_NOT_FOUND: 'ไม่พบบัญชีผู้ดูแล',
     USERNAME_EXISTS: 'ชื่อผู้ใช้นี้มีอยู่แล้ว',
     LAST_OWNER: 'ระบบต้องมีเจ้าของที่ใช้งานได้อย่างน้อย 1 บัญชี',
@@ -504,7 +502,7 @@
     load();
   }
 
-  function initLogin(formId, endpoint, destination) {
+  function initLogin(formId, endpoint, destination, fallbackMessage = 'เข้าสู่ระบบไม่สำเร็จ') {
     const form = $(formId);
     if (!form) return;
     const error = $(`${formId.replace('-form', '-error')}`);
@@ -519,7 +517,7 @@
         await api(endpoint, { method: 'POST', body: values });
         location.assign(destination);
       } catch (requestError) {
-        showFormError(error, errorMessage(requestError, 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง'));
+        showFormError(error, errorMessage(requestError, fallbackMessage));
       } finally {
         setBusy(button, false);
       }
@@ -534,7 +532,6 @@
     const lineStartForm = $('#resident-line-start-form');
     const lineConfirmForm = $('#resident-line-confirm-form');
     const lineUnlinkButton = $('#resident-line-unlink');
-    const pinForm = $('#resident-pin-form');
     const billDialog = $('#resident-bill-dialog');
 
     function billStatus(bill) {
@@ -753,21 +750,20 @@
       if (!lineStartForm.reportValidity()) return;
       const button = lineStartForm.querySelector('[type="submit"]');
       const lineUserId = String(lineStartForm.elements.line_user_id.value || '').trim();
-      const currentPin = String(lineStartForm.elements.current_pin.value || '');
       setBusy(button, true, 'กำลังส่งรหัส…');
       try {
-        const result = await api('/api/resident/profile/line/start', { method: 'POST', body: { line_user_id: lineUserId, current_pin: currentPin } });
+        const result = await api('/api/resident/profile/line/start', { method: 'POST', body: { line_user_id: lineUserId } });
         lineConfirmForm.hidden = false;
         lineConfirmForm.reset();
         lineConfirmForm.elements.code.focus();
         toast(`ส่งรหัสยืนยันไปยัง ${text(result?.line_user_id_hint, 'LINE แล้ว')}`);
       } catch (errorValue) {
-        if (!['LINE_NOT_CONFIGURED', 'LINE_DELIVERY_REJECTED', 'INVALID_CURRENT_PIN', 'VALIDATION_ERROR'].includes(errorValue?.details?.code)) {
+        if (!['LINE_NOT_CONFIGURED', 'LINE_DELIVERY_REJECTED', 'VALIDATION_ERROR'].includes(errorValue?.details?.code)) {
           lineConfirmForm.hidden = false;
         }
         showFormError(error, errorMessage(errorValue));
       }
-      finally { lineStartForm.elements.current_pin.value = ''; setBusy(button, false); }
+      finally { setBusy(button, false); }
     });
     lineConfirmForm.addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -787,38 +783,19 @@
       finally { setBusy(button, false); }
     });
     lineUnlinkButton.addEventListener('click', async () => {
-      const currentPinInput = lineStartForm.elements.current_pin;
-      if (!currentPinInput.reportValidity()) return;
       if (!await confirmAction('ยกเลิกการผูก LINE', 'หลังยกเลิก ระบบจะไม่ส่งบิลใหม่ไปยัง LINE จนกว่าจะยืนยันอีกครั้ง')) return;
       const error = $('#resident-line-error');
       showFormError(error);
       setBusy(lineUnlinkButton, true, 'กำลังยกเลิก…');
       try {
-        const data = await api('/api/resident/profile/line/unlink', { method: 'POST', body: { current_pin: String(currentPinInput.value || '') } });
+        const data = await api('/api/resident/profile/line/unlink', { method: 'POST', body: {} });
         state.profile = objectFrom(data, 'profile');
         fillProfile();
         lineConfirmForm.hidden = true;
         lineConfirmForm.reset();
         toast('ยกเลิกการผูก LINE แล้ว');
       } catch (errorValue) { showFormError(error, errorMessage(errorValue)); }
-      finally { currentPinInput.value = ''; setBusy(lineUnlinkButton, false); }
-    });
-    pinForm.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const error = $('#resident-pin-error');
-      showFormError(error);
-      if (!pinForm.reportValidity()) return;
-      const values = Object.fromEntries(new FormData(pinForm).entries());
-      if (values.new_pin !== values.confirm_pin) { showFormError(error, 'PIN ใหม่และคำยืนยันไม่ตรงกัน'); return; }
-      const button = pinForm.querySelector('[type="submit"]');
-      setBusy(button, true, 'กำลังเปลี่ยน PIN…');
-      try {
-        const result = await api('/api/resident/profile/pin', { method: 'POST', body: { current_pin: values.current_pin, new_pin: values.new_pin } });
-        pinForm.reset();
-        if (result?.reauthenticate) { location.assign('/resident/login'); return; }
-        toast('เปลี่ยน PIN แล้ว');
-      } catch (errorValue) { showFormError(error, errorMessage(errorValue)); }
-      finally { setBusy(button, false); }
+      finally { setBusy(lineUnlinkButton, false); }
     });
     $('#resident-load-qr').addEventListener('click', async (event) => {
       const button = event.currentTarget;
@@ -1116,8 +1093,7 @@
     $('#move-in-form').addEventListener('submit', async (event) => {
       event.preventDefault(); const form = event.currentTarget; const error = $('#move-in-error'); showFormError(error); if (!form.reportValidity()) return;
       const values = Object.fromEntries(new FormData(form).entries());
-      if (values.pin !== values.confirm_pin) { showFormError(error, 'PIN เริ่มต้นและคำยืนยันไม่ตรงกัน กรุณากรอกใหม่'); form.elements.confirm_pin.focus(); return; }
-      const id = values.booking_id; delete values.booking_id; delete values.confirm_pin;
+      const id = values.booking_id; delete values.booking_id;
       const button = form.querySelector('[type="submit"]'); setBusy(button, true, 'กำลังรับเข้าพัก…');
       try { await api(`/api/admin/bookings/${encodeURIComponent(id)}/move-in`, { method: 'POST', body: values }); closeDialog($('#move-in-dialog')); toast('รับเข้าพักและสร้างบัญชีแล้ว'); state.loaded.delete('residents'); await Promise.all([loadBookings(), loadRooms()]); }
       catch (requestError) {
@@ -1140,7 +1116,6 @@
         const active = !(resident.active === false || resident.active === 0);
         const actions = active ? rowActions(
           actionButton('แก้ข้อมูล', 'edit-resident', resident.id),
-          actionButton('ตั้ง PIN ใหม่', 'reset-resident-pin', resident.id),
           actionButton('ย้ายออก', 'move-out-resident', resident.id, 'button-danger-text'),
         ) : rowActions();
         tr.append(td(person), td(text(resident.room_code || resident.room?.room_code)), td(text(resident.phone)), td(line), td(formatDate(resident.move_in_date)), td(pill(active ? 'active' : 'inactive')), td(actions, 'align-right'));
@@ -1158,10 +1133,6 @@
         const form = $('#resident-edit-form'); form.reset(); form.elements.resident_id.value = resident.id;
         ['full_name', 'phone', 'email'].forEach((name) => { form.elements[name].value = resident[name] || ''; });
         $('#resident-edit-summary').textContent = summary; showFormError($('#resident-edit-error')); openDialog($('#resident-edit-dialog'));
-      }
-      if (button.dataset.action === 'reset-resident-pin') {
-        const form = $('#resident-pin-reset-form'); form.reset(); form.elements.resident_id.value = resident.id;
-        $('#resident-pin-reset-summary').textContent = summary; showFormError($('#resident-pin-reset-error')); openDialog($('#resident-pin-reset-dialog'));
       }
       if (button.dataset.action === 'move-out-resident') {
         const form = $('#resident-move-out-form'); form.reset(); form.elements.resident_id.value = resident.id;
@@ -1181,14 +1152,6 @@
         const updated = await api(`/api/admin/residents/${encodeURIComponent(id)}`, { method: 'PUT', body: values });
         closeDialog($('#resident-edit-dialog')); form.reset(); toast(updated?.sessions_revoked ? 'บันทึกแล้วและยกเลิกเซสชันเดิมของผู้พัก' : 'บันทึกข้อมูลผู้พักแล้ว'); await loadResidents();
       } catch (requestError) { showFormError(error, errorMessage(requestError)); } finally { setBusy(button, false); }
-    });
-    $('#resident-pin-reset-form').addEventListener('submit', async (event) => {
-      event.preventDefault(); const form = event.currentTarget; const error = $('#resident-pin-reset-error'); showFormError(error); if (!form.reportValidity()) return;
-      const values = Object.fromEntries(new FormData(form).entries());
-      if (values.new_pin !== values.confirm_pin) { showFormError(error, 'PIN ใหม่และคำยืนยันไม่ตรงกัน'); return; }
-      const id = values.resident_id; const button = form.querySelector('[type="submit"]'); setBusy(button, true, 'กำลังบันทึก…');
-      try { await api(`/api/admin/residents/${encodeURIComponent(id)}/reset-pin`, { method: 'POST', body: { new_pin: values.new_pin } }); closeDialog($('#resident-pin-reset-dialog')); form.reset(); toast('ตั้ง PIN ใหม่และยกเลิกเซสชันเดิมแล้ว'); }
-      catch (requestError) { showFormError(error, errorMessage(requestError)); } finally { setBusy(button, false); }
     });
     $('#resident-move-out-form').addEventListener('submit', async (event) => {
       event.preventDefault(); const form = event.currentTarget; const error = $('#resident-move-out-error'); showFormError(error); if (!form.reportValidity()) return;
@@ -1724,8 +1687,8 @@
 
   setupCommonInteractions();
   initPublicRooms();
-  initLogin('#admin-login-form', '/api/auth/admin/login', '/admin');
-  initLogin('#resident-login-form', '/api/auth/resident/login', '/resident');
+  initLogin('#admin-login-form', '/api/auth/admin/login', '/admin', 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง');
+  initLogin('#resident-login-form', '/api/auth/resident/login', '/resident', 'ไม่สามารถเข้าสู่ระบบด้วยเบอร์นี้ได้');
   initResidentPortal();
   initAdminConsole();
 })();

@@ -1,6 +1,6 @@
 -- Required, idempotent baseline for a new deployment.
 -- Safe for production: no room, resident, booking, bill, payment, admin,
--- password, PIN, PromptPay number, LINE token or slip-provider credential.
+-- password, PromptPay number, LINE token or slip-provider credential.
 --
 -- Water/electric rates intentionally start at zero and updated_by stays NULL.
 -- An administrator must review and save the real billing settings before

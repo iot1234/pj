@@ -5,7 +5,6 @@ namespace Dormitory\Domain;
 
 use Dormitory\Application;
 use Dormitory\Http\HttpException;
-use Dormitory\Security\Password;
 use Dormitory\Support\Validator;
 use PDO;
 use PDOException;
@@ -32,8 +31,8 @@ final class ResidentService
     /** @return array<string,mixed> */
     public function profile(int $id): array
     {
-        $statement=$this->app->database()->pdo()->prepare("SELECT r.id,r.full_name,r.phone_norm AS phone,r.email,r.line_user_id,r.auth_version,rm.id AS room_id,rm.room_code FROM residents r JOIN occupancies o ON o.resident_id=r.id AND o.status='active' JOIN rooms rm ON rm.id=o.room_id WHERE r.id=?");
-        $statement->execute([$id]);$row=$statement->fetch();if(!$row)throw new HttpException(404,'Resident not found','RESIDENT_NOT_FOUND');$row['id']=(int)$row['id'];$row['room_id']=(int)$row['room_id'];$row['line_verified']=$this->app->notifications()->isLineBindingVerified($row['id'],$row['line_user_id']??null);
+        $statement=$this->app->database()->pdo()->prepare("SELECT r.id,r.full_name,r.phone_norm AS phone,r.email,r.line_user_id,r.auth_version,rm.id AS room_id,rm.room_code FROM residents r JOIN occupancies o ON o.resident_id=r.id AND o.status='active' JOIN rooms rm ON rm.id=o.room_id AND rm.deleted_at IS NULL WHERE r.id=? AND r.active=1 ORDER BY o.id DESC LIMIT 2");
+        $statement->execute([$id]);$rows=$statement->fetchAll();$row=count($rows)===1?$rows[0]:false;if(!$row)throw new HttpException(404,'Resident not found','RESIDENT_NOT_FOUND');$row['id']=(int)$row['id'];$row['room_id']=(int)$row['room_id'];$row['line_verified']=$this->app->notifications()->isLineBindingVerified($row['id'],$row['line_user_id']??null);
         $challenge=$this->app->session()->lineLinkChallenge();$now=time();
         if(is_array($challenge)&&(int)($challenge['resident_id']??0)===$row['id']
             &&(int)($challenge['auth_version']??-1)===(int)$row['auth_version']
@@ -115,13 +114,12 @@ final class ResidentService
     /** @return array{line_user_id_hint:string,expires_in:int} */
     public function startLineLink(int $id,array $input): array
     {
-        Validator::only($input,['line_user_id','current_pin']);
+        Validator::only($input,['line_user_id']);
         $lineUserId=trim(is_string($input['line_user_id']??null)?$input['line_user_id']:'');
         if(!preg_match('/^U[0-9a-f]{32}$/D',$lineUserId)){
             throw new HttpException(422,'LINE User ID ไม่ถูกต้อง','VALIDATION_ERROR',['field'=>'line_user_id']);
         }
-        $this->profile($id);
-        $authVersion=$this->assertCurrentPin($id,is_string($input['current_pin']??null)?$input['current_pin']:'');
+        $authVersion=$this->activeAuthVersion($id);
         $code=(string)random_int(100000,999999);
         $nonce=bin2hex(random_bytes(16));
         $expiresAt=time()+600;
@@ -176,12 +174,10 @@ final class ResidentService
 
         $pdo=$this->app->database()->pdo();
         if(!$pdo->inTransaction())throw new \RuntimeException('LINE confirmation requires a database transaction');
-        $lock=$pdo->prepare('SELECT auth_version FROM residents WHERE id=? AND active=1 FOR UPDATE');
-        $lock->execute([$id]);$currentVersion=$lock->fetchColumn();
-        if($currentVersion===false)throw new HttpException(404,'Resident not found','RESIDENT_NOT_FOUND');
+        $currentVersion=$this->activeAuthVersion($id,true);
         if((int)$currentVersion!==(int)$challenge['auth_version']){
             $this->app->session()->clearLineLinkChallenge();
-            throw new HttpException(409,'ข้อมูลยืนยันหมดอายุหลังมีการเปลี่ยน PIN กรุณาขอรหัสใหม่','LINE_LINK_STALE');
+            throw new HttpException(409,'ข้อมูลยืนยันหมดอายุหลังข้อมูลบัญชีเปลี่ยนแปลง กรุณาขอรหัสใหม่','LINE_LINK_STALE');
         }
         try{
             $update=$pdo->prepare('UPDATE residents SET line_user_id=?,updated_at=UTC_TIMESTAMP() WHERE id=? AND active=1');
@@ -198,8 +194,8 @@ final class ResidentService
     /** @return array<string,mixed> */
     public function unlinkLine(int $id,array $input): array
     {
-        Validator::only($input,['current_pin']);
-        $this->assertCurrentPin($id,is_string($input['current_pin']??null)?$input['current_pin']:'',true);
+        Validator::only($input,[]);
+        $this->activeAuthVersion($id,true);
         $statement=$this->app->database()->pdo()->prepare('UPDATE residents SET line_user_id=NULL,updated_at=UTC_TIMESTAMP() WHERE id=? AND active=1');
         $statement->execute([$id]);
         if($statement->rowCount()===0)$this->profile($id);
@@ -211,49 +207,20 @@ final class ResidentService
         return hash_hmac('sha256',"line-link\0{$residentId}\0{$lineUserId}\0{$code}\0{$nonce}",$this->app->config->appKey());
     }
 
-    private function assertCurrentPin(int $residentId,string $pin,bool $forUpdate=false): int
+    private function activeAuthVersion(int $residentId,bool $forUpdate=false): int
     {
         $pdo=$this->app->database()->pdo();
-        if($forUpdate&&!$pdo->inTransaction())throw new \RuntimeException('Current PIN lock requires a database transaction');
-        $statement=$pdo->prepare('SELECT pin_hash,auth_version FROM residents WHERE id=? AND active=1 LIMIT 1'.($forUpdate?' FOR UPDATE':''));
+        if($forUpdate&&!$pdo->inTransaction())throw new \RuntimeException('Resident lock requires a database transaction');
+        $statement=$pdo->prepare("SELECT r.auth_version
+            FROM residents r
+            JOIN occupancies o ON o.resident_id=r.id AND o.status='active'
+            JOIN rooms rm ON rm.id=o.room_id AND rm.deleted_at IS NULL
+            WHERE r.id=? AND r.active=1
+            ORDER BY o.id DESC LIMIT 2".($forUpdate?' FOR UPDATE':''));
         $statement->execute([$residentId]);
-        $row=$statement->fetch();
-        if(!$row||!Password::verify($pin,(string)$row['pin_hash'])){
-            throw new HttpException(401,'PIN ปัจจุบันไม่ถูกต้อง','INVALID_CURRENT_PIN');
-        }
-        return (int)$row['auth_version'];
-    }
-
-    public function changePin(int $id,array $input): void
-    {
-        Validator::only($input,['current_pin','new_pin']);$current=(string)($input['current_pin']??'');$new=(string)($input['new_pin']??'');Password::assertPin($new);
-        $newHash=Password::hash($new);
-        $this->app->database()->transaction(function(PDO $pdo) use($id,$current,$new,$newHash): void {
-            $statement=$pdo->prepare('SELECT pin_hash FROM residents WHERE id=? AND active=1 FOR UPDATE');$statement->execute([$id]);$row=$statement->fetch();
-            if(!$row||!Password::verify($current,(string)$row['pin_hash']))throw new HttpException(401,'PIN ปัจจุบันไม่ถูกต้อง','INVALID_CURRENT_PIN');
-            if(hash_equals($current,$new))throw new HttpException(422,'PIN ใหม่ต้องไม่ซ้ำกับ PIN ปัจจุบัน','PIN_UNCHANGED');
-            $pdo->prepare('UPDATE residents SET pin_hash=?,auth_version=auth_version+1,updated_at=UTC_TIMESTAMP() WHERE id=? AND active=1')->execute([$newHash,$id]);
-        });
-    }
-
-    public function resetPin(int $id,array $input): void
-    {
-        Validator::only($input,['new_pin']);
-        $pin=(string)($input['new_pin']??'');
-        Password::assertPin($pin);
-        $hash=Password::hash($pin);
-        $this->app->database()->transaction(function(PDO $pdo)use($id,$hash):void{
-            $statement=$pdo->prepare("SELECT r.id
-                FROM residents r
-                JOIN occupancies o ON o.resident_id=r.id AND o.status='active'
-                WHERE r.id=? AND r.active=1
-                FOR UPDATE");
-            $statement->execute([$id]);
-            if(!$statement->fetch())throw new HttpException(404,'ไม่พบผู้พักอาศัยปัจจุบัน','RESIDENT_NOT_FOUND');
-            $update=$pdo->prepare('UPDATE residents SET pin_hash=?,auth_version=auth_version+1,updated_at=UTC_TIMESTAMP() WHERE id=? AND active=1');
-            $update->execute([$hash,$id]);
-            if($update->rowCount()!==1)throw new HttpException(409,'สถานะผู้พักเปลี่ยนแปลงแล้ว กรุณารีเฟรช','RESIDENT_CHANGED');
-        });
+        $rows=$statement->fetchAll();
+        if(count($rows)!==1)throw new HttpException(404,'Resident not found','RESIDENT_NOT_FOUND');
+        return (int)$rows[0]['auth_version'];
     }
 
     /** @return array<string,mixed> */

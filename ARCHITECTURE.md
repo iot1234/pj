@@ -15,8 +15,15 @@ is reference material only and is not modified.
   server-to-server exception is the LINE webhook, which authenticates the raw
   body with `X-Line-Signature` and the encrypted Channel secret.
 - Admin roles are `owner` and `admin`; only `owner` manages admin accounts.
-- Resident authentication is normalized Thai phone number plus a 6-12 digit
-  PIN. Room and occupancy are never editable by a resident.
+- Resident authentication accepts only a normalized Thai phone number that
+  belongs to an active resident with an active occupancy. This is deliberately
+  low-assurance: anyone who knows that phone number can take over the resident
+  account, and rate limits cannot prevent the first successful takeover. There
+  is no resident trusted-device bypass. Resident sessions expire after 15
+  minutes idle or one hour absolute. Room and occupancy are never editable by
+  a resident; profile name and email remain resident-editable.
+- Admin authentication remains username plus password and is independent from
+  the resident phone-only flow.
 - Room status is derived: active occupancy = `occupied`; otherwise active
   pending/confirmed booking = `reserved`; otherwise `available`.
 - Periods use `YYYY-MM` at the API boundary and the first day of the month in
@@ -49,18 +56,19 @@ is reference material only and is not modified.
 - `POST /api/public/bookings` `{room_id, full_name, phone, idempotency_key}`
 - `POST /api/auth/admin/login` `{username,password}`
 - `POST /api/auth/admin/logout`
-- `POST /api/auth/resident/login` `{phone,pin}`
+- `POST /api/auth/resident/login` `{phone}`
 - `POST /api/auth/resident/logout`
 - `GET /api/auth/me`
 
 ### Resident
 
 - `GET|PUT /api/resident/profile`
-- `POST /api/resident/profile/pin` `{current_pin,new_pin}`
-- `POST /api/resident/profile/line/start` `{line_user_id,current_pin}`;
-  `POST .../line/confirm` `{code}`; `POST .../line/unlink` `{current_pin}`.
+- `POST /api/resident/profile/line/start` `{line_user_id}`;
+  `POST .../line/confirm` `{code}`; `POST .../line/unlink` `{}`.
   Billing delivery requires the latest append-only audit proof to match the
   current LINE ID; legacy IDs without this OTP proof are treated as unverified.
+  The OTP proves control of the destination LINE account only; without a
+  resident credential it does not prove the resident's identity.
 - `GET /api/resident/bills`
 - `GET /api/resident/bills/{id}`
 - `GET /api/resident/bills/{id}/promptpay`
@@ -75,8 +83,6 @@ is reference material only and is not modified.
 - `PUT /api/admin/residents/{id}` `{full_name,phone,email}` lets an
   Admin perform an identity-verified correction; changing the login phone
   increments `auth_version` and revokes existing resident sessions.
-- `POST /api/admin/residents/{id}/reset-pin` `{new_pin}` resets the resident
-  PIN and revokes existing resident sessions.
 - `POST /api/admin/residents/{id}/move-out` `{move_out_date}` ends the active
   occupancy only after the closing-month bill exists, is paid, and no pending
   bill remains; a backdated move-out is rejected if later bills already exist.
@@ -85,7 +91,7 @@ is reference material only and is not modified.
 - `POST /api/admin/bookings/{id}/confirm`
 - `POST /api/admin/bookings/{id}/cancel`
 - `POST /api/admin/bookings/{id}/move-in`
-  `{pin,email,move_in_date,reuse_resident_id?}`; LINE is linked later by the
+  `{email,move_in_date,reuse_resident_id?}`; LINE is linked later by the
   resident through the verified flow above.
 - `GET /api/admin/meters?period=YYYY-MM`
 - `POST /api/admin/meters`
@@ -137,7 +143,10 @@ an application restart.
   for booking, owner management, move-in, bill generation, and payment finalization.
 - Lazy session start, session rotation, strict cookies, session/stateless guest
   CSRF plus same-origin checks, DB-backed IP/account rate limits, generic login
-  errors, password/PIN hashing, and `auth_version` session revocation.
+  errors, admin password hashing, and `auth_version` session revocation.
+  Resident sessions have fixed 15-minute idle and one-hour absolute limits and
+  never use the trusted-device bypass. These controls reduce automated abuse
+  but cannot make knowledge of a resident phone number a secure authenticator.
 - Slip files are JPEG/PNG/WebP at most 4 MiB, validated by magic bytes and
   dimensions, stored below `storage/private`, and protected by an APP_KEY-based
   HMAC. Admin evidence viewing revalidates the canonical path, MIME, size,
@@ -165,6 +174,13 @@ rows without credentials, rooms, residents, or admin accounts.
 `database/demo.sql` is optional local-development data and is never imported by
 the production bootstrap.
 
+Fresh schema no longer contains `residents.pin_hash`. During a rolling upgrade,
+the new application can temporarily coexist with an older production schema
+whose `pin_hash` column is still `NOT NULL`: move-in writes a random,
+unexposed, unusable compatibility credential only to satisfy that old column,
+and no API accepts it. Migration `006_remove_resident_pin.sql` removes the
+legacy column after the new application is active.
+
 Existing installations must be backed up and upgraded by a schema-owning
 account. Run `database/migrations/001_integration_settings.sql` if the
 integration table is absent, then run
@@ -181,6 +197,12 @@ After correcting/quarantining legacy LINE IDs that do not match
 IDs for reconciliation, strict 33-character ID columns, and their CHECK
 constraints; its preflight stops before any ALTER when legacy values are
 invalid.
+Run `database/migrations/005_booking_active_phone.sql` after resolving duplicate
+active bookings per phone, then deploy the phone-only application before
+running `database/migrations/006_remove_resident_pin.sql`. Migration 006 is a
+destructive schema cleanup, so back up and test restore first; an old
+PIN-dependent application version cannot be rolled back after the column is
+removed.
 The application runtime account has only `SELECT`, `INSERT`, and `UPDATE` on the
 application database and must not run any migration. After upgrade, an owner
 configures integrations in Admin -> Settings.

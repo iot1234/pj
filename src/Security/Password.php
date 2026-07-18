@@ -60,14 +60,4 @@ final class Password
         }
     }
 
-    public static function assertPin(string $pin): void
-    {
-        if (!preg_match('/^\d{6,12}$/', $pin)) {
-            throw new HttpException(422, 'PIN ต้องเป็นตัวเลข 6-12 หลัก', 'VALIDATION_ERROR', ['field' => 'pin']);
-        }
-        if (preg_match('/^(\d)\1+$/', $pin)
-            || preg_match('/(?:012345|123456|234567|345678|456789|987654|876543|765432|654321)/', $pin)) {
-            throw new HttpException(422, 'PIN เดาง่ายเกินไป กรุณาใช้ตัวเลขที่คาดเดายากขึ้น', 'WEAK_PIN', ['field' => 'pin']);
-        }
-    }
 }

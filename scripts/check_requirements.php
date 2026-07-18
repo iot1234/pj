@@ -504,6 +504,19 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
             addResult($errors, 'schema ไม่ครบ; ขาดตาราง: ' . implode(', ', $missing));
         }
 
+        $retiredResidentCredentialStatement=$pdo->prepare("SELECT COUNT(*)
+            FROM information_schema.columns
+            WHERE table_schema=? AND table_name='residents' AND column_name='pin_hash'");
+        $retiredResidentCredentialStatement->execute([$database]);
+        $retiredResidentCredentialColumns=(int)$retiredResidentCredentialStatement->fetchColumn();
+        if($retiredResidentCredentialColumns===0){
+            addResult($successes,'schema ไม่มีคอลัมน์ credential ของ Resident ที่เลิกใช้แล้ว');
+        }elseif($schemaAudit){
+            addResult($errors,'schema ยังมี residents.pin_hash; สำรองฐาน รอให้แอป phone-only ทุก replica พร้อม แล้วรัน migration 006');
+        }else{
+            addResult($warnings,'schema ยังมี residents.pin_hash ชั่วคราวสำหรับ rolling deploy; รัน --schema-audit หลัง migration 006');
+        }
+
         $grantRows = $pdo->query('SHOW GRANTS')->fetchAll(PDO::FETCH_NUM);
         $grantInspection = inspectRuntimeGrants($grantRows, $database);
         if ($schemaAudit) {

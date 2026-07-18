@@ -1,7 +1,7 @@
 -- OPTIONAL LOCAL-DEVELOPMENT DEMO DATA ONLY.
 -- Never import this file into production. Import schema.sql and defaults.sql
 -- first. This file deliberately contains no billing settings, integration
--- settings, admin, resident, booking, bill, payment, password, PIN or API key.
+-- settings, admin, resident, booking, bill, payment, password or API key.
 -- Room codes and rents are conspicuous test placeholders, not real financial
 -- values. Create real rooms from the admin console instead.
 

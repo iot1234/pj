@@ -17,7 +17,7 @@
 
 - การกู้คืนงานตรวจสลิปที่ยังไม่จบ: Admin ดูหลักฐานที่ผ่านการตรวจความสมบูรณ์ สั่งตรวจซ้ำภายใต้ verification lease หรือปิดรายการ pending ที่หมด lease พร้อมเหตุผลได้ โดยไม่มีทางลัด manual paid/approve
 - การจัดการผลลัพธ์ mutation ที่กำกวม: client กำหนด timeout และแยกกรณีที่คำสั่งอาจสำเร็จฝั่ง server แล้ว เพื่อให้ผู้ใช้ refresh ตรวจสถานะก่อนส่งคำสั่งเดิมซ้ำ
-- วงจรผู้พัก: Admin รีเซ็ต PIN พร้อม revoke session เก่า และย้ายออกด้วย transaction หลังตรวจว่าบิลเดือนปิดท้ายชำระแล้วและไม่มีบิล pending
+- วงจรผู้พัก: Admin แก้ข้อมูล/เบอร์พร้อม revoke session เก่า และย้ายออกด้วย transaction หลังตรวจว่าบิลเดือนปิดท้ายชำระแล้วและไม่มีบิล pending; ระบบใหม่ไม่มี PIN หรือขั้นตอน reset PIN
 
 ฟีเจอร์อื่นของระบบอ้างอิง เช่น multi-property, สัญญา, บัญชีขั้นสูง และ scheduler ไม่ได้ถูกนำมาโดยอัตโนมัติ เพราะอยู่นอกขอบเขต `1.txt` และต้องมี requirement/schema/authorization/test แยกต่างหาก
 
@@ -32,6 +32,8 @@
 - บิลเก็บ snapshot ค่าเช่า มิเตอร์ อัตรา และยอด ณ วันที่ออกบิล พร้อม trigger ห้ามแก้ข้อมูลการเงินย้อนหลัง
 - สลิปถูก decode/re-encode และเก็บใต้ private storage; การเปิดหลักฐานผ่าน route ที่ยืนยันสิทธิ์ ตรวจ canonical path/MIME/ขนาด/dimensions/HMAC ซ้ำ และบันทึก audit เท่านั้น
 - ค่าใช้งาน PromptPay, LINE, SlipOK และ EasySlip จัดการจาก Admin → ตั้งค่า โดย Owner และเก็บใน singleton `integration_settings`; LINE Channel access token/Channel secret และ API key เข้ารหัส AES-256-GCM ด้วย `APP_KEY` และ AAD แยก field ส่วน `APP_KEY`, `APP_URL` และค่าเชื่อมต่อ DB ยังคงเป็น infrastructure environment
+- Resident login ใช้เบอร์โทรที่ผูกกับ resident/occupancy active เพียงอย่างเดียว ไม่มี PIN หรือ trusted-device bypass, session idle 15 นาที/absolute 1 ชั่วโมง; Admin/Owner ยังคงใช้ username/password การตัดสินใจนี้มี assurance ต่ำและผู้ที่รู้เบอร์ active สามารถสวมบัญชีได้ โดย rate limit ป้องกัน takeover ครั้งแรกไม่ได้
+- Resident ยังแก้ชื่อ/email ของตนได้ การย้ายเข้าไม่รับ PIN และไม่มี route เปลี่ยน/รีเซ็ต PIN ส่วนการผูก LINE ใช้ OTP ไปยังบัญชี LINE ปลายทางโดยไม่ใช้ PIN ซึ่งพิสูจน์เพียงการควบคุม LINE นั้น ไม่ได้พิสูจน์ตัวผู้พัก
 
 รายละเอียดการจับคู่ทุก requirement อยู่ใน `FEATURE_MATRIX.md` ส่วน API contract อยู่ใน `ARCHITECTURE.md`
 
@@ -39,7 +41,7 @@
 
 `database/defaults.sql` เป็นค่าเริ่มต้นที่ปลอดภัยสำหรับทุกสภาพแวดล้อม มีเฉพาะ singleton settings ที่ไม่มี credential และไม่มีห้อง/ผู้เช่า/บัญชีผู้ดูแล ส่วน `database/demo.sql` เป็นข้อมูลห้องทดสอบแบบเห็นชัดที่ต้อง import เองเฉพาะฐาน local ไม่ใช่ตัวนำเข้าข้อมูล production การนำข้อมูลใช้งานจริงจาก PostgreSQL เดิมเข้ามาต้อง reconcile ก่อน เพราะห้อง/ผู้เช่า/บิลอาจปรากฏทั้ง JSONB และตาราง relational
 
-การติดตั้งใหม่ที่ต้องการฐานชื่อ `dormitory` และมีสิทธิ์สร้างฐานใช้ `database/install.sql` ไฟล์เดียวได้ ส่วนฐานชื่ออื่นหรือฐานที่สร้างไว้แล้วให้ใช้วิธีขั้นสูงโดยเลือกฐานเป้าหมายแล้ว import `database/schema.sql` ตามด้วย `database/defaults.sql`; schema มีโครงสร้างล่าสุดและ defaults สร้าง singleton `billing_settings`/`integration_settings` โดยไม่มี credential จึงไม่ต้องรัน migration ซ้ำ ส่วนระบบ PHP/MySQL ที่ติดตั้งจาก schema รุ่นก่อนต้องสำรองและทดสอบ restore แล้วใช้บัญชี schema/migration ที่มีสิทธิ์ DDL รัน `001` เมื่อจำเป็น → `002` หนึ่งครั้ง → `003` → `004` หลังแก้ LINE ID legacy → `005_booking_active_phone.sql` หลังปิด active booking ซ้ำต่อเบอร์ ไฟล์ `001`, `003`, `004` และ `005` ออกแบบให้รันซ้ำได้ ส่วน `002` ห้ามรันซ้ำ หลัง migration ต้องตรวจด้วย `--schema-audit` โดยบัญชี DBA/schema owner ชั่วคราว
+การติดตั้งใหม่ที่ต้องการฐานชื่อ `dormitory` และมีสิทธิ์สร้างฐานใช้ `database/install.sql` ไฟล์เดียวได้ ส่วนฐานชื่ออื่นหรือฐานที่สร้างไว้แล้วให้ใช้วิธีขั้นสูงโดยเลือกฐานเป้าหมายแล้ว import `database/schema.sql` ตามด้วย `database/defaults.sql`; fresh schema ไม่มี `residents.pin_hash` และ defaults สร้าง singleton `billing_settings`/`integration_settings` โดยไม่มี credential จึงไม่ต้องรัน migration ซ้ำ ส่วนระบบ PHP/MySQL ที่ติดตั้งจาก schema รุ่นก่อนต้องสำรองและทดสอบ restore แล้วใช้บัญชี schema/migration ที่มีสิทธิ์ DDL รัน `001` เมื่อจำเป็น → `002` หนึ่งครั้ง → `003` → `004` หลังแก้ LINE ID legacy → `005_booking_active_phone.sql` หลังปิด active booking ซ้ำต่อเบอร์ → deploy แอป phone-only → `006_remove_resident_pin.sql` เพื่อลบคอลัมน์ legacy ห้ามรัน `006` ก่อน deploy และหลังรันจะ rollback ไปแอป PIN เดิมไม่ได้โดยไม่ restore schema/backup ระหว่างที่ฐานเดิมยังมี `pin_hash NOT NULL` แอปใหม่อาจเขียน credential สุ่มที่ไม่เปิดเผยและไม่มี endpoint ใช้ตรวจเพียงเพื่อให้ move-in ทำงานจนกว่าจะรัน `006` หลัง migration ต้องตรวจด้วย `--schema-audit` โดยบัญชี DBA/schema owner ชั่วคราว
 
 หลังอัปเกรด Owner ต้องกรอก PromptPay/LINE/SlipOK/EasySlip ใหม่ผ่านหน้าหลังบ้าน ค่าดำเนินงานจาก `.env` รุ่นเดิมไม่ถูกอ่านเป็น fallback เพื่อป้องกัน configuration สองแหล่ง ข้อมูล secret ที่ API คืนมีเพียงสถานะ configured และ hint แบบปิดบัง ช่อง secret ว่างเก็บค่าเดิมและต้องใช้คำสั่ง clear โดยชัดแจ้งเมื่อต้องการลบ Web กับ worker อ่านแถวฐานข้อมูลในรอบใช้งานถัดไป จึงไม่ต้อง restart หลังบันทึก
 

@@ -7,7 +7,7 @@
 -- Never use a force/continue-on-error import option with this file.
 -- Regenerate: php scripts/build_install_sql.php
 -- Verify current: php scripts/build_install_sql.php --check
--- Source digest: 339f86eb499718eaa04641afdddedc5d13dd447bb9347f7c51ef30367cd5277e
+-- Source digest: 971b439e20ab5225900f2776210ceb1bfd9f94893bed69fdc64a30a47257e969
 -- BEGIN database/00-create-database.sql
 -- Advanced/manual fresh-install step. For the simplest new installation,
 -- import database/install.sql once instead. Run this standalone file from the
@@ -60,7 +60,9 @@ DEALLOCATE PREPARE dormitory_fresh_install_guard;
 -- database/migrations/002_operational_hardening.sql exactly once, then
 -- database/migrations/003_append_only_guards.sql and
 -- database/migrations/004_line_webhook.sql and
--- database/migrations/005_booking_active_phone.sql (all safe to rerun).
+-- database/migrations/005_booking_active_phone.sql. Then deploy the phone-only
+-- application to every replica, verify health, back up and test restore before
+-- database/migrations/006_remove_resident_pin.sql. Never run 006 before deploy.
 
 SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
 -- Store timestamps in UTC. PHP formats them for Asia/Bangkok at the UI edge.
@@ -94,7 +96,6 @@ CREATE TABLE IF NOT EXISTS residents (
     full_name VARCHAR(150) NOT NULL,
     phone_norm CHAR(10) NOT NULL,
     email VARCHAR(254) NULL,
-    pin_hash VARCHAR(255) NOT NULL,
     line_user_id VARCHAR(33) CHARACTER SET ascii COLLATE ascii_bin NULL,
     auth_version INT UNSIGNED NOT NULL DEFAULT 1,
     active TINYINT(1) NOT NULL DEFAULT 1,
@@ -981,7 +982,7 @@ DELIMITER ;
 -- BEGIN database/defaults.sql
 -- Required, idempotent baseline for a new deployment.
 -- Safe for production: no room, resident, booking, bill, payment, admin,
--- password, PIN, PromptPay number, LINE token or slip-provider credential.
+-- password, PromptPay number, LINE token or slip-provider credential.
 --
 -- Water/electric rates intentionally start at zero and updated_by stays NULL.
 -- An administrator must review and save the real billing settings before

@@ -70,6 +70,12 @@ MySQL และทดสอบ restore ก่อน แล้วใช้ Railwa
 ก่อนรัน `004` บัญชี `dormitory_app` ใช้รัน migration ไม่ได้เพราะไม่มี DDL
 ก่อนรัน `005` ต้องยกเลิกหรือปิดคำขอซ้ำให้เหลือ pending/confirmed ไม่เกินหนึ่งรายการต่อเบอร์
 
+จากนั้น deploy image รุ่น phone-only และรอให้ทุก web replica healthy ก่อนจึง snapshot/backup อีกครั้งแล้วรัน
+`006_remove_resident_pin.sql` เพื่อลบ `residents.pin_hash` Migration 006 รันซ้ำได้แต่ห้ามรันก่อน deploy;
+หลังลบคอลัมน์แล้วแอปรุ่น PIN เดิม rollback ไม่ได้โดยไม่ restore schema/backup ระหว่างที่คอลัมน์เก่า
+`NOT NULL` ยังอยู่ แอปรุ่นใหม่อาจใส่ credential สุ่มที่ไม่เปิดเผยและไม่มี endpoint ใช้ตรวจเพียงเพื่อให้ move-in
+ทำงานได้จน migration เสร็จ Fresh database จาก `install.sql` ไม่มีคอลัมน์นี้และไม่ต้องรัน 006
+
 หลัง migration ให้รัน `php scripts/check_requirements.php --schema-audit` ด้วย schema
 owner และ `php scripts/check_requirements.php --db --strict --production` ด้วย runtime
 user เมื่อผ่านแล้วจึงลบ migration job กับ `DB_DBA_*` ออก
@@ -99,6 +105,8 @@ DB_PASSWORD=<ค่าเดียวกับ-database-setup>
 DB_SSL=false
 DB_SSL_CA=
 ```
+
+`SESSION_LIFETIME_SECONDS` ยังใช้กับ Admin/Owner ส่วน Resident ถูกจำกัดตายตัวที่ idle 15 นาทีและอายุรวม 1 ชั่วโมงและไม่มี trusted-device bypass Resident login ใช้เฉพาะเบอร์ของ resident/occupancy active; Admin/Owner ยังใช้ username/password ผู้ที่รู้เบอร์ resident active สามารถ takeover ครั้งแรกได้แม้มี rate limit จึงควรเพิ่ม OTP/MFA หากระดับความเสี่ยงยอมรับ phone-only ไม่ได้
 
 ห้ามใส่ `DB_DBA_*`, `DB_ROOT_PASSWORD` หรือ `ADMIN_PASSWORD` ไว้ใน web service
 ชื่อฐานต้องตรงกับ `MYSQLDATABASE`; Railway มักใช้ชื่อ `railway` จึงห้ามใช้
