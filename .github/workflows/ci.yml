@@ -18,7 +18,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Check out repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5e
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Build production image
         run: docker build --pull --tag dormitory-ci:${{ github.sha }} .
@@ -174,6 +174,7 @@ jobs:
             --env APP_TIMEZONE=Asia/Bangkok \
             --env APP_KEY="$CI_APP_KEY" \
             --env FORCE_HTTPS=true \
+            --env TRUSTED_PROXIES=172.16.0.0/12 \
             --env RUNTIME_ROLE=web \
             --env PORT=8080 \
             --env DB_HOST="$database" \
@@ -187,6 +188,7 @@ jobs:
           web_ready=false
           for attempt in $(seq 1 60); do
             if response="$(curl --fail --silent --show-error \
+              --header 'X-Forwarded-Proto: https' \
               http://127.0.0.1:18080/healthz.php 2>/dev/null)" \
               && [ "$response" = '{"status":"ok"}' ]; then
               web_ready=true
@@ -226,6 +228,7 @@ jobs:
           [ "${#rate_room_ids[@]}" -eq 8 ]
 
           csrf="$(curl --fail --silent --show-error \
+            --header 'X-Forwarded-Proto: https' \
             http://127.0.0.1:18080/api/auth/me | jq --exit-status --raw-output '.data.csrf_token')"
           for attempt in $(seq 1 6); do
             room_id="${rate_room_ids[$((attempt - 1))]}"
@@ -235,6 +238,7 @@ jobs:
             status="$(curl --silent --show-error \
               --output "/tmp/ci-rate-booking-${attempt}.json" \
               --write-out '%{http_code}' \
+              --header 'X-Forwarded-Proto: https' \
               --header 'Content-Type: application/json' \
               --header 'Origin: https://ci-dormitory.example.co.th' \
               --header "X-CSRF-Token: ${csrf}" \
@@ -286,6 +290,7 @@ jobs:
               "$attempt" "$attempt")"
             status="$(curl --silent --show-error --output /tmp/ci-invalid-calibration.json \
               --write-out '%{http_code}' --header 'Content-Type: application/json' \
+              --header 'X-Forwarded-Proto: https' \
               --header 'Origin: https://ci-dormitory.example.co.th' \
               --header "X-CSRF-Token: ${csrf}" --data "$body" \
               http://127.0.0.1:18080/api/public/bookings)"
@@ -296,6 +301,7 @@ jobs:
             "${rate_room_ids[5]}")"
           calibration_status="$(curl --silent --show-error \
             --output /tmp/ci-calibration.json --write-out '%{http_code}' \
+            --header 'X-Forwarded-Proto: https' \
             --header 'Content-Type: application/json' \
             --header 'Origin: https://ci-dormitory.example.co.th' \
             --header "X-CSRF-Token: ${csrf}" --data "$calibration_body" \
@@ -347,6 +353,7 @@ jobs:
             "${rate_room_ids[6]}")"
           curl --silent --show-error \
             --output /tmp/ci-concurrent-a.json --write-out '%{http_code}' \
+            --header 'X-Forwarded-Proto: https' \
             --header 'Content-Type: application/json' \
             --header 'Origin: https://ci-dormitory.example.co.th' \
             --header "X-CSRF-Token: ${csrf}" --data "$concurrent_body_a" \
@@ -354,6 +361,7 @@ jobs:
           concurrent_pid_a=$!
           curl --silent --show-error \
             --output /tmp/ci-concurrent-b.json --write-out '%{http_code}' \
+            --header 'X-Forwarded-Proto: https' \
             --header 'Content-Type: application/json' \
             --header 'Origin: https://ci-dormitory.example.co.th' \
             --header "X-CSRF-Token: ${csrf}" --data "$concurrent_body_b" \
@@ -405,6 +413,7 @@ jobs:
             status="$(curl --silent --show-error \
               --output "/tmp/ci-phone-rate-${attempt}.json" \
               --write-out '%{http_code}' \
+              --header 'X-Forwarded-Proto: https' \
               --header 'Content-Type: application/json' \
               --header 'Origin: https://ci-dormitory.example.co.th' \
               --header "X-CSRF-Token: ${csrf}" \
