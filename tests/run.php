@@ -17,6 +17,7 @@ use Dormitory\Http\Request;
 use Dormitory\Integration\SlipVerifier;
 use Dormitory\Security\Password;
 use Dormitory\Security\SecretCipher;
+use Dormitory\Support\SchemaGuard;
 use Dormitory\Support\Validator;
 
 if(PHP_SAPI!=='cli'){http_response_code(404);exit;}
@@ -273,6 +274,19 @@ $test('provider timezone is normalized to UTC',function()use($same):void{
     $result=SlipVerifier::evaluateTransactionTime('2026-07-14T12:00:00+07:00','2026-07-14 04:59:00.000000',300,new DateTimeImmutable('2026-07-14T05:30:00Z'));
     $same('valid',$result['decision']);$same('2026-07-14T05:00:00.000000Z',$result['transferred_at']);
 });
+$test('slip locale must be Thai baht',function()use($same):void{
+    $locale=new ReflectionMethod(SlipVerifier::class,'evaluatePaymentLocale');
+    $same(['decision'=>'valid','reason'=>null],$locale->invoke(null,'easyslip','TH','THB'));
+    $same(['decision'=>'valid','reason'=>null],$locale->invoke(null,'slipok','TH','764'));
+    $same(['decision'=>'valid','reason'=>null],$locale->invoke(null,'slipok','TH',null));
+    $same('pending',$locale->invoke(null,'easyslip','TH',null)['decision']);
+    $same('pending',$locale->invoke(null,'slipok',null,'764')['decision']);
+    $same('rejected',$locale->invoke(null,'easyslip','US','THB')['decision']);
+    $same('rejected',$locale->invoke(null,'slipok','TH','USD')['decision']);
+    $source=file_get_contents(dirname(__DIR__).'/src/Integration/SlipVerifier.php');if(!is_string($source))throw new RuntimeException('cannot read SlipVerifier');
+    $same(true,str_contains($source,"\$raw['countryCode']"));
+    $same(true,str_contains($source,"\$d['paidLocalCurrency']"));
+});
 $test('verification audit payload retains transfer time',function()use($same,$app):void{
     $method=new ReflectionMethod(SlipVerifier::class,'auditPayload');$payload=$method->invoke(new SlipVerifier($app),[
         'ok'=>true,
@@ -377,16 +391,99 @@ $test('login rehash is compare-and-swap with layered account throttling',functio
     $same(false,$cookieName->invoke($auth,'admin',7)===$cookieName->invoke($auth,'admin',8));
     $limiterSource=file_get_contents(dirname(__DIR__).'/src/Security/RateLimiter.php');if(!is_string($limiterSource))throw new RuntimeException('cannot read RateLimiter');
     $same(true,str_contains($limiterSource,'UPDATE rate_limits SET updated_at=UTC_TIMESTAMP() WHERE bucket_key=?'));
+    $same(true,str_contains($limiterSource,'public function lockBucket(string $scope,string $identity): void'));
+    $same(true,str_contains($limiterSource,'public function refundHit(string $scope,string $identity): void'));
+    $same(true,str_contains($limiterSource,"CASE WHEN hits<=1 THEN '1970-01-01 00:00:00.000000'"));
+    $same(true,str_contains($limiterSource,'blocked_until IS NULL AND hits>0'));
+    $same(true,str_contains($limiterSource,"if(!\$pdo->inTransaction())throw new \\LogicException"));
 });
 $test('booking holds use the database clock and inactive replays fail closed',function()use($same):void{
     $source=file_get_contents(dirname(__DIR__).'/src/Domain/BookingService.php');if(!is_string($source))throw new RuntimeException('cannot read BookingService');
     $same(true,substr_count($source,'SELECT * FROM bookings WHERE idempotency_key=?')>=3);
     $same(true,str_contains($source,'created_at<=DATE_SUB(UTC_TIMESTAMP(),INTERVAL'));
     $same(true,str_contains($source,"'BOOKING_INACTIVE'"));
+    $same(true,str_contains($source,"'BOOKING_PHONE_ACTIVE'"));
+    $same(true,str_contains($source,"['idempotent_replay']=true"));
+    $schema=file_get_contents(dirname(__DIR__).'/database/schema.sql');if(!is_string($schema))throw new RuntimeException('cannot read schema');
+    $same(true,str_contains($schema,'active_phone_norm CHAR(10)'));
+    $same(true,str_contains($schema,'UNIQUE KEY uq_bookings_one_active_per_phone (active_phone_norm)'));
+    $migration=file_get_contents(dirname(__DIR__).'/database/migrations/005_booking_active_phone.sql');if(!is_string($migration))throw new RuntimeException('cannot read migration 005');
+    $same(true,str_contains($migration,'DORMITORY_MIGRATION_005_ABORT_DUPLICATE_ACTIVE_PHONE'));
+    $same(true,str_contains($migration,'DORMITORY_MIGRATION_005_ABORT_INVALID_ACTIVE_PHONE_COLUMN'));
+    $same(true,str_contains($migration,'DORMITORY_MIGRATION_005_ABORT_INVALID_ACTIVE_PHONE_INDEX'));
+    $same(true,str_contains($migration,'@dormitory_expected_active_phone_expression_a'));
+    $same(true,str_contains($migration,'normalized_expression IN'));
+    $same(false,str_contains($migration,"generation_expression LIKE '%phone_norm%'"));
+    $same(true,substr_count($migration,'AND sub_part IS NULL')>=2);
+    $same(true,str_contains($migration,'@dormitory_final_active_phone_index_row_count = 1'));
+    $bootstrap=file_get_contents(dirname(__DIR__).'/scripts/bootstrap_database.sh');if(!is_string($bootstrap))throw new RuntimeException('cannot read database bootstrap');
+    $same(true,str_contains($bootstrap,"active_phone_norm|0|1|FULL"));
+    $same(true,str_contains($bootstrap,'invalid bookings.active_phone_norm generated expression'));
+    $requirements=file_get_contents(dirname(__DIR__).'/scripts/check_requirements.php');if(!is_string($requirements))throw new RuntimeException('cannot read requirements check');
+    $same(true,str_contains($requirements,"index_name='uq_bookings_one_active_per_phone'"));
+    $same(true,str_contains($requirements,'count($bookingPhoneIndexRows)===1'));
+    $canonical="(case when (`status` in (_utf8mb4\\'pending\\',_utf8mb4\\'confirmed\\')) then `phone_norm` else NULL end)";
+    $reversed="case when status in ('confirmed', 'pending') then phone_norm else null end";
+    $same("casewhenstatusin'pending','confirmed'thenphone_normelsenullend",SchemaGuard::activePhoneGenerationExpression($canonical));
+    $same("casewhenstatusin'confirmed','pending'thenphone_normelsenullend",SchemaGuard::activePhoneGenerationExpression($reversed));
+    foreach([
+        "case when status in ('pending','confirmed') then phone_norm else phone_norm end",
+        "case when status in ('pen(ding)','confirmed') then phone_norm else null end",
+        "case when status in ('pen ding','confirmed') then phone_norm else null end",
+        "case when status='pending' then phone_norm when status='confirmed' then null else null end",
+        "if(status in ('pending','confirmed'),phone_norm,null)",
+    ] as $invalidExpression)$same(null,SchemaGuard::activePhoneGenerationExpression($invalidExpression));
+    $routes=file_get_contents(dirname(__DIR__).'/src/Http/Routes.php');if(!is_string($routes))throw new RuntimeException('cannot read Routes');
+    $same(true,str_contains($routes,"'public-booking-attempt-ip'"));
+    $same(true,str_contains($routes,"\$replay?200:201"));
+    $same(true,str_contains($routes,"&&!\$replay"));
+    $same(true,str_contains($source,"hit('public-booking-ip',\$clientIp,5,86400)"));
+    $same(false,str_contains($source,"hit('public-booking-ip',\$clientIp,5,86400,3600)"));
+    $same(true,str_contains($source,"\$error->status!==429||\$error->errorCode!=='RATE_LIMITED'"));
+    $same(true,str_contains($source,"return \$this->errorOutcome(\$error->status,\$error->getMessage(),\$error->errorCode,\$error->details)"));
+    $same(true,str_contains($source,"refundHit('public-booking-ip',\$clientIp)"));
+    $phoneLock=strpos($source,"lockBucket('public-booking-phone',\$phone)");
+    $firstIdempotencyRead=strpos($source,'SELECT * FROM bookings WHERE idempotency_key=? LIMIT 1');
+    $same(true,$phoneLock!==false&&$firstIdempotencyRead!==false&&$phoneLock<$firstIdempotencyRead);
+    $insertCatchStart=strpos($source,'} catch (\\PDOException $error)');
+    $createdRead=strpos($source,"\$created=\$pdo->prepare('SELECT * FROM bookings WHERE id=?')",$insertCatchStart===false?0:$insertCatchStart);
+    if($insertCatchStart===false||$createdRead===false)throw new RuntimeException('cannot isolate booking duplicate-key handler');
+    $insertCatch=substr($source,$insertCatchStart,$createdRead-$insertCatchStart);
+    $same(true,str_contains($insertCatch,"'BOOKING_RETRY'"));
+    $same(false,str_contains($insertCatch,'return $this->replay'));
     $same(true,str_contains($source,'private function replay(PDO $pdo'));
     $rooms=file_get_contents(dirname(__DIR__).'/src/Domain/RoomService.php');if(!is_string($rooms))throw new RuntimeException('cannot read RoomService');
     $same(false,str_contains($rooms,'created_at>=DATE_SUB'));
     $same(true,str_contains($rooms,'created_at>DATE_SUB'));
+});
+$test('resident lifecycle blocks unbilled months and same-period re-entry',function()use($same):void{
+    $resident=file_get_contents(dirname(__DIR__).'/src/Domain/ResidentService.php');
+    $booking=file_get_contents(dirname(__DIR__).'/src/Domain/BookingService.php');
+    if(!is_string($resident)||!is_string($booking))throw new RuntimeException('cannot read resident lifecycle sources');
+    $same(true,str_contains($resident,"'MOVE_OUT_MISSING_BILLS'"));
+    $same(true,str_contains($resident,'self::billingPeriods($firstPeriod,$period)'));
+    $same(true,str_contains($resident,'active=0,line_user_id=NULL,auth_version=auth_version+1'));
+    $same(true,str_contains($resident,"'_line_unlinked_audit'"));
+    $routes=file_get_contents(dirname(__DIR__).'/src/Http/Routes.php');if(!is_string($routes))throw new RuntimeException('cannot read Routes');
+    $same(true,str_contains($routes,"'resident.line_unlinked','resident',\$target,\$lineAudit"));
+    $moveOutStart=strpos($routes,"'/api/admin/residents/{id}/move-out'");
+    $moveOutEnd=strpos($routes,"'/api/admin/bookings'",$moveOutStart===false?0:$moveOutStart);
+    if($moveOutStart===false||$moveOutEnd===false)throw new RuntimeException('cannot isolate move-out route');
+    $moveOutRoute=substr($routes,$moveOutStart,$moveOutEnd-$moveOutStart);
+    $lockAt=strpos($moveOutRoute,'$app->notifications()->withLineBindingLock($target');
+    $transactionAt=strpos($moveOutRoute,'$app->database()->transaction');
+    $moveOutAt=strpos($moveOutRoute,'$app->residents()->moveOut');
+    $lineAuditAt=strpos($moveOutRoute,"'resident.line_unlinked'");
+    $moveOutAuditAt=strpos($moveOutRoute,"'resident.move_out'");
+    $same(true,$lockAt!==false&&$transactionAt!==false&&$moveOutAt!==false&&$lineAuditAt!==false&&$moveOutAuditAt!==false
+        &&$lockAt<$transactionAt&&$transactionAt<$moveOutAt&&$moveOutAt<$lineAuditAt&&$lineAuditAt<$moveOutAuditAt);
+    $periods=new ReflectionMethod(Dormitory\Domain\ResidentService::class,'billingPeriods');
+    $same(['2025-12-01','2026-01-01','2026-02-01'],$periods->invoke(null,'2025-12-01','2026-02-01'));
+    $same(true,str_contains($booking,"'RESIDENT_MOVE_IN_PERIOD_CONFLICT'"));
+    $same(true,str_contains($booking,"resident_id=? AND status='ended' AND move_out_date>=?"));
+    $same(false,str_contains($booking,"resident_id=? AND status='ended' AND move_out_date>=? AND move_out_date<?"));
+    $same(true,str_contains($booking,"room_id=? AND status='ended' AND move_out_date>=? ORDER BY"));
+    $same(true,str_contains($booking,"substr((string)\$priorResidentOccupancy['move_out_date'],0,7).'-01'"));
 });
 $test('room optional fields and overdue display status are deterministic',function()use($same):void{
     $rooms=file_get_contents(dirname(__DIR__).'/src/Domain/RoomService.php');if(!is_string($rooms))throw new RuntimeException('cannot read RoomService');

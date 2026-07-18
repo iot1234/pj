@@ -26,7 +26,7 @@ final class BookingService
      * can commit before the HTTP conflict is raised outside the transaction.
      * @return array<string,mixed>
      */
-    public function createPublicOutcome(array $input): array
+    public function createPublicOutcome(array $input,?string $clientIp=null): array
     {
         Validator::only($input, ['room_id','full_name','phone','idempotency_key']);
         $roomId = Validator::id($input['room_id'] ?? null, 'room_id');
@@ -39,7 +39,12 @@ final class BookingService
 
         $this->expirePending();
 
-        return $this->app->database()->transaction(function (PDO $pdo) use ($roomId,$fullName,$phone,$idempotency): array {
+        return $this->app->database()->transaction(function (PDO $pdo) use ($roomId,$fullName,$phone,$idempotency,$clientIp): array {
+            // Lock the phone bucket before the first idempotency/room read.
+            // This keeps same-phone requests on different rooms from racing
+            // and makes a concurrent same-key replay return before quota is
+            // consumed.
+            $this->app->limiter()->lockBucket('public-booking-phone',$phone);
             // Do not gap-lock a missing idempotency key before locking the
             // room: concurrent bookings for one room could otherwise deadlock.
             $existing = $pdo->prepare('SELECT * FROM bookings WHERE idempotency_key=? LIMIT 1');
@@ -69,10 +74,34 @@ final class BookingService
                 throw new HttpException(409, 'ห้องนี้ไม่ว่างแล้ว กรุณาเลือกห้องอื่น', 'ROOM_NOT_AVAILABLE');
             }
             // Invalid/non-available room probes must not exhaust a victim's
-            // phone bucket. Idempotent replays returned above do not consume
-            // it either. The enclosing transaction makes the limit and the
-            // successfully created reservation one atomic outcome.
-            $this->app->limiter()->hit('public-booking-phone',$phone,2,86400);
+            // phone or source bucket. Idempotent replays returned above do not
+            // consume them either. Locking the phone bucket also serializes
+            // same-phone requests aimed at different rooms.
+            // These are daily successful-booking quotas. Converting a limiter
+            // exception into an outcome lets the surrounding route transaction
+            // commit the exhausted bucket before resolveOutcome() raises the
+            // HTTP exception outside the transaction.
+            try {
+                if($clientIp!==null)$this->app->limiter()->hit('public-booking-ip',$clientIp,5,86400);
+            } catch (HttpException $error) {
+                if($error->status!==429||$error->errorCode!=='RATE_LIMITED')throw $error;
+                return $this->errorOutcome($error->status,$error->getMessage(),$error->errorCode,$error->details);
+            }
+            try {
+                $this->app->limiter()->hit('public-booking-phone',$phone,2,86400);
+            } catch (HttpException $error) {
+                if($error->status!==429||$error->errorCode!=='RATE_LIMITED')throw $error;
+                // The request did not create a booking because its phone quota
+                // denied it. Keep that phone block but do not spend the source
+                // IP's successful-booking quota.
+                if($clientIp!==null)$this->app->limiter()->refundHit('public-booking-ip',$clientIp);
+                return $this->errorOutcome($error->status,$error->getMessage(),$error->errorCode,$error->details);
+            }
+            $activePhone=$pdo->prepare("SELECT id FROM bookings WHERE phone_norm=? AND status IN ('pending','confirmed') LIMIT 1 FOR UPDATE");
+            $activePhone->execute([$phone]);
+            if($activePhone->fetch()){
+                throw new HttpException(409,'เบอร์โทรนี้มีคำขอจองที่ยังดำเนินการอยู่ กรุณาติดต่อผู้ดูแลหากต้องการเปลี่ยนห้อง','BOOKING_PHONE_ACTIVE');
+            }
             $reference = 'BK-' . gmdate('ymd') . '-' . strtoupper(bin2hex(random_bytes(5)));
             try {
                 $insert = $pdo->prepare("INSERT INTO bookings (reference_no,room_id,full_name,phone_norm,booked_monthly_rent,status,idempotency_key,created_at,updated_at) VALUES (?,?,?,?,?,'pending',?,UTC_TIMESTAMP(),UTC_TIMESTAMP())");
@@ -82,15 +111,23 @@ final class BookingService
                     $conflict=$pdo->prepare('SELECT * FROM bookings WHERE idempotency_key=? LIMIT 1 FOR UPDATE');
                     $conflict->execute([$idempotency]);
                     if($row=$conflict->fetch()){
-                        return $this->replay($pdo,$row,$roomId,$fullName,$phone);
+                        // The phone bucket prevents this for normal app
+                        // traffic. If an out-of-band writer still wins the
+                        // unique-key race, roll this transaction back so its
+                        // unsuccessful request cannot consume quota. A retry
+                        // will take the ordinary early replay path.
+                        throw new HttpException(409,'Booking committed concurrently; retry the same request','BOOKING_RETRY',['retryable'=>true]);
                     }
+                    $phoneConflict=$pdo->prepare("SELECT id FROM bookings WHERE phone_norm=? AND status IN ('pending','confirmed') LIMIT 1 FOR UPDATE");
+                    $phoneConflict->execute([$phone]);
+                    if($phoneConflict->fetch())throw new HttpException(409,'เบอร์โทรนี้มีคำขอจองที่ยังดำเนินการอยู่ กรุณาติดต่อผู้ดูแลหากต้องการเปลี่ยนห้อง','BOOKING_PHONE_ACTIVE');
                     throw new HttpException(409, 'ห้องนี้ถูกจองพร้อมกันโดยผู้ใช้อื่น', 'ROOM_NOT_AVAILABLE');
                 }
                 throw $error;
             }
             $created=$pdo->prepare('SELECT * FROM bookings WHERE id=?');
             $created->execute([(int)$pdo->lastInsertId()]);
-            return $this->map($created->fetch());
+            $result=$this->map($created->fetch());$result['idempotent_replay']=false;return $result;
         });
     }
 
@@ -177,11 +214,11 @@ final class BookingService
             // A room whose previous occupancy ended in this month can accept
             // the next resident from the first day of the following month.
             $periodStart=substr($moveIn,0,7).'-01';
-            $nextPeriod=(new \DateTimeImmutable($periodStart))->modify('first day of next month')->format('Y-m-d');
-            $turnover=$pdo->prepare("SELECT id,move_out_date FROM occupancies WHERE room_id=? AND status='ended' AND move_out_date>=? AND move_out_date<? ORDER BY move_out_date DESC LIMIT 1 FOR UPDATE");
-            $turnover->execute([$booking['room_id'],$periodStart,$nextPeriod]);
+            $turnover=$pdo->prepare("SELECT id,move_out_date FROM occupancies WHERE room_id=? AND status='ended' AND move_out_date>=? ORDER BY move_out_date DESC,id DESC LIMIT 1 FOR UPDATE");
+            $turnover->execute([$booking['room_id'],$periodStart]);
             if($prior=$turnover->fetch()){
-                throw new HttpException(409,"ห้องนี้ปิดรอบผู้พักเดิมในเดือนเดียวกัน กรุณารับเข้าพักตั้งแต่ {$nextPeriod}",'MOVE_IN_PERIOD_CONFLICT',['previous_occupancy_id'=>(int)$prior['id'],'previous_move_out_date'=>$prior['move_out_date'],'earliest_move_in_date'=>$nextPeriod]);
+                $roomEarliestMoveIn=(new \DateTimeImmutable(substr((string)$prior['move_out_date'],0,7).'-01'))->modify('first day of next month')->format('Y-m-d');
+                throw new HttpException(409,"ห้องนี้มีประวัติผู้พักเดิมทับรอบที่เลือก กรุณารับเข้าพักตั้งแต่ {$roomEarliestMoveIn}",'MOVE_IN_PERIOD_CONFLICT',['previous_occupancy_id'=>(int)$prior['id'],'previous_move_out_date'=>$prior['move_out_date'],'earliest_move_in_date'=>$roomEarliestMoveIn]);
             }
 
             $residentLookup = $pdo->prepare('SELECT * FROM residents WHERE phone_norm=? LIMIT 1 FOR UPDATE');
@@ -195,6 +232,25 @@ final class BookingService
                 $hasOccupancy = $pdo->prepare("SELECT id FROM occupancies WHERE resident_id=? AND status='active' LIMIT 1 FOR UPDATE");
                 $hasOccupancy->execute([$residentId]);
                 if ($hasOccupancy->fetch()) throw new HttpException(409, 'เบอร์นี้ผูกกับผู้เช่าที่มีห้องอยู่แล้ว', 'RESIDENT_ALREADY_OCCUPIED');
+                // Monthly rent and room meters are not prorated. Re-entering a
+                // returning resident in the same calendar month as a previous
+                // move-out could issue two full monthly bills for one person.
+                // Require the next occupancy to begin in a later period until
+                // an explicit transfer/proration policy exists.
+                $residentTurnover=$pdo->prepare("SELECT id,room_id,move_out_date
+                    FROM occupancies
+                    WHERE resident_id=? AND status='ended' AND move_out_date>=?
+                    ORDER BY move_out_date DESC,id DESC LIMIT 1 FOR UPDATE");
+                $residentTurnover->execute([$residentId,$periodStart]);
+                if($priorResidentOccupancy=$residentTurnover->fetch()){
+                    $residentEarliestMoveIn=(new \DateTimeImmutable(substr((string)$priorResidentOccupancy['move_out_date'],0,7).'-01'))->modify('first day of next month')->format('Y-m-d');
+                    throw new HttpException(409,"ผู้พักรายนี้มีประวัติการเข้าพักทับรอบที่เลือก กรุณารับเข้าพักตั้งแต่ {$residentEarliestMoveIn}",'RESIDENT_MOVE_IN_PERIOD_CONFLICT',[
+                        'previous_occupancy_id'=>(int)$priorResidentOccupancy['id'],
+                        'previous_room_id'=>(int)$priorResidentOccupancy['room_id'],
+                        'previous_move_out_date'=>$priorResidentOccupancy['move_out_date'],
+                        'earliest_move_in_date'=>$residentEarliestMoveIn,
+                    ]);
+                }
                 $residentEmail=$emailProvided?$email:$resident['email'];
                 $update = $pdo->prepare('UPDATE residents SET full_name=?,email=?,line_user_id=?,pin_hash=?,active=1,auth_version=auth_version+1,updated_at=UTC_TIMESTAMP() WHERE id=?');
                 // A returning resident must prove control of the LINE account
@@ -296,7 +352,7 @@ final class BookingService
             $expired=$row['status']==='cancelled'&&$this->wasAutomaticallyExpired($row);
             return $this->errorOutcome(409,$expired?'Booking hold expired; submit a new request':'Booking is no longer active; submit a new request',$expired?'BOOKING_EXPIRED':'BOOKING_INACTIVE');
         }
-        return $this->map($row);
+        $result=$this->map($row);$result['idempotent_replay']=true;return $result;
     }
 
     private function expirePending(?int $roomId=null): void

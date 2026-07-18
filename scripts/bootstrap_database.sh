@@ -130,13 +130,15 @@ fi
 expected_tables=$'admin_users\naudit_logs\nbill_items\nbilling_settings\nbills\nbookings\nintegration_settings\nmeter_readings\nnotification_outbox\noccupancies\npayments\nrate_limits\nresidents\nrooms'
 expected_triggers=$'trg_audit_logs_no_delete|BEFORE|DELETE|audit_logs\ntrg_audit_logs_no_update|BEFORE|UPDATE|audit_logs\ntrg_bill_items_insert_guard|BEFORE|INSERT|bill_items\ntrg_bill_items_no_delete|BEFORE|DELETE|bill_items\ntrg_bill_items_no_update|BEFORE|UPDATE|bill_items\ntrg_bills_no_delete|BEFORE|DELETE|bills\ntrg_bills_relationship_guard|BEFORE|INSERT|bills\ntrg_bills_snapshot_immutable|BEFORE|UPDATE|bills\ntrg_bookings_identity_immutable|BEFORE|UPDATE|bookings\ntrg_notification_relationship_guard|BEFORE|INSERT|notification_outbox\ntrg_notification_relationship_guard_update|BEFORE|UPDATE|notification_outbox\ntrg_occupancies_identity_immutable|BEFORE|UPDATE|occupancies\ntrg_payments_final_immutable|BEFORE|UPDATE|payments\ntrg_payments_no_delete|BEFORE|DELETE|payments\ntrg_payments_relationship_guard|BEFORE|INSERT|payments'
 expected_hardening_columns=$'bills.resident_name_snapshot|varchar(150)|NO\nbills.room_code_snapshot|varchar(32)|NO\nbookings.booked_monthly_rent|decimal(12,2)|NO\npayments.verification_attempts|smallint unsigned|NO\npayments.verification_lease_until|datetime(6)|YES\npayments.verification_token|char(64)|YES'
-expected_generated_columns=$'bookings.active_room_id\noccupancies.active_resident_id\noccupancies.active_room_id\npayments.active_bill_id'
+expected_generated_columns=$'bookings.active_phone_norm\nbookings.active_room_id\noccupancies.active_resident_id\noccupancies.active_room_id\npayments.active_bill_id'
+expected_active_phone_expression_a="casewhenstatusin'pending','confirmed'thenphone_normelsenullend"
+expected_active_phone_expression_b="casewhenstatusin'confirmed','pending'thenphone_normelsenullend"
 expected_line_columns=$'integration_settings.line_channel_secret_enc|text|YES\nnotification_outbox.line_accepted_request_id|varchar(128)|YES\nnotification_outbox.line_request_id|varchar(128)|YES\nnotification_outbox.recipient|varchar(33)|NO\nresidents.line_user_id|varchar(33)|YES'
 expected_line_checks=$'chk_integration_settings_line_secret\nchk_notification_outbox_line_accepted_request_id\nchk_notification_outbox_line_request_id\nchk_notification_outbox_recipient\nchk_residents_line_user_id'
 
 verify_schema_and_defaults() {
     local object_count base_table_count actual_tables actual_triggers actual_trigger_count
-    local actual_hardening_columns actual_generated_columns actual_line_columns actual_line_checks bill_item_index
+    local actual_hardening_columns actual_generated_columns actual_line_columns actual_line_checks bill_item_index booking_phone_column booking_phone_index
     local check_constraint_count billing_row_count integration_row_count
 
     object_count="$(mysql_query "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()")"
@@ -167,6 +169,11 @@ verify_schema_and_defaults() {
     [[ "$actual_generated_columns" == "$expected_generated_columns" ]] \
         || die "database has missing or incompatible generated uniqueness guards"
 
+    booking_phone_column="$(mysql_query "SELECT CONCAT(LOWER(column_type), '|', is_nullable, '|', UPPER(extra), '|', normalized_expression) FROM (SELECT column_metadata.*, LOWER(REGEXP_REPLACE(REPLACE(REPLACE(REPLACE(column_metadata.literal_expression, CHAR(96), ''), '(', ''), ')', ''), '[[:space:]]+', '')) AS normalized_expression FROM (SELECT column_type, is_nullable, extra, LOWER(REGEXP_REPLACE(REPLACE(generation_expression, CONCAT(CHAR(92), CHAR(39)), CHAR(39)), CONCAT('_[[:alnum:]]+', CHAR(39)), CHAR(39))) AS literal_expression FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'bookings' AND column_name = 'active_phone_norm') column_metadata) normalized WHERE LENGTH(literal_expression) - LENGTH(REPLACE(literal_expression, CHAR(39), '')) = 4 AND LOCATE(CONCAT(CHAR(39), 'pending', CHAR(39)), literal_expression) > 0 AND LOCATE(CONCAT(CHAR(39), 'confirmed', CHAR(39)), literal_expression) > 0")"
+    [[ "$booking_phone_column" == "char(10)|YES|STORED GENERATED|${expected_active_phone_expression_a}" \
+        || "$booking_phone_column" == "char(10)|YES|STORED GENERATED|${expected_active_phone_expression_b}" ]] \
+        || die "database has an invalid bookings.active_phone_norm generated expression"
+
     actual_line_columns="$(mysql_query "SELECT CONCAT(table_name, '.', column_name, '|', LOWER(column_type), '|', is_nullable) FROM information_schema.columns WHERE table_schema = DATABASE() AND ((table_name = 'integration_settings' AND column_name = 'line_channel_secret_enc') OR (table_name = 'notification_outbox' AND column_name IN ('line_request_id', 'line_accepted_request_id', 'recipient')) OR (table_name = 'residents' AND column_name = 'line_user_id')) ORDER BY table_name, column_name")"
     [[ "$actual_line_columns" == "$expected_line_columns" ]] \
         || die "database is missing required LINE webhook/reconciliation columns or their types do not match"
@@ -178,6 +185,10 @@ verify_schema_and_defaults() {
     bill_item_index="$(mysql_query "SELECT column_name FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'bill_items' AND index_name = 'uq_bill_items_bill_type' AND non_unique = 0 ORDER BY seq_in_index")"
     [[ "$bill_item_index" == $'bill_id\nitem_type' ]] \
         || die "database is missing the required unique bill item index"
+
+    booking_phone_index="$(mysql_query "SELECT CONCAT(COALESCE(column_name, '<expression>'), '|', non_unique, '|', seq_in_index, '|', IF(sub_part IS NULL, 'FULL', sub_part)) FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'bookings' AND index_name = 'uq_bookings_one_active_per_phone' ORDER BY seq_in_index")"
+    [[ "$booking_phone_index" == 'active_phone_norm|0|1|FULL' ]] \
+        || die "database is missing the exact unique bookings(active_phone_norm) guard"
 
     check_constraint_count="$(mysql_query "SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND constraint_type = 'CHECK'")"
     [[ "$check_constraint_count" =~ ^[0-9]+$ ]] \

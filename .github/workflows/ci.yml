@@ -199,6 +199,266 @@ jobs:
             exit 1
           fi
 
+          # Exercise the successful-booking quota through the real web and
+          # MySQL transaction boundary. The sixth successful-looking request
+          # must be denied, and that denial must commit the daily block instead
+          # of being rolled back with the booking transaction.
+          docker exec \
+            --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+            "$database" mysql --host=127.0.0.1 --user=root \
+            --database="$CI_DB_DATABASE" --execute="
+              INSERT INTO rooms (room_code,floor,room_type,monthly_rent,amenities)
+              VALUES
+                ('CI-RATE-1',1,'standard',1000.00,JSON_ARRAY()),
+                ('CI-RATE-2',1,'standard',1000.00,JSON_ARRAY()),
+                ('CI-RATE-3',1,'standard',1000.00,JSON_ARRAY()),
+                ('CI-RATE-4',1,'standard',1000.00,JSON_ARRAY()),
+                ('CI-RATE-5',1,'standard',1000.00,JSON_ARRAY()),
+                ('CI-RATE-6',1,'standard',1000.00,JSON_ARRAY()),
+                ('CI-RATE-7',1,'standard',1000.00,JSON_ARRAY()),
+                ('CI-RATE-8',1,'standard',1000.00,JSON_ARRAY());"
+
+          mapfile -t rate_room_ids < <(docker exec \
+            --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+            "$database" mysql --batch --skip-column-names \
+            --host=127.0.0.1 --user=root --database="$CI_DB_DATABASE" \
+            --execute="SELECT id FROM rooms WHERE room_code LIKE 'CI-RATE-%' ORDER BY room_code")
+          [ "${#rate_room_ids[@]}" -eq 8 ]
+
+          csrf="$(curl --fail --silent --show-error \
+            http://127.0.0.1:18080/api/auth/me | jq --exit-status --raw-output '.data.csrf_token')"
+          for attempt in $(seq 1 6); do
+            room_id="${rate_room_ids[$((attempt - 1))]}"
+            phone="$(printf '08000000%02d' "$attempt")"
+            body="$(printf '{\"room_id\":%s,\"full_name\":\"CI Rate %s\",\"phone\":\"%s\",\"idempotency_key\":\"ci-rate-booking-%06d\"}' \
+              "$room_id" "$attempt" "$phone" "$attempt")"
+            status="$(curl --silent --show-error \
+              --output "/tmp/ci-rate-booking-${attempt}.json" \
+              --write-out '%{http_code}' \
+              --header 'Content-Type: application/json' \
+              --header 'Origin: https://ci-dormitory.example.co.th' \
+              --header "X-CSRF-Token: ${csrf}" \
+              --data "$body" \
+              http://127.0.0.1:18080/api/public/bookings)"
+            if [ "$attempt" -le 5 ]; then
+              [ "$status" = 201 ]
+            else
+              [ "$status" = 429 ]
+              grep --quiet '"code":"RATE_LIMITED"' "/tmp/ci-rate-booking-${attempt}.json"
+            fi
+          done
+
+          created_rate_bookings="$(docker exec \
+            --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+            "$database" mysql --batch --skip-column-names \
+            --host=127.0.0.1 --user=root --database="$CI_DB_DATABASE" \
+            --execute="SELECT COUNT(*) FROM bookings b JOIN rooms r ON r.id=b.room_id
+              WHERE r.room_code LIKE 'CI-RATE-%'")"
+          sixth_room_bookings="$(docker exec \
+            --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+            "$database" mysql --batch --skip-column-names \
+            --host=127.0.0.1 --user=root --database="$CI_DB_DATABASE" \
+            --execute="SELECT COUNT(*) FROM bookings b JOIN rooms r ON r.id=b.room_id
+              WHERE r.room_code='CI-RATE-6'")"
+          [ "$created_rate_bookings" = 5 ]
+          [ "$sixth_room_bookings" = 0 ]
+
+          committed_daily_block="$(docker exec \
+            --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+            "$database" mysql --batch --skip-column-names \
+            --host=127.0.0.1 --user=root --database="$CI_DB_DATABASE" \
+            --execute="SELECT COUNT(*) FROM rate_limits
+              WHERE hits=6 AND blocked_until IS NOT NULL
+                AND TIMESTAMPDIFF(SECOND,UTC_TIMESTAMP(),blocked_until)>80000")"
+          [ "$committed_daily_block" = 1 ]
+
+          # Reset only the disposable CI buckets. Two invalid requests plus a
+          # calibration booking reveal the successful-IP bucket without
+          # depending on Docker's bridge address (the phone bucket can be
+          # derived from the known CI APP_KEY).
+          docker exec \
+            --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+            "$database" mysql --host=127.0.0.1 --user=root \
+            --database="$CI_DB_DATABASE" --execute="DELETE FROM rate_limits"
+
+          for attempt in $(seq 1 2); do
+            body="$(printf '{\"room_id\":999999,\"full_name\":\"CI Calibration\",\"phone\":\"08770000%02d\",\"idempotency_key\":\"ci-invalid-calibration-%06d\"}' \
+              "$attempt" "$attempt")"
+            status="$(curl --silent --show-error --output /tmp/ci-invalid-calibration.json \
+              --write-out '%{http_code}' --header 'Content-Type: application/json' \
+              --header 'Origin: https://ci-dormitory.example.co.th' \
+              --header "X-CSRF-Token: ${csrf}" --data "$body" \
+              http://127.0.0.1:18080/api/public/bookings)"
+            [ "$status" = 404 ]
+          done
+
+          calibration_body="$(printf '{\"room_id\":%s,\"full_name\":\"CI Calibration\",\"phone\":\"0877777777\",\"idempotency_key\":\"ci-calibration-000001\"}' \
+            "${rate_room_ids[5]}")"
+          calibration_status="$(curl --silent --show-error \
+            --output /tmp/ci-calibration.json --write-out '%{http_code}' \
+            --header 'Content-Type: application/json' \
+            --header 'Origin: https://ci-dormitory.example.co.th' \
+            --header "X-CSRF-Token: ${csrf}" --data "$calibration_body" \
+            http://127.0.0.1:18080/api/public/bookings)"
+          [ "$calibration_status" = 201 ]
+
+          calibration_phone_bucket="$(docker exec "$web" php -r \
+            'echo hash_hmac("sha256","public-booking-phone:0877777777",(string)getenv("APP_KEY"));')"
+          success_ip_bucket="$(docker exec \
+            --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+            "$database" mysql --batch --skip-column-names \
+            --host=127.0.0.1 --user=root --database="$CI_DB_DATABASE" \
+            --execute="SELECT bucket_key FROM rate_limits
+              WHERE hits=1 AND bucket_key<>'${calibration_phone_bucket}'")"
+          [ "${#calibration_phone_bucket}" -eq 64 ]
+          [ "${#success_ip_bucket}" -eq 64 ]
+
+          docker exec \
+            --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+            "$database" mysql --host=127.0.0.1 --user=root \
+            --database="$CI_DB_DATABASE" --execute="
+              UPDATE bookings
+              SET status='cancelled',cancelled_at=UTC_TIMESTAMP(),
+                  cancel_reason='CI calibration transition',updated_at=UTC_TIMESTAMP()
+              WHERE idempotency_key='ci-calibration-000001' AND status='pending';
+              DELETE FROM rate_limits WHERE bucket_key<>'${success_ip_bucket}';
+              UPDATE rate_limits SET hits=0,blocked_until=NULL,
+                  window_started_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP()
+              WHERE bucket_key='${success_ip_bucket}';"
+
+          # Hold the successful-IP row while two different phone/room
+          # transactions pass their initial idempotency reads. Releasing this
+          # row makes one insert win and forces the other through the late
+          # duplicate-key BOOKING_RETRY path, where its quota must roll back.
+          docker exec \
+            --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+            "$database" mysql --batch --skip-column-names \
+            --host=127.0.0.1 --user=root --database="$CI_DB_DATABASE" \
+            --execute="START TRANSACTION;
+              SELECT bucket_key FROM rate_limits
+              WHERE bucket_key='${success_ip_bucket}' FOR UPDATE;
+              DO SLEEP(8); COMMIT;" >/tmp/ci-success-ip-lock.log &
+          success_ip_lock_pid=$!
+          sleep 1
+
+          concurrent_body_a="$(printf '{\"room_id\":%s,\"full_name\":\"CI Concurrent\",\"phone\":\"0888888888\",\"idempotency_key\":\"ci-concurrent-key-000001\"}' \
+            "${rate_room_ids[5]}")"
+          concurrent_body_b="$(printf '{\"room_id\":%s,\"full_name\":\"CI Concurrent\",\"phone\":\"0866666666\",\"idempotency_key\":\"ci-concurrent-key-000001\"}' \
+            "${rate_room_ids[6]}")"
+          curl --silent --show-error \
+            --output /tmp/ci-concurrent-a.json --write-out '%{http_code}' \
+            --header 'Content-Type: application/json' \
+            --header 'Origin: https://ci-dormitory.example.co.th' \
+            --header "X-CSRF-Token: ${csrf}" --data "$concurrent_body_a" \
+            http://127.0.0.1:18080/api/public/bookings >/tmp/ci-concurrent-a.status &
+          concurrent_pid_a=$!
+          curl --silent --show-error \
+            --output /tmp/ci-concurrent-b.json --write-out '%{http_code}' \
+            --header 'Content-Type: application/json' \
+            --header 'Origin: https://ci-dormitory.example.co.th' \
+            --header "X-CSRF-Token: ${csrf}" --data "$concurrent_body_b" \
+            http://127.0.0.1:18080/api/public/bookings >/tmp/ci-concurrent-b.status &
+          concurrent_pid_b=$!
+          wait "$concurrent_pid_a"
+          wait "$concurrent_pid_b"
+          wait "$success_ip_lock_pid"
+          concurrent_statuses="$(cat /tmp/ci-concurrent-a.status):$(cat /tmp/ci-concurrent-b.status)"
+          case "$concurrent_statuses" in
+            201:409|409:201) ;;
+            *) echo "Unexpected concurrent booking statuses: $concurrent_statuses"; exit 1 ;;
+          esac
+          grep --quiet '"code":"BOOKING_RETRY"' \
+            /tmp/ci-concurrent-a.json /tmp/ci-concurrent-b.json
+
+          concurrent_booking_count="$(docker exec \
+            --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+            "$database" mysql --batch --skip-column-names \
+            --host=127.0.0.1 --user=root --database="$CI_DB_DATABASE" \
+            --execute="SELECT COUNT(*) FROM bookings
+              WHERE idempotency_key='ci-concurrent-key-000001'")"
+          concurrent_bucket_shape="$(docker exec \
+            --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+            "$database" mysql --batch --skip-column-names \
+            --host=127.0.0.1 --user=root --database="$CI_DB_DATABASE" \
+            --execute="SELECT CONCAT(COUNT(*),'|',SUM(hits=1),'|',SUM(hits=2))
+              FROM rate_limits")"
+          [ "$concurrent_booking_count" = 1 ]
+          [ "$concurrent_bucket_shape" = '3|2|1' ]
+
+          docker exec \
+            --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+            "$database" mysql --host=127.0.0.1 --user=root \
+            --database="$CI_DB_DATABASE" --execute="
+              UPDATE bookings
+              SET status='cancelled',cancelled_at=UTC_TIMESTAMP(),
+                  cancel_reason='CI concurrency transition',updated_at=UTC_TIMESTAMP()
+              WHERE idempotency_key='ci-concurrent-key-000001' AND status='pending';
+              DELETE FROM rate_limits;"
+
+          # Exercise the phone quota across two completed holds. The third
+          # request must persist the phone block without creating a booking.
+
+          for attempt in $(seq 1 3); do
+            room_id="${rate_room_ids[$((attempt + 4))]}"
+            body="$(printf '{\"room_id\":%s,\"full_name\":\"CI Phone Rate\",\"phone\":\"0899999999\",\"idempotency_key\":\"ci-phone-rate-%06d\"}' \
+              "$room_id" "$attempt")"
+            status="$(curl --silent --show-error \
+              --output "/tmp/ci-phone-rate-${attempt}.json" \
+              --write-out '%{http_code}' \
+              --header 'Content-Type: application/json' \
+              --header 'Origin: https://ci-dormitory.example.co.th' \
+              --header "X-CSRF-Token: ${csrf}" \
+              --data "$body" \
+              http://127.0.0.1:18080/api/public/bookings)"
+            if [ "$attempt" -le 2 ]; then
+              [ "$status" = 201 ]
+              docker exec \
+                --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+                "$database" mysql --host=127.0.0.1 --user=root \
+                --database="$CI_DB_DATABASE" --execute="
+                  UPDATE bookings
+                  SET status='cancelled',cancelled_at=UTC_TIMESTAMP(),
+                      cancel_reason='CI phone quota transition',updated_at=UTC_TIMESTAMP()
+                  WHERE idempotency_key='$(printf 'ci-phone-rate-%06d' "$attempt")'
+                    AND status='pending';"
+            else
+              [ "$status" = 429 ]
+              grep --quiet '"code":"RATE_LIMITED"' "/tmp/ci-phone-rate-${attempt}.json"
+            fi
+          done
+
+          phone_booking_count="$(docker exec \
+            --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+            "$database" mysql --batch --skip-column-names \
+            --host=127.0.0.1 --user=root --database="$CI_DB_DATABASE" \
+            --execute="SELECT COUNT(*) FROM bookings WHERE phone_norm='0899999999'")"
+          eighth_room_bookings="$(docker exec \
+            --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+            "$database" mysql --batch --skip-column-names \
+            --host=127.0.0.1 --user=root --database="$CI_DB_DATABASE" \
+            --execute="SELECT COUNT(*) FROM bookings b JOIN rooms r ON r.id=b.room_id
+              WHERE r.room_code='CI-RATE-8'")"
+          committed_phone_block="$(docker exec \
+            --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+            "$database" mysql --batch --skip-column-names \
+            --host=127.0.0.1 --user=root --database="$CI_DB_DATABASE" \
+            --execute="SELECT COUNT(*) FROM rate_limits
+              WHERE hits=3 AND blocked_until IS NOT NULL
+                AND TIMESTAMPDIFF(SECOND,UTC_TIMESTAMP(),blocked_until)>80000")"
+          phone_quota_bucket_shape="$(docker exec \
+            --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+            "$database" mysql --batch --skip-column-names \
+            --host=127.0.0.1 --user=root --database="$CI_DB_DATABASE" \
+            --execute="SELECT CONCAT(COUNT(*),'|',
+                SUM(hits=2 AND blocked_until IS NULL),'|',
+                SUM(hits=3 AND blocked_until IS NOT NULL),'|',
+                SUM(hits=3 AND blocked_until IS NULL))
+              FROM rate_limits")"
+          [ "$phone_booking_count" = 2 ]
+          [ "$eighth_room_bookings" = 0 ]
+          [ "$committed_phone_block" = 1 ]
+          [ "$phone_quota_bucket_shape" = '3|1|1|1' ]
+
           # Validate production configuration/schema while allowing expected
           # fresh-install readiness warnings (owner/integrations are added by
           # deployment steps after bootstrap).

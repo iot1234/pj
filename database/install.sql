@@ -7,7 +7,7 @@
 -- Never use a force/continue-on-error import option with this file.
 -- Regenerate: php scripts/build_install_sql.php
 -- Verify current: php scripts/build_install_sql.php --check
--- Source digest: fa19358ca529a7e83ecb470e396a4b4cb0782c1adc96e550afcca8219667c788
+-- Source digest: 339f86eb499718eaa04641afdddedc5d13dd447bb9347f7c51ef30367cd5277e
 -- BEGIN database/00-create-database.sql
 -- Advanced/manual fresh-install step. For the simplest new installation,
 -- import database/install.sql once instead. Run this standalone file from the
@@ -59,7 +59,8 @@ DEALLOCATE PREPARE dormitory_fresh_install_guard;
 -- database/migrations/001_integration_settings.sql when needed, followed by
 -- database/migrations/002_operational_hardening.sql exactly once, then
 -- database/migrations/003_append_only_guards.sql and
--- database/migrations/004_line_webhook.sql (both safe to rerun).
+-- database/migrations/004_line_webhook.sql and
+-- database/migrations/005_booking_active_phone.sql (all safe to rerun).
 
 SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
 -- Store timestamps in UTC. PHP formats them for Asia/Bangkok at the UI edge.
@@ -162,6 +163,10 @@ CREATE TABLE IF NOT EXISTS bookings (
         GENERATED ALWAYS AS (
             CASE WHEN status IN ('pending', 'confirmed') THEN room_id ELSE NULL END
         ) STORED,
+    active_phone_norm CHAR(10)
+        GENERATED ALWAYS AS (
+            CASE WHEN status IN ('pending', 'confirmed') THEN phone_norm ELSE NULL END
+        ) STORED,
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
         ON UPDATE CURRENT_TIMESTAMP(6),
@@ -169,6 +174,7 @@ CREATE TABLE IF NOT EXISTS bookings (
     UNIQUE KEY uq_bookings_reference_no (reference_no),
     UNIQUE KEY uq_bookings_idempotency_key (idempotency_key),
     UNIQUE KEY uq_bookings_one_active_per_room (active_room_id),
+    UNIQUE KEY uq_bookings_one_active_per_phone (active_phone_norm),
     KEY idx_bookings_room_created (room_id, created_at),
     KEY idx_bookings_status_created (status, created_at),
     KEY idx_bookings_phone (phone_norm),

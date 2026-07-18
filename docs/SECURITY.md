@@ -42,7 +42,7 @@
 
 MySQL ต้องเป็น 8.0.16+ เพื่อให้ `CHECK` ทำงานจริง ใช้ InnoDB/utf8mb4, strict SQL mode และเก็บ timestamp เป็น UTC; PHP แปลงเพื่อแสดงผล `Asia/Bangkok`
 
-- active booking ใช้ generated `active_room_id` + unique index เพื่อกัน booking pending/confirmed ซ้ำในห้องเดียว
+- active booking ใช้ generated `active_room_id`/`active_phone_norm` + unique indexes เพื่อกัน booking pending/confirmed ซ้ำทั้งห้องเดียวและเบอร์เดียว
 - active occupancy ใช้ generated room/resident IDs + unique indexes เพื่อกันหนึ่งห้องหรือหนึ่งผู้เช่ามี occupancy active ซ้ำ
 - booking/move-in/bill/payment/admin-owner flows ใช้ transaction และ `SELECT ... FOR UPDATE`; duplicate-key เป็น conflict ไม่ใช่ retry แบบ blind
 - meter กำหนดหนึ่งแถวต่อห้อง/ประเภท/เดือน, current ≥ previous และ units เท่ากับผลต่างที่ปัด 2 ตำแหน่ง
@@ -122,7 +122,7 @@ constraint ไม่สามารถกัน active booking กับ active 
 ## Checklist ก่อนเปิด production
 
 - [ ] `php scripts/check_requirements.php --production` ผ่าน; Docker ต้องผ่านทั้ง service `app` และ `worker` ตาม README
-- [ ] ฐานข้อมูลใหม่ชื่อ `dormitory` import `install.sql` ไฟล์เดียว หรือฐานชื่ออื่นใช้วิธีขั้นสูงโดยเลือกฐานเป้าหมายแล้ว import `schema.sql` + `defaults.sql` ครบ (`demo.sql` ใช้ได้เฉพาะ local แบบ optional และฐานใหม่ไม่ต้องรัน migration) หรือฐานข้อมูลเดิมสำรองแล้ว รัน `001_integration_settings.sql` เมื่อจำเป็น → `002_operational_hardening.sql` หนึ่งครั้ง → `003_append_only_guards.sql` → `004_line_webhook.sql` หลังตรวจ/แก้ LINE User ID legacy พร้อมรัน `--db --strict` ด้วยบัญชี runtime และ `--schema-audit` ด้วยบัญชี schema owner ที่คงอยู่เพื่อตรวจคอลัมน์ webhook/reconciliation, CHECK constraints และ integrity triggers 15 รายการ; ห้ามลบ trigger `DEFINER` หลังติดตั้ง
+- [ ] ฐานข้อมูลใหม่ชื่อ `dormitory` import `install.sql` ไฟล์เดียว หรือฐานชื่ออื่นใช้วิธีขั้นสูงโดยเลือกฐานเป้าหมายแล้ว import `schema.sql` + `defaults.sql` ครบ หรือฐานข้อมูลเดิมสำรองแล้ว รัน `001` เมื่อจำเป็น → `002` หนึ่งครั้ง → `003` → `004` หลังแก้ LINE ID legacy → `005` หลังปิด active booking ซ้ำต่อเบอร์ พร้อมรัน `--db --strict` และ `--schema-audit`; ห้ามลบ trigger `DEFINER` หลังติดตั้ง
 - [ ] HTTPS/HSTS/CSP/security headers ตรวจจากภายนอกแล้ว
 - [ ] `.env`, source และ `storage/private` เปิดผ่าน URL ไม่ได้
 - [ ] ไม่มี default credential, สร้าง Owner ผ่าน `--password-stdin`/secret store และลบตัวแปรรหัสผ่านชั่วคราวหลัง bootstrap

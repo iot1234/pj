@@ -266,7 +266,7 @@ final class ResidentService
         if($moveOut>$today)throw new HttpException(422,'วันที่ย้ายออกต้องไม่เป็นวันในอนาคต','VALIDATION_ERROR',['field'=>'move_out_date']);
 
         return $this->app->database()->transaction(function(PDO $pdo)use($id,$moveOut):array{
-            $lock=$pdo->prepare("SELECT o.id AS occupancy_id,o.room_id,o.move_in_date,rm.room_code
+            $lock=$pdo->prepare("SELECT o.id AS occupancy_id,o.room_id,o.move_in_date,rm.room_code,r.line_user_id
                 FROM occupancies o
                 JOIN residents r ON r.id=o.resident_id AND r.active=1
                 JOIN rooms rm ON rm.id=o.room_id
@@ -295,6 +295,21 @@ final class ResidentService
                     'later_bill_ids'=>array_map(static fn(array $row):int=>(int)$row['id'],$laterRows),
                 ]);
             }
+
+            // A paid closing-month bill alone is not sufficient evidence that
+            // the complete tenancy was billed. Fail closed when any calendar
+            // month from move-in through move-out has no bill for this exact
+            // occupancy, otherwise historical rent can be silently skipped.
+            $firstPeriod=substr((string)$occupancy['move_in_date'],0,7).'-01';
+            $billedPeriods=$pdo->prepare('SELECT period FROM bills WHERE occupancy_id=? AND period>=? AND period<=? ORDER BY period FOR UPDATE');
+            $billedPeriods->execute([$occupancy['occupancy_id'],$firstPeriod,$period]);
+            $actualPeriods=array_map(static fn(array $row):string=>(string)$row['period'],$billedPeriods->fetchAll());
+            $missingPeriods=array_values(array_diff(self::billingPeriods($firstPeriod,$period),$actualPeriods));
+            if($missingPeriods!==[]){
+                throw new HttpException(409,'ยังออกบิลไม่ครบทุกรอบเดือนของการเข้าพัก กรุณาออกและยืนยันการชำระบิลที่ขาดก่อนย้ายออก','MOVE_OUT_MISSING_BILLS',[
+                    'missing_periods'=>array_map(static fn(string $value):string=>substr($value,0,7),$missingPeriods),
+                ]);
+            }
             $closingBill=$pdo->prepare("SELECT id,bill_no FROM bills WHERE occupancy_id=? AND period=? AND status='paid' LIMIT 1 FOR UPDATE");
             $closingBill->execute([$occupancy['occupancy_id'],$period]);
             $paidBill=$closingBill->fetch();
@@ -305,10 +320,13 @@ final class ResidentService
             $end=$pdo->prepare("UPDATE occupancies SET status='ended',move_out_date=?,updated_at=UTC_TIMESTAMP() WHERE id=? AND status='active'");
             $end->execute([$moveOut,$occupancy['occupancy_id']]);
             if($end->rowCount()!==1)throw new HttpException(409,'สถานะการเข้าพักเปลี่ยนแปลงแล้ว กรุณารีเฟรช','OCCUPANCY_CHANGED');
-            $deactivate=$pdo->prepare('UPDATE residents SET active=0,auth_version=auth_version+1,updated_at=UTC_TIMESTAMP() WHERE id=? AND active=1');
+            // A returning resident must verify LINE again. Clearing the old ID
+            // here also avoids reserving it indefinitely on an inactive row.
+            $deactivate=$pdo->prepare('UPDATE residents SET active=0,line_user_id=NULL,auth_version=auth_version+1,updated_at=UTC_TIMESTAMP() WHERE id=? AND active=1');
             $deactivate->execute([$id]);
             if($deactivate->rowCount()!==1)throw new HttpException(409,'สถานะผู้พักเปลี่ยนแปลงแล้ว กรุณารีเฟรช','RESIDENT_CHANGED');
 
+            $lineUserId=is_string($occupancy['line_user_id']??null)?(string)$occupancy['line_user_id']:'';
             return [
                 'resident_id'=>$id,
                 'occupancy_id'=>(int)$occupancy['occupancy_id'],
@@ -317,7 +335,25 @@ final class ResidentService
                 'move_out_date'=>$moveOut,
                 'closing_bill_id'=>(int)$paidBill['id'],
                 'status'=>'ended',
+                '_line_unlinked_audit'=>$lineUserId!==''?[
+                    'line_user_id_hint'=>'•••'.substr($lineUserId,-6),
+                    'line_user_id_hash'=>$this->app->notifications()->lineBindingHash($id,$lineUserId),
+                    'reason'=>'move_out',
+                ]:null,
             ];
         });
+    }
+
+    /** @return list<string> First-of-month dates, inclusive. */
+    private static function billingPeriods(string $firstPeriod,string $lastPeriod): array
+    {
+        $cursor=new \DateTimeImmutable($firstPeriod,new \DateTimeZone('UTC'));
+        $end=new \DateTimeImmutable($lastPeriod,new \DateTimeZone('UTC'));
+        $periods=[];
+        while($cursor<=$end){
+            $periods[]=$cursor->format('Y-m-01');
+            $cursor=$cursor->modify('first day of next month');
+        }
+        return $periods;
     }
 }

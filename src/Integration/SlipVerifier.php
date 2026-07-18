@@ -41,6 +41,9 @@ final class SlipVerifier
         if($transaction===''||strlen($transaction)>191||preg_match('/[\x00-\x1F\x7F]/',$transaction))return $this->pending($provider,'Provider response has no valid transaction reference',$audit);
         if(strlen($receiver)>191||preg_match('/[\x00-\x1F\x7F]/',$receiver))return $this->pending($provider,'Provider response has no valid receiver reference',$audit);
         if(strlen($matchedAccountReference)>191||preg_match('/[\x00-\x1F\x7F]/',$matchedAccountReference))return $this->pending($provider,'Provider response has no valid matched account reference',$audit);
+        $locale=self::evaluatePaymentLocale($provider,$raw['country_code']??null,$raw['currency']??null);
+        if($locale['decision']==='pending')return $this->pending($provider,(string)$locale['reason'],$audit);
+        if($locale['decision']==='rejected')return ['decision'=>'rejected','provider'=>$provider,'transaction_ref'=>$transaction,'receiver_ref'=>$receiver?:null,'payload'=>$audit,'reason'=>(string)$locale['reason']];
         if($time['decision']==='pending')return $this->pending($provider,(string)$time['reason'],$audit);
         if($time['decision']==='rejected')return ['decision'=>'rejected','provider'=>$provider,'transaction_ref'=>$transaction,'receiver_ref'=>$receiver?:null,'payload'=>$audit,'reason'=>(string)$time['reason']];
         try{$expected=Validator::scaledDecimal($expectedAmount,'expected_amount',2,12);$actual=Validator::scaledDecimal($raw['amount']??'','provider_amount',2,12);}catch(\Throwable){return $this->pending($provider,'Provider response has an invalid amount',$audit);}
@@ -104,6 +107,8 @@ final class SlipVerifier
                 'receiver_match_source'=>'slipok_branch_log',
                 'provider_branch'=>$branch,
                 'transferred_at'=>self::extractTransferredAt('slipok',$d),
+                'country_code'=>$this->scalarString($d['countryCode']??null),
+                'currency'=>$this->scalarString($d['paidLocalCurrency']??null),
             ];
         }
         $success=$status===200&&($json['success']??false)===true&&($d['success']??false)===true&&$d!==[];
@@ -132,6 +137,8 @@ final class SlipVerifier
             'receiver_match_source'=>'slipok_branch_log',
             'provider_branch'=>$branch,
             'transferred_at'=>self::extractTransferredAt('slipok',$d),
+            'country_code'=>$this->scalarString($d['countryCode']??null),
+            'currency'=>$this->scalarString($d['paidLocalCurrency']??null),
             'http_status'=>$status,
             'provider_code'=>null,
         ];
@@ -186,6 +193,8 @@ final class SlipVerifier
                 'matched_account_ref'=>$this->scalarString($matchedAccountReference),
                 'receiver_match_source'=>'easyslip_registered_account',
                 'transferred_at'=>self::extractTransferredAt('easyslip',$d),
+                'country_code'=>$this->scalarString($raw['countryCode']??null),
+                'currency'=>$this->scalarString(is_array($raw['amount']??null)?($raw['amount']['local']['currency']??null):null),
             ];
         }
         return [
@@ -197,6 +206,8 @@ final class SlipVerifier
             'matched_account_ref'=>$this->scalarString($matchedAccountReference),
             'receiver_match_source'=>'easyslip_registered_account',
             'transferred_at'=>self::extractTransferredAt('easyslip',$d),
+            'country_code'=>$this->scalarString($raw['countryCode']??null),
+            'currency'=>$this->scalarString(is_array($raw['amount']??null)?($raw['amount']['local']['currency']??null):null),
             'http_status'=>$status,
             'provider_code'=>null,
         ];
@@ -232,6 +243,21 @@ final class SlipVerifier
         if($transfer<$bill->sub($interval))return ['decision'=>'rejected','transferred_at'=>$normalized,'reason'=>'Slip transfer predates the bill'];
         if($transfer>$current->add($interval))return ['decision'=>'rejected','transferred_at'=>$normalized,'reason'=>'Slip transfer time is in the future'];
         return ['decision'=>'valid','transferred_at'=>$normalized,'reason'=>null];
+    }
+
+    /** @return array{decision:string,reason:?string} */
+    private static function evaluatePaymentLocale(string $provider,mixed $countryCode,mixed $currency): array
+    {
+        $country=is_scalar($countryCode)?strtoupper(trim((string)$countryCode)):'';
+        $currencyCode=is_scalar($currency)?strtoupper(trim((string)$currency)):'';
+        if($country==='')return ['decision'=>'pending','reason'=>'Provider response has no payment country'];
+        if($country!=='TH')return ['decision'=>'rejected','reason'=>'Slip payment country is not Thailand'];
+        // EasySlip v2 defines rawSlip.amount.local.currency as required. The
+        // SlipOK contract marks paidLocalCurrency optional, so validate it
+        // whenever present without rejecting otherwise valid domestic slips.
+        if($provider==='easyslip'&&$currencyCode==='')return ['decision'=>'pending','reason'=>'Provider response has no payment currency'];
+        if($currencyCode!==''&&!in_array($currencyCode,['THB','764'],true))return ['decision'=>'rejected','reason'=>'Slip payment currency is not THB'];
+        return ['decision'=>'valid','reason'=>null];
     }
 
     private static function parseOffsetTimestamp(mixed $value): ?\DateTimeImmutable
@@ -310,7 +336,9 @@ final class SlipVerifier
         $transferredAt=is_string($payload['transferred_at']??null)?$payload['transferred_at']:null;
         $branch=is_string($payload['provider_branch']??null)&&preg_match('/^[A-Za-z0-9_-]{1,80}$/D',$payload['provider_branch'])?$payload['provider_branch']:null;
         $source=is_string($payload['receiver_match_source']??null)&&in_array($payload['receiver_match_source'],['slipok_branch_log','easyslip_registered_account'],true)?$payload['receiver_match_source']:null;
-        return ['ok'=>(bool)($payload['ok']??false),'http_status'=>$payload['http_status']??null,'provider_code'=>$payload['provider_code']??null,'amount'=>$amount,'receiver_tail'=>$receiver!==''?substr($receiver,-6):null,'matched_receiver_tail'=>$matched!==''?substr($matched,-6):null,'account_matched'=>$payload['account_matched']??null,'receiver_match_source'=>$source,'provider_branch'=>$branch,'transferred_at'=>$transferredAt];
+        $country=is_scalar($payload['country_code']??null)?strtoupper(substr(trim((string)$payload['country_code']),0,3)):null;
+        $currency=is_scalar($payload['currency']??null)?strtoupper(substr(trim((string)$payload['currency']),0,4)):null;
+        return ['ok'=>(bool)($payload['ok']??false),'http_status'=>$payload['http_status']??null,'provider_code'=>$payload['provider_code']??null,'amount'=>$amount,'receiver_tail'=>$receiver!==''?substr($receiver,-6):null,'matched_receiver_tail'=>$matched!==''?substr($matched,-6):null,'account_matched'=>$payload['account_matched']??null,'receiver_match_source'=>$source,'provider_branch'=>$branch,'country_code'=>$country,'currency'=>$currency,'transferred_at'=>$transferredAt];
     }
 
     /** @param array<string,mixed> $payload @return array{decision:string,provider:?string,transaction_ref:?string,receiver_ref:?string,payload:array<string,mixed>,reason:string} */

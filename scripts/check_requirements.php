@@ -10,6 +10,7 @@ if (PHP_SAPI !== 'cli') {
 $root = dirname(__DIR__);
 require_once $root . '/src/Config.php';
 require_once $root . '/src/Security/SecretCipher.php';
+require_once $root . '/src/Support/SchemaGuard.php';
 
 $arguments = array_slice($argv, 1);
 $productionMode = in_array('--production', $arguments, true);
@@ -619,10 +620,46 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
         $generatedStatement->execute([$database]);
         $generated=[];
         foreach($generatedStatement->fetchAll()as$row)$generated[]=(string)($row['TABLE_NAME']??$row['table_name']).'.'.(string)($row['COLUMN_NAME']??$row['column_name']);
-        $requiredGenerated=['bookings.active_room_id','occupancies.active_room_id','occupancies.active_resident_id','payments.active_bill_id'];
+        $requiredGenerated=['bookings.active_room_id','bookings.active_phone_norm','occupancies.active_room_id','occupancies.active_resident_id','payments.active_bill_id'];
         $missingGenerated=array_values(array_diff($requiredGenerated,$generated));
-        if($missingGenerated===[])addResult($successes,'พบ generated uniqueness guards ครบ 4 คอลัมน์');
+        if($missingGenerated===[])addResult($successes,'พบ generated uniqueness guards ครบ 5 คอลัมน์');
         else addResult($errors,'schema ขาด generated uniqueness guards: '.implode(', ',$missingGenerated));
+
+        $bookingPhoneColumnStatement=$pdo->prepare("SELECT column_type,is_nullable,extra,generation_expression
+            FROM information_schema.columns
+            WHERE table_schema=? AND table_name='bookings' AND column_name='active_phone_norm'");
+        $bookingPhoneColumnStatement->execute([$database]);
+        $bookingPhoneColumn=$bookingPhoneColumnStatement->fetch();
+        $bookingPhoneExpression=is_array($bookingPhoneColumn)
+            ? \Dormitory\Support\SchemaGuard::activePhoneGenerationExpression(
+                $bookingPhoneColumn['GENERATION_EXPRESSION']??$bookingPhoneColumn['generation_expression']??null
+            )
+            : null;
+        $bookingPhoneColumnExact=is_array($bookingPhoneColumn)
+            &&strtolower((string)($bookingPhoneColumn['COLUMN_TYPE']??$bookingPhoneColumn['column_type']??''))==='char(10)'
+            &&strtoupper((string)($bookingPhoneColumn['IS_NULLABLE']??$bookingPhoneColumn['is_nullable']??''))==='YES'
+            &&strtoupper(trim((string)($bookingPhoneColumn['EXTRA']??$bookingPhoneColumn['extra']??'')))==='STORED GENERATED'
+            &&$bookingPhoneExpression!==null;
+        if($bookingPhoneColumnExact)addResult($successes,'generated column bookings.active_phone_norm มีนิพจน์ CASE ที่ถูกต้อง');
+        else addResult($errors,'bookings.active_phone_norm ต้องเป็น stored CHAR(10) และใช้ CASE status pending/confirmed เป็น phone_norm มิฉะนั้นเป็น NULL เท่านั้น');
+
+        $bookingPhoneIndexStatement=$pdo->prepare("SELECT column_name,non_unique,seq_in_index,sub_part
+            FROM information_schema.statistics
+            WHERE table_schema=? AND table_name='bookings'
+              AND index_name='uq_bookings_one_active_per_phone'
+            ORDER BY seq_in_index");
+        $bookingPhoneIndexStatement->execute([$database]);
+        $bookingPhoneIndexRows=$bookingPhoneIndexStatement->fetchAll();
+        $bookingPhoneIndexExact=count($bookingPhoneIndexRows)===1;
+        if($bookingPhoneIndexExact){
+            $indexRow=$bookingPhoneIndexRows[0];
+            $bookingPhoneIndexExact=(string)($indexRow['COLUMN_NAME']??$indexRow['column_name']??'')==='active_phone_norm'
+                &&(int)($indexRow['NON_UNIQUE']??$indexRow['non_unique']??1)===0
+                &&(int)($indexRow['SEQ_IN_INDEX']??$indexRow['seq_in_index']??0)===1
+                &&($indexRow['SUB_PART']??$indexRow['sub_part']??null)===null;
+        }
+        if($bookingPhoneIndexExact)addResult($successes,'พบ unique index bookings(active_phone_norm) แบบเต็มคอลัมน์');
+        else addResult($errors,'schema ขาด unique index bookings(active_phone_norm) แบบคอลัมน์เดียวเต็มความยาวจาก migration 005');
 
         $requiredLineColumns = [
             'integration_settings.line_channel_secret_enc' => ['text', 'YES'],

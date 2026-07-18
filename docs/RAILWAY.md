@@ -65,9 +65,10 @@ DB_PASSWORD=<random-hex-อย่างน้อย-32-ตัวอักษร>
 ห้ามรัน `database-setup` หรือ import `schema.sql` ทับฐานที่มีข้อมูล ให้ snapshot/backup
 MySQL และทดสอบ restore ก่อน แล้วใช้ Railway Data/SQL console หรือ migration job ชั่วคราว
 ที่ถือ `DB_DBA_*` รันไฟล์ตามลำดับ `001` (เฉพาะเมื่อยังไม่มี `integration_settings`) →
-`002` หนึ่งครั้ง → `003` → `004_line_webhook.sql` โดยตรวจและแก้ค่า legacy ใน
+`002` หนึ่งครั้ง → `003` → `004_line_webhook.sql` → `005_booking_active_phone.sql` โดยตรวจและแก้ค่า legacy ใน
 `residents.line_user_id`/`notification_outbox.recipient` ให้ตรง `^U[0-9a-f]{32}$`
 ก่อนรัน `004` บัญชี `dormitory_app` ใช้รัน migration ไม่ได้เพราะไม่มี DDL
+ก่อนรัน `005` ต้องยกเลิกหรือปิดคำขอซ้ำให้เหลือ pending/confirmed ไม่เกินหนึ่งรายการต่อเบอร์
 
 หลัง migration ให้รัน `php scripts/check_requirements.php --schema-audit` ด้วย schema
 owner และ `php scripts/check_requirements.php --db --strict --production` ด้วย runtime

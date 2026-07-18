@@ -41,7 +41,8 @@
 2. รัน `database/migrations/002_operational_hardening.sql` **หนึ่งครั้งเท่านั้น** เพื่อเพิ่ม snapshot ค่าเช่าตอนจอง/ชื่อผู้พัก/รหัสห้อง, payment verification lease และ integrity triggers ให้ครบ 15 รายการ ไฟล์นี้ไม่ใช่ idempotent และห้ามรันซ้ำ
 3. รัน `database/migrations/003_append_only_guards.sql` หลัง `002` เพื่อซ่อมฐานที่เคยรัน `002` รุ่นต้นให้มี trigger แบบ append-only ของ `bill_items` และ `audit_logs` ครบ ไฟล์นี้ตรวจ schema ก่อนแก้และปลอดภัยต่อการรันซ้ำ
 4. ตรวจแถว `residents.line_user_id` และ `notification_outbox.recipient` ให้เป็น `U` ตามด้วย hexadecimal ตัวพิมพ์เล็ก 32 ตัวทั้งหมด แล้วรัน `database/migrations/004_line_webhook.sql` เพื่อเพิ่ม Channel secret ที่เข้ารหัส, LINE request IDs สำหรับ reconciliation และ CHECK รูปแบบ LINE User ID ไฟล์จะหยุดก่อน ALTER หากพบค่า legacy ที่แก้ไม่ได้โดยอัตโนมัติ และปลอดภัยต่อการรันซ้ำ
-5. รัน `php scripts/check_requirements.php --db --strict` ด้วยบัญชี runtime แล้วรัน `php scripts/check_requirements.php --schema-audit` ด้วยบัญชี DBA/schema owner ชั่วคราว เพื่อตรวจคอลัมน์ migration 004, CHECK constraints และชื่อ event/timing/table ของ trigger ทั้ง 15 รายการหลังอัปเกรด
+5. ตรวจและปิดคำขอจองซ้ำให้แต่ละเบอร์เหลือสถานะ `pending`/`confirmed` ไม่เกินหนึ่งรายการ แล้วรัน `database/migrations/005_booking_active_phone.sql` เพื่อเพิ่ม generated unique guard ต่อเบอร์ ไฟล์จะหยุดก่อน ALTER หากยังมีข้อมูลซ้ำ และปลอดภัยต่อการรันซ้ำ
+6. รัน `php scripts/check_requirements.php --db --strict` ด้วยบัญชี runtime แล้วรัน `php scripts/check_requirements.php --schema-audit` ด้วยบัญชี DBA/schema owner ชั่วคราว เพื่อตรวจ generated guards, คอลัมน์ migration 004, CHECK constraints และ trigger ทั้ง 15 รายการหลังอัปเกรด
 
 ข้อมูล snapshot ของรายการเก่าที่ migration สร้างขึ้นเป็นการประกอบย้อนจากข้อมูลที่ยังมีอยู่: ค่าเช่าจะเลือกจาก occupancy ก่อนแล้วจึง fallback ไปค่าเช่าห้องปัจจุบัน ส่วนชื่อผู้พัก/รหัสห้องของบิลเก่าอาจไม่ใช่ค่าประวัติเดิมหากเคยแก้ไข จึงต้องตรวจเอกสารย้อนหลังหรือ export เดิมบน staging ก่อนเปิดใช้งานจริง
 

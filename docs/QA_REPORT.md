@@ -6,9 +6,10 @@
 
 ## ผลตรวจอัตโนมัติ
 
-- PHP 8.3.32 lint ผ่าน 45/45 ไฟล์ ไม่มี syntax error
-- `php tests/run.php` ผ่าน 61/61 tests, 0 failures รวม regression ของ signed LINE webhook/retry, Railway proxy trust, session lock release, slip quota/duplicate/idempotency, signed bill preview, guest CSRF/lazy session, ตัวกัน QR เมื่อเส้นทางชำระเงินยังไม่พร้อม และ UX/schema guards สำคัญ
+- PHP 8.3 lint ผ่าน 46/46 ไฟล์ ไม่มี syntax error
+- `php tests/run.php` ผ่าน 63/63 tests, 0 failures รวม regression ของ signed LINE webhook/retry, Railway proxy trust, session lock release, slip quota/duplicate/idempotency, ประเทศ/สกุลเงินของสลิป, signed bill preview, one-active-booking-per-phone, วงจรบิลก่อนย้ายออก และ UX/schema guards สำคัญ
 - `node --check public/assets/js/app.js` ผ่าน
+- CI ยิงผ่าน Apache + MySQL จริงเพื่อยืนยันโควตาการจองราย IP/เบอร์, การ commit สถานะ block, การไม่สร้าง booking เมื่อถูกจำกัด และ race ของ idempotency key ที่ต้อง rollback quota ของ request ที่แพ้
 - ไม่พบ PHP warning, fatal error หรือ deprecation ใน log ของ HTTP/browser E2E
 - ตรวจหน้า Admin ทั้ง desktop และ mobile แล้ว เมนู/กล่องยืนยันทำงานได้ คอลัมน์ปุ่มสำคัญยังมองเห็นเมื่อเลื่อนตาราง และ browser console ไม่มี warning/error
 
@@ -20,6 +21,7 @@
 - จำลองฐานรุ่นก่อนแล้วรัน `002_operational_hardening.sql` สำเร็จ: เพิ่มคอลัมน์/ดัชนีที่ต้องใช้และสร้าง trigger ครบ 15 รายการ
 - ทดสอบ `003_append_only_guards.sql` ในฐานที่อาจเคยใช้ migration 002 รุ่นเก่าแล้ว: สร้างตัวป้องกัน `bill_items` และ `audit_logs` ครบ 4 รายการแบบรันซ้ำได้
 - ทดสอบ `004_line_webhook.sql` บน schema ก่อนเพิ่ม webhook แล้วรันซ้ำ 2 รอบสำเร็จ: ได้ 73 CHECK constraints และคอลัมน์/ชนิดข้อมูล LINE webhook/reconciliation ครบ; กรณีมี LINE User ID legacy ผิดรูปแบบ migration หยุดก่อนสร้างคอลัมน์ใหม่ตาม preflight
+- ทดสอบ `005_booking_active_phone.sql` บน MySQL 8.4.10 ทั้งรอบแรกและรันซ้ำสำเร็จ; duplicate active phone, composite/lookalike index, generated expression ที่ผิด `ELSE` และ literal หลอกถูกปฏิเสธ ขณะที่ canonical expression และลำดับ `IN` ที่สลับกันผ่าน
 - `scripts/check_requirements.php --db` ด้วย runtime user ที่มีเฉพาะ `SELECT`/`INSERT`/`UPDATE` ตรวจชนิดคอลัมน์ LINE 5 รายการและ CHECK constraints ที่เกี่ยวข้องครบ โดยจบด้วย 0 error; warning ที่เหลือเป็นค่าธุรกิจ/credential/Owner ที่จงใจไม่ใส่ในฐาน fresh-install QA
 - Final release database ใช้ runtime user ที่มีเฉพาะ `SELECT`/`INSERT`/`UPDATE` บน schema และผ่าน `check_requirements.php --db`: 33 ผ่าน, ข้าม trigger metadata 1 รายการตามข้อจำกัดสิทธิ์, เตือน 1 รายการเพราะไม่ได้ใส่ credential ตรวจสลิปจริง และ 0 error
 - Schema audit ด้วยบัญชี schema owner ผ่าน 34 รายการ ตรวจ trigger ครบ 15 รายการ เตือน 2 รายการตามที่คาดไว้จาก root local ที่ไม่มีรหัสผ่านและ credential ตรวจสลิปจริงที่ไม่ได้ใส่ใน QA และ 0 error
