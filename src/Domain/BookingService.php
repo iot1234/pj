@@ -217,8 +217,150 @@ final class BookingService
         });
     }
 
+    /**
+     * Create the immutable booking ledger entry used by an administrative
+     * check-in and complete the occupancy in the same transaction. The route
+     * expires stale phone holds before opening its audit transaction; direct
+     * service callers receive the same protection when no transaction exists.
+     *
+     * @return array<string,mixed>
+     */
+    public function createAdminResident(int $adminId,array $input): array
+    {
+        Validator::only($input,['room_id','full_name','phone','email','move_in_date','idempotency_key','reuse_resident_id']);
+        $roomId=Validator::id($input['room_id']??null,'room_id');
+        $fullName=Validator::string($input['full_name']??null,'full_name',1,150);
+        $phone=Validator::phone($input['phone']??null);
+        $emailProvided=array_key_exists('email',$input);
+        $email=$emailProvided?Validator::nullableEmail($input['email']):null;
+        $moveIn=Validator::date($input['move_in_date']??null,'move_in_date');
+        $timezone=new \DateTimeZone((string)$this->app->config->get('APP_TIMEZONE','Asia/Bangkok'));
+        if($moveIn>(new \DateTimeImmutable('today',$timezone))->format('Y-m-d')){
+            throw new HttpException(422,'move_in_date cannot be in the future','VALIDATION_ERROR',['field'=>'move_in_date']);
+        }
+        $idempotency=trim((string)($input['idempotency_key']??''));
+        if(!preg_match('/^[A-Za-z0-9_-]{16,64}$/',$idempotency)){
+            throw new HttpException(422,'idempotency_key ไม่ถูกต้อง','VALIDATION_ERROR',['field'=>'idempotency_key']);
+        }
+        $reuseResidentId=array_key_exists('reuse_resident_id',$input)?Validator::id($input['reuse_resident_id'],'reuse_resident_id'):null;
+        $reference=$this->administrativeReference($idempotency,$roomId,$fullName,$phone,$email,$emailProvided,$moveIn,$reuseResidentId);
+
+        // A direct service invocation should not be blocked by an expired
+        // reservation on this phone. The HTTP route performs this before its
+        // outer audit transaction to preserve the global room->booking order.
+        if(!$this->app->database()->pdo()->inTransaction()){
+            $this->expirePublicPhoneHolds($phone);
+        }
+
+        return $this->app->database()->transaction(function(PDO $pdo)use($adminId,$roomId,$fullName,$phone,$email,$emailProvided,$moveIn,$idempotency,$reuseResidentId,$reference):array{
+            $room=$pdo->prepare('SELECT id,monthly_rent,deleted_at FROM rooms WHERE id=? FOR UPDATE');
+            $room->execute([$roomId]);
+            $roomRow=$room->fetch();
+            if(!$roomRow)throw new HttpException(404,'ไม่พบห้อง','ROOM_NOT_FOUND');
+
+            // Lock the requested room first, matching all booking mutations.
+            // The following non-locking unique-key lookup avoids a missing-key
+            // gap lock across unrelated rooms; an existing row is then locked
+            // by primary key before it can be replayed.
+            $existing=$pdo->prepare('SELECT * FROM bookings WHERE idempotency_key=? LIMIT 1');
+            $existing->execute([$idempotency]);
+            $booking=$existing->fetch();
+            if($booking){
+                // Booking identity is protected by a database trigger. Reject
+                // a key belonging to another immutable request before taking
+                // that booking's primary-key lock while holding this room.
+                if(!hash_equals($reference,(string)$booking['reference_no'])
+                    ||(int)$booking['room_id']!==$roomId
+                    ||!hash_equals((string)$booking['full_name'],$fullName)
+                    ||!hash_equals((string)$booking['phone_norm'],$phone)){
+                    throw new HttpException(409,'Idempotency key was already used for a different operation','IDEMPOTENCY_KEY_REUSED');
+                }
+                $lock=$pdo->prepare('SELECT * FROM bookings WHERE id=? FOR UPDATE');
+                $lock->execute([(int)$booking['id']]);
+                $booking=$lock->fetch();
+                if(!$booking)throw new HttpException(409,'Administrative check-in changed; retry the request','ADMIN_CHECK_IN_RETRY',['retryable'=>true]);
+                if(!hash_equals($reference,(string)$booking['reference_no'])
+                    ||(int)$booking['room_id']!==$roomId
+                    ||!hash_equals((string)$booking['full_name'],$fullName)
+                    ||!hash_equals((string)$booking['phone_norm'],$phone)){
+                    throw new HttpException(409,'Idempotency key was already used for a different operation','IDEMPOTENCY_KEY_REUSED');
+                }
+                if($booking['status']==='moved_in'){
+                    $occupancy=$pdo->prepare('SELECT id,resident_id,room_id,move_in_date FROM occupancies WHERE booking_id=? LIMIT 1');
+                    $occupancy->execute([(int)$booking['id']]);
+                    $occupancyRow=$occupancy->fetch();
+                    if(!$occupancyRow||(int)$occupancyRow['resident_id']!==(int)$booking['resident_id']||(int)$occupancyRow['room_id']!==$roomId){
+                        throw new \RuntimeException('Administrative check-in ledger is inconsistent with its occupancy');
+                    }
+                    return [
+                        'booking_id'=>(int)$booking['id'],'status'=>'moved_in','resident_id'=>(int)$occupancyRow['resident_id'],
+                        'occupancy_id'=>(int)$occupancyRow['id'],'room_id'=>$roomId,'move_in_date'=>(string)$occupancyRow['move_in_date'],
+                        'idempotent_replay'=>true,
+                    ];
+                }
+                if($booking['status']!=='confirmed'){
+                    throw new HttpException(409,'Administrative check-in is no longer active','ADMIN_CHECK_IN_INACTIVE',['status'=>$booking['status']]);
+                }
+            }else{
+                if($roomRow['deleted_at']!==null)throw new HttpException(404,'ไม่พบห้อง','ROOM_NOT_FOUND');
+                $this->expirePending($roomId);
+
+                $occupied=$pdo->prepare("SELECT id FROM occupancies WHERE room_id=? AND status='active' LIMIT 1 FOR UPDATE");
+                $occupied->execute([$roomId]);
+                if($occupied->fetch())throw new HttpException(409,'ห้องนี้มีผู้เช่าแล้ว','ROOM_OCCUPIED');
+
+                $reserved=$pdo->prepare("SELECT id FROM bookings WHERE room_id=? AND status IN ('pending','confirmed') LIMIT 1");
+                $reserved->execute([$roomId]);
+                if($reserved->fetch())throw new HttpException(409,'ห้องนี้ไม่ว่างแล้ว กรุณาเลือกห้องอื่น','ROOM_NOT_AVAILABLE');
+
+                $activePhone=$pdo->prepare('SELECT id FROM bookings WHERE active_phone_norm=? LIMIT 1');
+                $activePhone->execute([$phone]);
+                if($activePhone->fetch()){
+                    throw new HttpException(409,'เบอร์โทรนี้มีคำขอจองที่ยังดำเนินการอยู่ กรุณายกเลิกหรือดำเนินการรายการเดิมก่อน','BOOKING_PHONE_ACTIVE');
+                }
+
+                try{
+                    $insert=$pdo->prepare("INSERT INTO bookings (reference_no,room_id,full_name,phone_norm,booked_monthly_rent,status,idempotency_key,confirmed_by,confirmed_at,created_at,updated_at) VALUES (?,?,?,?,?,'confirmed',?,?,UTC_TIMESTAMP(),UTC_TIMESTAMP(),UTC_TIMESTAMP())");
+                    $insert->execute([$reference,$roomId,$fullName,$phone,$roomRow['monthly_rent'],$idempotency,$adminId]);
+                }catch(\PDOException $error){
+                    if(($error->errorInfo[1]??null)===1062){
+                        $driverMessage=(string)($error->errorInfo[2]??$error->getMessage());
+                        if(str_contains($driverMessage,'uq_bookings_one_active_per_phone')){
+                            throw new HttpException(409,'เบอร์โทรนี้มีคำขอจองที่ยังดำเนินการอยู่ กรุณายกเลิกหรือดำเนินการรายการเดิมก่อน','BOOKING_PHONE_ACTIVE');
+                        }
+                        if(str_contains($driverMessage,'uq_bookings_one_active_per_room')){
+                            throw new HttpException(409,'ห้องนี้ถูกจองพร้อมกันโดยผู้ใช้อื่น','ROOM_NOT_AVAILABLE');
+                        }
+                        // A concurrent idempotency/reference winner may live
+                        // under another room lock. Roll back and let a retry
+                        // take the ordinary replay/conflict path.
+                        throw new HttpException(409,'Administrative check-in committed concurrently; retry the same request','ADMIN_CHECK_IN_RETRY',['retryable'=>true]);
+                    }
+                    throw $error;
+                }
+                $booking=['id'=>(int)$pdo->lastInsertId()];
+            }
+
+            // This flag only permits a back-dated administrative occupancy;
+            // all public-booking move-ins retain their original date guard.
+            $result=$this->moveInWithPolicy((int)$booking['id'],$adminId,[
+                ...($emailProvided?['email'=>$email]:[]),
+                'move_in_date'=>$moveIn,
+                ...($reuseResidentId!==null?['reuse_resident_id'=>$reuseResidentId]:[]),
+            ],true);
+            $result['idempotent_replay']=false;
+            return $result;
+        });
+    }
+
     /** @return array<string,mixed> */
-    public function moveIn(int $id, int $adminId, array $input): array
+    public function moveIn(int $id,int $adminId,array $input): array
+    {
+        return $this->moveInWithPolicy($id,$adminId,$input,false);
+    }
+
+    /** @return array<string,mixed> */
+    private function moveInWithPolicy(int $id,int $adminId,array $input,bool $allowBeforeBookingDate): array
     {
         Validator::only($input, ['email','move_in_date','reuse_resident_id']);
         $emailProvided=array_key_exists('email',$input);
@@ -230,7 +372,7 @@ final class BookingService
         }
         $reuseResidentId=array_key_exists('reuse_resident_id',$input)?Validator::id($input['reuse_resident_id'],'reuse_resident_id'):null;
 
-        return $this->app->database()->transaction(function (PDO $pdo) use ($id,$adminId,$email,$emailProvided,$moveIn,$reuseResidentId,$timezone): array {
+        return $this->app->database()->transaction(function (PDO $pdo) use ($id,$adminId,$email,$emailProvided,$moveIn,$reuseResidentId,$timezone,$allowBeforeBookingDate): array {
             $lookup=$pdo->prepare('SELECT room_id FROM bookings WHERE id=?');
             $lookup->execute([$id]);
             $roomId=$lookup->fetchColumn();
@@ -247,7 +389,7 @@ final class BookingService
             if ($booking['status'] !== 'confirmed') throw new HttpException(409, 'ต้องยืนยันการจองก่อนย้ายเข้า', 'BOOKING_BAD_STATE', ['status'=>$booking['status']]);
             if ($roomRow['deleted_at'] !== null) throw new HttpException(409, 'ห้องนี้ถูกลบแล้ว', 'ROOM_DELETED');
             $bookedDate=(new \DateTimeImmutable((string)$booking['created_at'],new \DateTimeZone('UTC')))->setTimezone($timezone)->format('Y-m-d');
-            if($moveIn<$bookedDate)throw new HttpException(422,'move_in_date cannot be before the booking date','VALIDATION_ERROR',['field'=>'move_in_date']);
+            if(!$allowBeforeBookingDate&&$moveIn<$bookedDate)throw new HttpException(422,'move_in_date cannot be before the booking date','VALIDATION_ERROR',['field'=>'move_in_date']);
 
             $occupied = $pdo->prepare("SELECT id FROM occupancies WHERE room_id=? AND status='active' LIMIT 1 FOR UPDATE");
             $occupied->execute([$booking['room_id']]);
@@ -269,12 +411,12 @@ final class BookingService
             $resident = $residentLookup->fetch();
             try { if ($resident) {
                 $residentId = (int) $resident['id'];
-                if($reuseResidentId!==$residentId){
-                    throw new HttpException(409,'This phone belongs to a historical resident. Confirm the same identity before linking prior bill history.','RESIDENT_REUSE_CONFIRMATION_REQUIRED',['resident_id'=>$residentId,'resident_name'=>$resident['full_name']]);
-                }
                 $hasOccupancy = $pdo->prepare("SELECT id FROM occupancies WHERE resident_id=? AND status='active' LIMIT 1 FOR UPDATE");
                 $hasOccupancy->execute([$residentId]);
                 if ($hasOccupancy->fetch()) throw new HttpException(409, 'เบอร์นี้ผูกกับผู้เช่าที่มีห้องอยู่แล้ว', 'RESIDENT_ALREADY_OCCUPIED');
+                if($reuseResidentId!==$residentId){
+                    throw new HttpException(409,'This phone belongs to a historical resident. Confirm the same identity before linking prior bill history.','RESIDENT_REUSE_CONFIRMATION_REQUIRED',['resident_id'=>$residentId,'resident_name'=>$resident['full_name']]);
+                }
                 // Monthly rent and room meters are not prorated. Re-entering a
                 // returning resident in the same calendar month as a previous
                 // move-out could issue two full monthly bills for one person.
@@ -322,6 +464,16 @@ final class BookingService
                 'occupancy_id'=>$occupancyId,'room_id'=>(int)$booking['room_id'],'move_in_date'=>$moveIn,
             ];
         });
+    }
+
+    private function administrativeReference(string $idempotency,int $roomId,string $fullName,string $phone,?string $email,bool $emailProvided,string $moveIn,?int $reuseResidentId): string
+    {
+        $canonical=json_encode([
+            'room_id'=>$roomId,'full_name'=>$fullName,'phone'=>$phone,
+            'email_provided'=>$emailProvided,'email'=>$email,'move_in_date'=>$moveIn,
+            'reuse_resident_id'=>$reuseResidentId,
+        ],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR);
+        return 'ADM-'.strtoupper(substr(hash('sha256',$idempotency."\0".$canonical),0,32));
     }
 
     /** @param list<string> $allowed

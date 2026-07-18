@@ -104,10 +104,16 @@
     INVALID_JSON_SHAPE: 'รูปแบบข้อมูลที่ส่งไม่ถูกต้อง กรุณารีเฟรชแล้วลองใหม่',
     UNKNOWN_FIELDS: 'มีข้อมูลที่ระบบไม่รองรับ กรุณารีเฟรชแล้วลองใหม่',
     IDEMPOTENCY_KEY_REUSED: 'คำขอนี้ถูกใช้กับการจองอื่นแล้ว กรุณาเริ่มรายการใหม่',
+    ADMIN_CHECK_IN_RETRY: 'มีการรับเข้าพักพร้อมกัน กรุณากดส่งอีกครั้งโดยไม่เปลี่ยนข้อมูล',
+    ADMIN_CHECK_IN_INACTIVE: 'รายการรับเข้าพักนี้สิ้นสุดแล้ว กรุณาปิดฟอร์มและเริ่มรายการใหม่',
     BOOKING_EXPIRED: 'เวลายืนยันการจองเดิมหมดแล้ว กรุณาส่งคำขอใหม่',
     BOOKING_INACTIVE: 'การจองเดิมสิ้นสุดแล้ว กรุณาส่งคำขอใหม่',
     BOOKING_RETRY: 'มีคำขอจองพร้อมกัน กรุณากดส่งอีกครั้งโดยไม่เปลี่ยนข้อมูล',
     BOOKING_PHONE_ACTIVE: 'เบอร์นี้มีคำขอจองที่ยังดำเนินการอยู่ กรุณาติดต่อผู้ดูแลหากต้องการเปลี่ยนห้อง',
+    ROOM_NOT_AVAILABLE: 'ห้องนี้มีผู้จองหรือกำลังถูกดำเนินการแล้ว กรุณาเลือกห้องว่างอื่น',
+    ROOM_OCCUPIED: 'ห้องนี้มีผู้พักอยู่แล้ว กรุณารีเฟรชรายการห้อง',
+    RESIDENT_ALREADY_OCCUPIED: 'เบอร์นี้เป็นผู้พักที่มีห้องอยู่แล้ว ไม่สามารถผูกซ้ำกับอีกห้องได้',
+    RESIDENT_REUSE_CONFIRMATION_REQUIRED: 'เบอร์นี้มีประวัติผู้พักเดิม กรุณาตรวจตัวตนและยืนยันการเชื่อมประวัติก่อนบันทึก',
     RESIDENT_MOVE_IN_PERIOD_CONFLICT: 'ผู้พักรายนี้ย้ายออกในเดือนเดียวกัน ระบบยังไม่รองรับการคิดค่าเช่าแบบแบ่งเดือน กรุณารับเข้าพักในเดือนถัดไป',
     MOVE_OUT_MISSING_BILLS: 'ยังออกบิลไม่ครบทุกรอบเดือนของการเข้าพัก กรุณาออกและชำระบิลที่ขาดก่อนย้ายออก',
     PROMPTPAY_NOT_CONFIGURED: 'ยังไม่ได้ตั้งค่า PromptPay กรุณาติดต่อผู้ดูแลก่อนโอน',
@@ -297,6 +303,21 @@
     if (!dialog) return;
     if (typeof dialog.close === 'function') dialog.close();
     else dialog.removeAttribute('open');
+  }
+
+  function renderQrCanvas(qrLibrary, canvas, payload, options) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        if (error) reject(error); else resolve();
+      };
+      try {
+        const pending = qrLibrary.toCanvas(canvas, payload, options, finish);
+        if (pending?.then) pending.then(() => finish(), finish);
+      } catch (error) { finish(error); }
+    });
   }
 
   function safeRoomImage(room) {
@@ -812,7 +833,7 @@
         if (!payload || !qrLibrary?.toCanvas) throw new ApiError('ไม่สามารถสร้าง QR ได้');
         const canvas = create('canvas');
         canvas.setAttribute('aria-label', 'QR PromptPay สำหรับบิลนี้');
-        await qrLibrary.toCanvas(canvas, payload, { width: 240, margin: 2, errorCorrectionLevel: 'M' });
+        await renderQrCanvas(qrLibrary, canvas, payload, { width: 240, margin: 2, errorCorrectionLevel: 'M' });
         if (request !== state.qrRequest || String(state.currentBillId) !== String(billId)) return;
         const meta = create('div', 'qr-meta');
         meta.append(
@@ -964,7 +985,10 @@
         const image = create('img'); image.src = safeRoomImage(room); image.alt = '';
         const label = create('span'); label.append(create('strong', '', text(room.room_code)), create('small', '', text(room.description, 'ไม่มีคำอธิบาย')));
         roomCell.append(image, label);
-        tr.append(td(roomCell), td(text(room.floor)), td(text(room.room_type)), td(money(room.monthly_rent)), td(pill(room.status)), td(rowActions(actionButton('แก้ไข', 'edit-room', room.id), actionButton('ลบ', 'delete-room', room.id, 'button-danger-text')), 'align-right'));
+        const actions = [];
+        if (room.status === 'available') actions.push(actionButton('เพิ่มผู้พัก', 'add-resident-to-room', room.id, 'button-primary'));
+        actions.push(actionButton('แก้ไข', 'edit-room', room.id), actionButton('ลบ', 'delete-room', room.id, 'button-danger-text'));
+        tr.append(td(roomCell), td(text(room.floor)), td(text(room.room_type)), td(money(room.monthly_rent)), td(pill(room.status)), td(rowActions(...actions), 'align-right'));
         rows.append(tr);
       });
       ['all', 'available', 'reserved', 'occupied'].forEach((key) => { const node = $(`[data-room-stat="${key}"]`); node.textContent = String(key === 'all' ? state.rooms.length : state.rooms.filter((room) => room.status === key).length); });
@@ -999,6 +1023,7 @@
     $('#admin-room-rows').addEventListener('click', async (event) => {
       const button = event.target.closest('[data-action]'); if (!button) return;
       const room = state.rooms.find((item) => String(item.id) === button.dataset.id); if (!room) return;
+      if (button.dataset.action === 'add-resident-to-room') { await openResidentCreateForm(room); return; }
       if (button.dataset.action === 'edit-room') openRoomForm(room);
       if (button.dataset.action === 'delete-room' && await confirmAction('ลบห้องพัก', `ต้องการลบห้อง ${text(room.room_code)} หรือไม่? ระบบจะปฏิเสธหากมีข้อมูลผูกพัน`)) {
         try { await api(`/api/admin/rooms/${encodeURIComponent(room.id)}`, { method: 'DELETE', body: {} }); toast('ลบห้องแล้ว'); loadRooms(); } catch (error) { toast(errorMessage(error), 'error'); }
@@ -1106,6 +1131,45 @@
       } finally { setBusy(button, false); }
     });
 
+    function resetResidentCreateReuse(form) {
+      const input = form.elements.reuse_resident_id;
+      input.checked = false; input.value = ''; input.disabled = true; input.required = false;
+      $('#resident-create-reuse-field').hidden = true;
+      $('#resident-create-reuse-help').hidden = true;
+    }
+    function populateResidentCreateRooms(selectedRoomId = '') {
+      const form = $('#resident-create-form');
+      const select = form.elements.room_id;
+      const rooms = state.rooms.filter((room) => room.status === 'available');
+      const prompt = create('option', '', rooms.length ? 'เลือกห้องว่าง' : 'ไม่มีห้องว่างในขณะนี้');
+      prompt.value = '';
+      select.replaceChildren(prompt);
+      rooms.forEach((room) => {
+        const option = create('option', '', `ห้อง ${text(room.room_code)} · ชั้น ${text(room.floor)} · ${money(room.monthly_rent)}/เดือน`);
+        option.value = String(room.id);
+        select.append(option);
+      });
+      const selected = rooms.some((room) => String(room.id) === String(selectedRoomId)) ? String(selectedRoomId) : '';
+      select.value = selected;
+      select.disabled = rooms.length === 0;
+      $('#resident-create-room-help').textContent = rooms.length
+        ? `พบห้องว่าง ${rooms.length} ห้อง ระบบจะตรวจสถานะซ้ำอีกครั้งตอนบันทึก`
+        : 'ยังไม่มีห้องว่าง กรุณาตรวจการจอง/ผู้พัก หรือเพิ่มห้องก่อน';
+      form.querySelector('[type="submit"]').disabled = rooms.length === 0;
+    }
+    async function openResidentCreateForm(room = null) {
+      if (!state.loaded.has('rooms')) await loadRooms();
+      const form = $('#resident-create-form');
+      form.reset(); showFormError($('#resident-create-error')); resetResidentCreateReuse(form);
+      form.elements.idempotency_key.value = window.crypto?.randomUUID?.()
+        || `${Date.now()}-${Math.random().toString(16).slice(2)}-${Math.random().toString(16).slice(2)}`;
+      form.elements.move_in_date.value = isoToday();
+      form.elements.move_in_date.max = isoToday();
+      populateResidentCreateRooms(room?.status === 'available' ? room.id : '');
+      openDialog($('#resident-create-dialog'));
+      window.setTimeout(() => (form.elements.room_id.value ? form.elements.full_name : form.elements.room_id).focus(), 0);
+    }
+
     function renderResidents() {
       const rows = $('#resident-rows'); rows.replaceChildren(); const query = $('#resident-search').value.trim().toLocaleLowerCase('th');
       const visible = state.residents.filter((resident) => !query || `${resident.full_name} ${resident.phone} ${resident.room_code || resident.room?.room_code} ${resident.line_user_id_hint || ''}`.toLocaleLowerCase('th').includes(query));
@@ -1125,6 +1189,37 @@
     }
     async function loadResidents() { setTableState($('#resident-state'), 'loading'); try { const data = await api('/api/admin/residents'); state.residents = listFrom(data, 'residents'); state.loaded.add('residents'); renderResidents(); } catch (error) { setTableState($('#resident-state'), 'error', errorMessage(error)); } }
     loaders.residents = loadResidents; $('#resident-search').addEventListener('input', renderResidents);
+    $('[data-open-resident-create]')?.addEventListener('click', () => openResidentCreateForm());
+    $('#resident-create-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget; const error = $('#resident-create-error'); showFormError(error);
+      if (!form.reportValidity()) return;
+      const values = Object.fromEntries(new FormData(form).entries());
+      values.room_id = Number(values.room_id);
+      const button = form.querySelector('[type="submit"]'); setBusy(button, true, 'กำลังรับเข้าพัก…');
+      try {
+        const result = await api('/api/admin/residents', { method: 'POST', body: values });
+        closeDialog($('#resident-create-dialog')); form.reset();
+        toast(result?.idempotent_replay ? 'พบรายการรับเข้าพักเดิมและแสดงผลเดิมแล้ว' : 'เพิ่มผู้พักหลักและเปิดบัญชีห้องแล้ว');
+        await Promise.all([loadResidents(), loadRooms(), loadBookings()]);
+      } catch (requestError) {
+        if (requestError?.details?.code === 'RESIDENT_REUSE_CONFIRMATION_REQUIRED') {
+          const reuseInput = form.elements.reuse_resident_id;
+          reuseInput.value = String(requestError.details.resident_id || ''); reuseInput.checked = false;
+          reuseInput.disabled = false; reuseInput.required = true;
+          $('#resident-create-reuse-label').textContent = `ยืนยันว่า ${text(requestError.details.resident_name)} เป็นบุคคลเดิมและอนุญาตให้เชื่อมประวัติบิล`;
+          $('#resident-create-reuse-field').hidden = false; $('#resident-create-reuse-help').hidden = false;
+          reuseInput.focus();
+        }
+        if (['ROOM_NOT_AVAILABLE', 'ROOM_OCCUPIED', 'ROOM_DELETED'].includes(requestError?.details?.code)) {
+          await loadRooms(); populateResidentCreateRooms(values.room_id);
+        }
+        showFormError(error, errorMessage(requestError));
+      } finally {
+        setBusy(button, false);
+        button.disabled = state.rooms.every((room) => room.status !== 'available');
+      }
+    });
     $('#resident-rows').addEventListener('click', (event) => {
       const button = event.target.closest('[data-action]'); if (!button) return;
       const resident = state.residents.find((item) => String(item.id) === button.dataset.id); if (!resident) return;
@@ -1327,6 +1422,48 @@
       } catch (error) { if (error?.name !== 'AbortError') setTableState($('#bill-admin-state'), 'error', errorMessage(error)); }
       finally { if (state.billController === controller) state.billController = null; }
     }
+    function clearPromptPayTestQr() {
+      const dialog = $('#promptpay-test-dialog');
+      if (dialog?.open) closeDialog(dialog);
+      const stage = $('#promptpay-test-qr-stage');
+      if (stage) stage.replaceChildren(create('div', 'qr-placeholder', 'กดสุ่มยอดจากหน้าตั้งค่าเพื่อสร้าง QR ทดสอบ'));
+    }
+    async function renderPromptPayTestQr(result, form, revision) {
+      const qr = objectFrom(result.test_qr);
+      const amount = String(qr.amount || '');
+      const payload = String(qr.payload || '');
+      const generatedAt = String(qr.generated_at || '');
+      const qrLibrary = window.QRCode || window.qrcodelib;
+      const stage = $('#promptpay-test-qr-stage');
+      const dialog = $('#promptpay-test-dialog');
+      if (!/^1\.\d{2}$/.test(amount) || number(amount) < 1.01 || number(amount) > 1.99) {
+        throw new ApiError('เซิร์ฟเวอร์ส่งยอดทดสอบ PromptPay ที่ไม่ถูกต้อง');
+      }
+      if (!/^000201/.test(payload) || payload.length > 512 || !/[0-9A-Z]{4}$/.test(payload)) {
+        throw new ApiError('เซิร์ฟเวอร์ส่งข้อมูล QR PromptPay ที่ไม่ถูกต้อง');
+      }
+      if (!generatedAt || Number.isNaN(new Date(generatedAt).getTime())) {
+        throw new ApiError('เซิร์ฟเวอร์ส่งเวลาสร้าง QR PromptPay ที่ไม่ถูกต้อง');
+      }
+      if (!qrLibrary?.toCanvas) throw new ApiError('ไม่พบไลบรารีสร้าง QR กรุณารีเฟรชหน้าแล้วลองใหม่');
+      if (!stage || !dialog) throw new ApiError('หน้าแสดง QR PromptPay โหลดไม่สมบูรณ์ กรุณารีเฟรชแล้วลองใหม่');
+
+      const canvas = create('canvas');
+      canvas.setAttribute('aria-label', `QR PromptPay ทดสอบยอด ${money(amount)}`);
+      await renderQrCanvas(qrLibrary, canvas, payload, { width: 240, margin: 2, errorCorrectionLevel: 'M' });
+      if (form.dataset.revision !== revision || form.dataset.dirty === 'true') return false;
+
+      const meta = create('div', 'qr-meta');
+      meta.append(
+        create('strong', '', `ยอดทดสอบ ${money(amount)}`),
+        create('small', '', `ชื่อที่บันทึก: ${text(result.recipient_name, 'ไม่ได้ระบุ — ให้ตรวจชื่อจริงในแอปธนาคาร')}`),
+        create('small', '', `บัญชีปลายทาง: ${text(result.target_hint)}`),
+        create('small', '', `สร้างเมื่อ ${formatDateTime(generatedAt)}`),
+      );
+      stage.replaceChildren(canvas, meta);
+      openDialog(dialog);
+      return true;
+    }
     function advanceIntegrationRevision(form) {
       form.dataset.revision = String(Number(form.dataset.revision || 0) + 1);
       return form.dataset.revision;
@@ -1334,6 +1471,7 @@
     function markIntegrationSettingsDirty() {
       const form = $('#integration-settings-form');
       if (!form || role !== 'owner' || form.dataset.ownerOnly !== 'true') return;
+      clearPromptPayTestQr();
       form.dataset.dirty = 'true';
       advanceIntegrationRevision(form);
       $$('[data-test-integration]', form).forEach((button) => {
@@ -1366,6 +1504,7 @@
     function renderIntegrationSettings(integrations = {}) {
       const form = $('#integration-settings-form');
       if (!form) return;
+      clearPromptPayTestQr();
       const fields = ['promptpay_target', 'promptpay_name', 'payment_receiver_account_tail', 'line_max_attempts', 'notification_batch_size', 'slip_provider', 'slipok_branch_id', 'slip_max_bytes', 'slip_time_tolerance_seconds'];
       fields.forEach((key) => { if (form.elements[key]) form.elements[key].value = integrations[key] ?? (key === 'slip_provider' ? 'none' : ''); });
       if (role === 'owner' && form.dataset.ownerOnly === 'true') {
@@ -1419,6 +1558,7 @@
         state.loaded.add('settings');
         if (state.loaded.has('bills')) renderAdminBills();
       } catch (error) {
+        clearPromptPayTestQr();
         showFormError($('#settings-error'), errorMessage(error));
         showFormError($('#integration-settings-error'), errorMessage(error));
       }
@@ -1616,6 +1756,7 @@
         renderIntegrationSettings(integrations);
         toast('บันทึกการเชื่อมต่อแล้ว');
       } catch (requestError) {
+        clearPromptPayTestQr();
         showFormError(error, errorMessage(requestError));
       } finally { setBusy(button, false); }
     });
@@ -1625,13 +1766,17 @@
       const integration = button.dataset.testIntegration;
       const resultNode = $(`[data-integration-test-result="${integration}"]`, form);
       const revision = form.dataset.revision;
+      if (integration === 'promptpay') clearPromptPayTestQr();
       if (resultNode) { resultNode.className = 'integration-test-result'; resultNode.textContent = 'กำลังทดสอบค่าที่บันทึก…'; }
       setBusy(button, true, 'กำลังทดสอบ…');
       try {
         const result = await api('/api/admin/settings/integrations/test', { method: 'POST', body: { integration } });
         if (form.dataset.revision !== revision || form.dataset.dirty === 'true') return;
         let detail = result.target_hint || '';
-        if (integration === 'line') detail = result.display_name || result.basic_id || '';
+        if (integration === 'promptpay') {
+          if (result.ready !== true || !await renderPromptPayTestQr(result, form, revision)) return;
+          detail = `${result.target_hint || ''} · ยอด ${money(objectFrom(result.test_qr).amount)}`;
+        } else if (integration === 'line') detail = result.display_name || result.basic_id || '';
         else if (result.provider) {
           const quota = result.quota_remaining;
           const quotaDetail = result.provider === 'easyslip' && (quota === null || quota === undefined)
@@ -1643,6 +1788,7 @@
         toast(`ทดสอบ ${integration === 'promptpay' ? 'PromptPay' : integration === 'line' ? 'LINE Bot' : 'ระบบตรวจสลิป'} สำเร็จ${detail ? ` · ${detail}` : ''}`);
       } catch (error) {
         if (form.dataset.revision !== revision || form.dataset.dirty === 'true') return;
+        if (integration === 'promptpay') clearPromptPayTestQr();
         if (resultNode) { resultNode.className = 'integration-test-result is-error'; resultNode.textContent = `ทดสอบค่าที่บันทึกแล้ว: ไม่ผ่าน · ${errorMessage(error)}`; }
         toast(errorMessage(error), 'error');
       }

@@ -99,7 +99,7 @@ $integrationDisabled = ' disabled';
             </section>
 
             <section class="admin-view" data-admin-view="residents" aria-labelledby="residents-title" hidden>
-                <div class="section-heading"><div><p class="eyebrow">ข้อมูลผู้เช่าปัจจุบัน</p><h2 id="residents-title">ผู้พักอาศัย</h2></div></div>
+                <div class="section-heading"><div><p class="eyebrow">ข้อมูลผู้เช่าปัจจุบัน</p><h2 id="residents-title">ผู้พักอาศัย</h2></div><button class="button button-primary" type="button" data-open-resident-create>+&nbsp; เพิ่มผู้พักเข้าห้อง</button></div>
                 <div class="toolbar"><label class="search-field"><span class="sr-only">ค้นหาผู้พัก</span><input id="resident-search" type="search" placeholder="ค้นหาชื่อ เบอร์โทร หรือห้อง…"></label></div>
                 <div class="panel table-panel"><div class="table-scroll"><table><thead><tr><th>ผู้พัก</th><th>ห้อง</th><th>ติดต่อ</th><th>LINE</th><th>วันเข้าพัก</th><th>สถานะ</th><th class="align-right">จัดการ</th></tr></thead><tbody id="resident-rows"></tbody></table></div><div class="table-state" id="resident-state" data-state="loading"><span class="spinner" aria-hidden="true"></span><p>กำลังโหลดผู้พัก…</p></div></div>
             </section>
@@ -156,7 +156,7 @@ $integrationDisabled = ' disabled';
                                 <legend><span class="integration-icon">฿</span> PromptPay QR</legend>
                                 <label class="field"><span>เบอร์พร้อมเพย์ / เลขผู้เสียภาษี</span><input name="promptpay_target" type="text" inputmode="numeric" maxlength="13" pattern="(?:0[0-9]{9}|[0-9]{13})" placeholder="0812345678"<?= $integrationDisabled ?>><small>ใช้สร้าง QR ตามยอดบิล</small></label>
                                 <label class="field"><span>ชื่อบัญชีที่แสดง</span><input name="promptpay_name" type="text" maxlength="120" placeholder="ชื่อผู้รับเงิน"<?= $integrationDisabled ?>></label>
-                                <div class="integration-status-row"><div class="integration-status-copy"><span>ความพร้อมของค่าที่บันทึก</span><small class="integration-test-result" data-integration-test-result="promptpay">ยังไม่ได้ทดสอบค่าที่บันทึกนี้</small></div><div class="integration-status-actions"><span class="status-pill status-neutral" data-integration-status="promptpay">กำลังโหลด</span><button class="button button-small button-secondary" type="button" data-test-integration="promptpay" disabled>ทดสอบค่าที่บันทึก</button></div></div>
+                                <div class="integration-status-row"><div class="integration-status-copy"><span>ความพร้อมของค่าที่บันทึก</span><small class="integration-test-result" data-integration-test-result="promptpay">ยังไม่ได้ทดสอบค่าที่บันทึกนี้</small></div><div class="integration-status-actions"><span class="status-pill status-neutral" data-integration-status="promptpay">กำลังโหลด</span><button class="button button-small button-secondary" type="button" data-test-integration="promptpay" disabled>สุ่มยอดและแสดง QR ทดสอบ</button></div></div>
                             </fieldset>
 
                             <fieldset class="integration-fieldset">
@@ -199,6 +199,16 @@ $integrationDisabled = ' disabled';
     </div>
 </div>
 
+<dialog class="modal" id="promptpay-test-dialog" aria-labelledby="promptpay-test-title">
+    <div class="modal-card promptpay-test-card">
+        <div class="modal-header"><div><p class="eyebrow">ทดสอบค่าที่บันทึก</p><h2 id="promptpay-test-title">PromptPay QR ทดสอบ</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div>
+        <div class="security-note promptpay-transfer-warning" role="alert"><strong>QR นี้ชี้บัญชีจริง</strong><span>ไม่มีโหมด sandbox และไม่หมดอายุอัตโนมัติ สแกนเพื่อตรวจชื่อผู้รับและยอดเท่านั้น แล้วกดยกเลิกในแอปธนาคาร ห้ามกดยืนยันโอน เพราะเงินจะถูกโอนจริง</span></div>
+        <div class="qr-stage promptpay-test-qr-stage" id="promptpay-test-qr-stage" aria-live="polite"><div class="qr-placeholder">กดสุ่มยอดจากหน้าตั้งค่าเพื่อสร้าง QR ทดสอบ</div></div>
+        <p class="field-hint">การทดสอบนี้สร้าง QR ในระบบเท่านั้น ไม่สร้างบิล ไม่สร้างรายการชำระ และไม่ส่งข้อมูลไปยังผู้ให้บริการตรวจสลิป</p>
+        <div class="form-actions"><button class="button button-primary" type="button" data-close-dialog>ตรวจแล้วและปิด</button></div>
+    </div>
+</dialog>
+
 <dialog class="modal" id="room-dialog" aria-labelledby="room-dialog-title">
     <form class="modal-card modal-card-wide" id="room-form">
         <input type="hidden" name="id">
@@ -214,6 +224,25 @@ $integrationDisabled = ' disabled';
 
 <dialog class="modal" id="booking-cancel-dialog" aria-labelledby="booking-cancel-title">
     <form class="modal-card" id="booking-cancel-form"><input type="hidden" name="booking_id"><div class="modal-header"><div><p class="eyebrow">บันทึกการตัดสินใจ</p><h2 id="booking-cancel-title">ยกเลิกการจอง</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div><p class="modal-lead" id="booking-cancel-summary"></p><div class="form-grid"><label class="field"><span>เหตุผล (ไม่บังคับ)</span><textarea name="reason" minlength="3" maxlength="500" rows="4" placeholder="เช่น ผู้จองขอยกเลิก หรือไม่สามารถติดต่อได้"></textarea><small>หากระบุ กรุณากรอกอย่างน้อย 3 ตัวอักษร เพื่อใช้ตรวจสอบย้อนหลัง</small></label></div><p class="form-error" id="booking-cancel-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>กลับ</button><button class="button button-danger" type="submit">ยืนยันยกเลิกการจอง</button></div></form>
+</dialog>
+
+<dialog class="modal" id="resident-create-dialog" aria-labelledby="resident-create-title">
+    <form class="modal-card modal-card-wide" id="resident-create-form">
+        <input type="hidden" name="idempotency_key">
+        <div class="modal-header"><div><p class="eyebrow">ผู้พักหลัก / ผู้ถือบัญชีของห้อง</p><h2 id="resident-create-title">เพิ่มผู้พักเข้าห้อง</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div>
+        <div class="security-note"><strong>หนึ่งห้องมีผู้พักหลักได้ครั้งละ 1 คน</strong><span>ระบบจะสร้างหลักฐานรับเข้าพักและผูกประวัติบิลกับบุคคลนี้ทันที ผู้พักเข้าสู่ระบบด้วยเบอร์โทร จึงต้องตรวจตัวตนและเบอร์ให้ถูกต้องก่อนบันทึก</span></div>
+        <div class="form-grid form-grid-two">
+            <label class="field"><span>ห้องว่าง</span><select name="room_id" required></select><small id="resident-create-room-help">แสดงเฉพาะห้องที่ระบบตรวจว่าไม่มีผู้จองหรือผู้พัก</small></label>
+            <label class="field"><span>วันที่เข้าพัก</span><input name="move_in_date" type="date" required></label>
+            <label class="field"><span>ชื่อ–นามสกุล</span><input name="full_name" type="text" minlength="1" maxlength="150" required autocomplete="name"></label>
+            <label class="field"><span>เบอร์โทรศัพท์สำหรับเข้าสู่ระบบ</span><input name="phone" type="tel" minlength="10" maxlength="20" required autocomplete="tel" placeholder="0812345678"></label>
+            <label class="field form-span-two"><span>อีเมล (ไม่บังคับ)</span><input name="email" type="email" maxlength="190" autocomplete="email"></label>
+        </div>
+        <label class="check-field" id="resident-create-reuse-field" hidden><input name="reuse_resident_id" type="checkbox" disabled><span id="resident-create-reuse-label">ยืนยันการเชื่อมบัญชีผู้พักเดิม</span></label>
+        <p class="field-hint" id="resident-create-reuse-help" hidden>เลือกเฉพาะเมื่อยืนยันแล้วว่าเป็นบุคคลเดิม ประวัติบิลเก่าจะถูกเชื่อมกับบัญชีนี้ หากเป็นคนละคนต้องใช้เบอร์อื่นเพื่อปกป้องข้อมูลส่วนบุคคล</p>
+        <p class="form-error" id="resident-create-error" role="alert" hidden></p>
+        <div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-primary" type="submit">ยืนยันและรับเข้าพัก</button></div>
+    </form>
 </dialog>
 
 <dialog class="modal" id="resident-edit-dialog" aria-labelledby="resident-edit-title">

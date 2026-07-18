@@ -129,7 +129,7 @@ $test('FR-10 resident lifecycle endpoints are explicitly allowlisted',function()
     $routes=$property->getValue(Dormitory\Http\Routes::build($app));
     $methods=[];
     foreach($routes as$route){if(str_contains($route['regex'],'api/admin/residents'))$methods[]=$route['method'];}
-    $same(['GET','PUT','POST'],$methods);
+    $same(['GET','POST','PUT','POST'],$methods);
 });
 $test('FR-16 payment recovery has no manual paid endpoint',function()use($same,$app):void{
     $property=new ReflectionProperty(Dormitory\Http\Router::class,'routes');
@@ -231,6 +231,90 @@ $test('strict boolean validation',function()use($same,$throws):void{$same(false,
 $test('admin active aliases are strict and unambiguous',function()use($same,$throws):void{$active=new ReflectionMethod(AdminUserService::class,'requestedActive');$same(false,$active->invoke(null,['active'=>false]));$same(true,$active->invoke(null,['is_active'=>1]));$throws(fn()=>$active->invoke(null,['active'=>'false']),'VALIDATION_ERROR');$throws(fn()=>$active->invoke(null,['active'=>true,'is_active'=>false]),'VALIDATION_ERROR');});
 $test('PromptPay phone CRC vector',function()use($same):void{$same('00020101021229370016A000000677010111011300668123456785802TH530376454071234.566304D937',PromptPayService::payload('0812345678','1234.56'));});
 $test('PromptPay tax ID CRC vector',function()use($same):void{$same('00020101021229370016A000000677010111021312345678901235802TH530376454041.006304304C',PromptPayService::payload('1234567890123','1.00'));});
+$test('PromptPay connection test returns a bounded random live-account QR without payment side effects',function()use($same,$app):void{
+    $database=$app->database();$pdoProperty=new ReflectionProperty(Database::class,'pdo');$original=$pdoProperty->getValue($database);
+    $row=['id'=>1,'promptpay_target'=>'0812345678','promptpay_name'=>'QA Receiver'];
+    $fakePdo=new class($row) extends PDO{
+        public int $queries=0;
+        /** @param array<string,mixed> $row */
+        public function __construct(private readonly array $row){}
+        public function query(string $query,?int $fetchMode=null,mixed ...$fetchModeArgs):PDOStatement|false{
+            $this->queries++;
+            return new class($this->row) extends PDOStatement{
+                private bool $read=false;
+                /** @param array<string,mixed> $row */
+                public function __construct(private readonly array $row){}
+                public function fetch(int $mode=PDO::FETCH_DEFAULT,int $cursorOrientation=PDO::FETCH_ORI_NEXT,int $cursorOffset=0):mixed{
+                    if($this->read)return false;$this->read=true;return $this->row;
+                }
+            };
+        }
+    };
+    $amounts=[];
+    try{
+        $pdoProperty->setValue($database,$fakePdo);
+        for($index=0;$index<48;$index++){
+            $result=$app->settings()->testConnection(' PrOmPtPaY ');$qr=$result['test_qr']??null;
+            if(!is_array($qr))throw new RuntimeException('PromptPay test QR envelope is missing');
+            $amount=$qr['amount']??null;$payload=$qr['payload']??null;$generatedAt=$qr['generated_at']??null;
+            $same(true,is_string($amount)&&preg_match('/^1\.(?:0[1-9]|[1-9][0-9])$/D',$amount)===1);
+            $same(true,(float)$amount>=1.01&&(float)$amount<=1.99);
+            $same(PromptPayService::payload('0812345678',$amount),(string)$payload);
+            $same(true,is_string($generatedAt)&&preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/D',$generatedAt)===1);
+            $same('promptpay',$result['integration']??null);$same(true,$result['ready']??null);
+            $same('********5678',$result['target_hint']??null);$same('QA Receiver',$result['recipient_name']??null);
+            $same([],array_values(array_intersect(['bill_id','payment_id','provider','transaction_ref'],array_keys($result))));
+            $amounts[$amount]=true;
+        }
+    }finally{$pdoProperty->setValue($database,$original);}
+    $same(true,count($amounts)>1);
+    $same(48,$fakePdo->queries);
+
+    $settings=file_get_contents(dirname(__DIR__).'/src/Domain/SystemSettingsService.php');
+    $routesSource=file_get_contents(dirname(__DIR__).'/src/Http/Routes.php');
+    if(!is_string($settings)||!is_string($routesSource))throw new RuntimeException('cannot read PromptPay test sources');
+    $start=strpos($settings,"if (\$integration === 'promptpay')");$end=strpos($settings,"if (\$integration === 'slip')",$start===false?0:$start);
+    if($start===false||$end===false)throw new RuntimeException('cannot isolate PromptPay connection test');
+    $block=substr($settings,$start,$end-$start);
+    $same(true,str_contains($block,'random_int(101, 199)'));
+    $same(true,str_contains($block,'PromptPayService::payload($target, $amount)'));
+    foreach(['fixedJsonGet','payments()->','billing()->','INSERT ','UPDATE ']as$sideEffect)$same(false,str_contains($block,$sideEffect));
+    $routeStart=strpos($routesSource,"'/api/admin/settings/integrations/test'");
+    $routeEnd=strpos($routesSource,'return $router',$routeStart===false?0:$routeStart);
+    if($routeStart===false||$routeEnd===false)throw new RuntimeException('cannot isolate integration test route');
+    $routeBlock=substr($routesSource,$routeStart,$routeEnd-$routeStart);
+    $same(true,str_contains($routeBlock,"Validator::only(\$r->body,['integration'])"));
+
+    $routesProperty=new ReflectionProperty(Dormitory\Http\Router::class,'routes');
+    $registered=$routesProperty->getValue(Dormitory\Http\Routes::build($app));
+    $matches=array_values(array_filter($registered,static fn(array$route):bool=>str_contains($route['regex'],'api/admin/settings/integrations/test')));
+    $same(1,count($matches));$same('POST',$matches[0]['method']);$same(['auth'=>'admin','role'=>'owner'],$matches[0]['options']);
+});
+$test('PromptPay random QR UI validates server data and renders it without HTML injection',function()use($same):void{
+    $root=dirname(__DIR__);$js=file_get_contents($root.'/public/assets/js/app.js');$template=file_get_contents($root.'/templates/admin/console.php');
+    if(!is_string($js)||!is_string($template))throw new RuntimeException('cannot read PromptPay test UI');
+    $start=strpos($js,'async function renderPromptPayTestQr');$end=strpos($js,'function advanceIntegrationRevision',$start===false?0:$start);
+    if($start===false||$end===false)throw new RuntimeException('cannot isolate PromptPay QR renderer');
+    $renderer=substr($js,$start,$end-$start);
+    foreach(["/^1\\.\\d{2}$/","number(amount) < 1.01","number(amount) > 1.99","/^000201/","payload.length > 512","renderQrCanvas(qrLibrary, canvas, payload","replaceChildren(canvas, meta)"]as$guard)$same(true,str_contains($renderer,$guard));
+    $same(false,str_contains($renderer,'innerHTML'));
+    $same(true,str_contains(substr($js,0,6000),'node.textContent = content'));
+    $helperStart=strpos($js,'function renderQrCanvas');$helperEnd=strpos($js,'function safeRoomImage',$helperStart===false?0:$helperStart);
+    if($helperStart===false||$helperEnd===false)throw new RuntimeException('cannot isolate callback QR renderer');
+    $helper=substr($js,$helperStart,$helperEnd-$helperStart);
+    foreach(['return new Promise','let settled = false','if (settled) return','qrLibrary.toCanvas(canvas, payload, options, finish)','pending?.then','finish(error)']as$contract)$same(true,str_contains($helper,$contract));
+    $same(false,str_contains($js,'await qrLibrary.toCanvas('));
+    $same(2,substr_count($js,'await renderQrCanvas(qrLibrary, canvas, payload'));
+    $same(true,str_contains($renderer,"form.dataset.revision !== revision || form.dataset.dirty === 'true'"));
+    $same(true,str_contains($js,"if (integration === 'promptpay') clearPromptPayTestQr()"));
+    $same(true,str_contains($js,'await renderPromptPayTestQr(result, form, revision)'));
+    $same(true,str_contains($template,'id="promptpay-test-dialog"'));
+    $same(true,str_contains($template,'id="promptpay-test-qr-stage"'));
+    $same(true,str_contains($template,'class="security-note promptpay-transfer-warning" role="alert"'));
+    $same(true,str_contains($template,'QR นี้ชี้บัญชีจริง'));
+    $same(true,str_contains($template,'ห้ามกดยืนยันโอน'));
+    $same(true,str_contains($template,'ไม่สร้างบิล ไม่สร้างรายการชำระ'));
+});
 $test('receiver requires a collision-resistant tail',function()use($same):void{$same(true,PromptPayService::receiverMatches('0812345678','xxx-xx-2345678'));$same(true,PromptPayService::receiverMatches('123456','000123456'));$same(false,PromptPayService::receiverMatches('4567','0004567'));$same(false,PromptPayService::receiverMatches('123456','000123457'));});
 $test('SlipOK trusts only the configured branch account contract',function()use($same):void{
     $same(true,PromptPayService::providerReceiverMatches('slipok','123109','xxx-x-x3109-x',true,'branch-a','branch-a'));
@@ -478,6 +562,148 @@ $test('admin rehash and phone-only resident login use layered throttling',functi
     $same(true,str_contains($limiterSource,"CASE WHEN hits<=1 THEN '1970-01-01 00:00:00.000000'"));
     $same(true,str_contains($limiterSource,'blocked_until IS NULL AND hits>0'));
     $same(true,str_contains($limiterSource,"if(!\$pdo->inTransaction())throw new \\LogicException"));
+});
+$test('direct admin resident check-in is authenticated, rate-limited, audited, and transactionally routed',function()use($same,$app):void{
+    $routesProperty=new ReflectionProperty(Dormitory\Http\Router::class,'routes');
+    $registered=$routesProperty->getValue(Dormitory\Http\Routes::build($app));
+    $collection=array_values(array_filter($registered,static fn(array$route):bool=>$route['regex']==='#^/api/admin/residents/?$#'));
+    $same(2,count($collection));$same(['GET','POST'],array_column($collection,'method'));
+    $create=array_values(array_filter($collection,static fn(array$route):bool=>$route['method']==='POST'));
+    $same(1,count($create));$same(['auth'=>'admin'],$create[0]['options']);
+
+    $source=file_get_contents(dirname(__DIR__).'/src/Http/Routes.php');if(!is_string($source))throw new RuntimeException('cannot read direct resident route');
+    $start=strpos($source,"\$router->post('/api/admin/residents'");$end=strpos($source,"\$router->put('/api/admin/residents/{id}'",$start===false?0:$start);
+    if($start===false||$end===false)throw new RuntimeException('cannot isolate direct resident route');
+    $route=substr($source,$start,$end-$start);
+    $limit=strpos($route,"hit('resident-admin-create',(string)\$adminId,60,3600,300)");
+    $expiry=strpos($route,"expirePublicPhoneHolds(\$r->body['phone']??null)");
+    $transaction=strpos($route,'$app->database()->transaction');
+    $service=strpos($route,'createAdminResident($adminId,$r->body)');
+    $audit=strpos($route,"writeStrict(\$r,\$app->actor(),'resident.admin_create'");
+    $same(true,$limit!==false&&$expiry!==false&&$transaction!==false&&$service!==false&&$audit!==false
+        &&$limit<$expiry&&$expiry<$transaction&&$transaction<$service&&$service<$audit);
+    $same(true,str_contains($route,"if(!\$replay)\$app->audit()->writeStrict"));
+    $same(true,str_contains($route,'$replay?200:201'));
+    $same(true,str_contains($route,"\$replay?'Existing resident check-in returned':'Resident checked in'"));
+});
+$test('direct resident UI keeps one idempotency key, lists only available rooms, and confirms historical reuse',function()use($same):void{
+    $root=dirname(__DIR__);$js=file_get_contents($root.'/public/assets/js/app.js');$template=file_get_contents($root.'/templates/admin/console.php');
+    if(!is_string($js)||!is_string($template))throw new RuntimeException('cannot read direct resident UI sources');
+    foreach([
+        'data-open-resident-create','id="resident-create-dialog"','id="resident-create-form"',
+        'name="idempotency_key"','name="room_id" required','name="move_in_date" type="date" required',
+        'name="full_name"','name="phone"','name="email"','name="reuse_resident_id" type="checkbox" disabled',
+        'id="resident-create-reuse-field" hidden','id="resident-create-error" role="alert" hidden',
+    ]as$surface)$same(true,str_contains($template,$surface));
+    $same(true,str_contains($template,'ผู้พักเข้าสู่ระบบด้วยเบอร์โทร'));
+    $same(false,str_contains(substr($template,strpos($template,'id="resident-create-dialog"'),strpos($template,'id="resident-edit-dialog"')-strpos($template,'id="resident-create-dialog"')),'PIN'));
+
+    $populateStart=strpos($js,'function populateResidentCreateRooms');$populateEnd=strpos($js,'async function openResidentCreateForm',$populateStart===false?0:$populateStart);
+    $openEnd=strpos($js,'function renderResidents',$populateEnd===false?0:$populateEnd);
+    if($populateStart===false||$populateEnd===false||$openEnd===false)throw new RuntimeException('cannot isolate direct resident form setup');
+    $populate=substr($js,$populateStart,$populateEnd-$populateStart);$open=substr($js,$populateEnd,$openEnd-$populateEnd);
+    $same(true,str_contains($populate,"state.rooms.filter((room) => room.status === 'available')"));
+    $same(true,str_contains($populate,'select.replaceChildren(prompt)'));
+    $same(true,str_contains($open,"room?.status === 'available' ? room.id : ''"));
+    $same(true,str_contains($open,"if (!state.loaded.has('rooms')) await loadRooms()"));
+    $same(true,str_contains($open,'resetResidentCreateReuse(form)'));
+    $same(true,str_contains($open,'form.elements.idempotency_key.value = window.crypto?.randomUUID?.()'));
+    $same(1,substr_count($open,'form.elements.idempotency_key.value ='));
+    $same(true,str_contains($open,'form.elements.move_in_date.max = isoToday()'));
+    $same(true,str_contains($js,"actionButton('เพิ่มผู้พัก', 'add-resident-to-room'"));
+    $same(true,str_contains($js,"if (room.status === 'available') actions.push"));
+    $same(true,str_contains($js,"button.dataset.action === 'add-resident-to-room'"));
+
+    $submitStart=strpos($js,"\$('#resident-create-form').addEventListener('submit'");
+    $submitEnd=strpos($js,"\$('#resident-rows').addEventListener('click'",$submitStart===false?0:$submitStart);
+    if($submitStart===false||$submitEnd===false)throw new RuntimeException('cannot isolate direct resident form submission');
+    $submit=substr($js,$submitStart,$submitEnd-$submitStart);
+    $same(true,str_contains($submit,'Object.fromEntries(new FormData(form).entries())'));
+    $same(true,str_contains($submit,"api('/api/admin/residents', { method: 'POST', body: values })"));
+    $same(false,str_contains($submit,'idempotency_key.value ='));
+    $same(true,str_contains($submit,"requestError?.details?.code === 'RESIDENT_REUSE_CONFIRMATION_REQUIRED'"));
+    foreach([
+        "reuseInput.value = String(requestError.details.resident_id || '')","reuseInput.disabled = false",
+        'reuseInput.required = true','reuseInput.focus()',"\$('#resident-create-reuse-field').hidden = false",
+        "['ROOM_NOT_AVAILABLE', 'ROOM_OCCUPIED', 'ROOM_DELETED']",'await loadRooms()','populateResidentCreateRooms(values.room_id)',
+        'Promise.all([loadResidents(), loadRooms(), loadBookings()])',
+    ]as$behavior)$same(true,str_contains($submit,$behavior));
+    $same(true,strpos($submit,"api('/api/admin/residents'")<strpos($submit,'form.reset()'));
+    $same(false,str_contains($submit,'innerHTML'));
+});
+$test('direct admin resident check-in validates the complete request before database access',function()use($same,$throws,$throwsHttp,$app):void{
+    $service=$app->bookings();$today=(new DateTimeImmutable('today',new DateTimeZone('Asia/Bangkok')))->format('Y-m-d');
+    $valid=['room_id'=>1,'full_name'=>'Direct Resident','phone'=>'0812345678','move_in_date'=>$today,'idempotency_key'=>'admin-checkin-0001'];
+    $throws(fn()=>$service->createAdminResident(1,$valid+['unexpected'=>true]),'UNKNOWN_FIELDS');
+    $throws(fn()=>$service->createAdminResident(1,array_replace($valid,['room_id'=>0])),'VALIDATION_ERROR');
+    $throws(fn()=>$service->createAdminResident(1,array_replace($valid,['full_name'=>''])),'VALIDATION_ERROR');
+    $throws(fn()=>$service->createAdminResident(1,array_replace($valid,['phone'=>'12345'])),'VALIDATION_ERROR');
+    $throws(fn()=>$service->createAdminResident(1,array_replace($valid,['email'=>'not-an-email'])),'VALIDATION_ERROR');
+    $throwsHttp(fn()=>$service->createAdminResident(1,array_replace($valid,['move_in_date'=>(new DateTimeImmutable($today))->modify('+1 day')->format('Y-m-d')])),'VALIDATION_ERROR',422);
+    $throwsHttp(fn()=>$service->createAdminResident(1,array_replace($valid,['idempotency_key'=>'too-short'])),'VALIDATION_ERROR',422);
+    $throws(fn()=>$service->createAdminResident(1,$valid+['reuse_resident_id'=>0]),'VALIDATION_ERROR');
+
+    $reference=new ReflectionMethod($service,'administrativeReference');
+    $arguments=['admin-checkin-0001',1,'Direct Resident','0812345678',null,false,$today,null];
+    $base=$reference->invoke($service,...$arguments);$same(1,preg_match('/^ADM-[A-F0-9]{32}$/D',$base));
+    $same($base,$reference->invoke($service,...$arguments));
+    foreach([
+        ['admin-checkin-0002',1,'Direct Resident','0812345678',null,false,$today,null],
+        ['admin-checkin-0001',2,'Direct Resident','0812345678',null,false,$today,null],
+        ['admin-checkin-0001',1,'Another Resident','0812345678',null,false,$today,null],
+        ['admin-checkin-0001',1,'Direct Resident','0899999999',null,false,$today,null],
+        ['admin-checkin-0001',1,'Direct Resident','0812345678',null,true,$today,null],
+        ['admin-checkin-0001',1,'Direct Resident','0812345678','qa@example.com',true,$today,null],
+        ['admin-checkin-0001',1,'Direct Resident','0812345678',null,false,'2026-01-01',null],
+        ['admin-checkin-0001',1,'Direct Resident','0812345678',null,false,$today,99],
+    ]as$changed)$same(true,$base!==$reference->invoke($service,...$changed));
+});
+$test('direct admin resident check-in locks room first and replays only the canonical committed result',function()use($same):void{
+    $source=file_get_contents(dirname(__DIR__).'/src/Domain/BookingService.php');if(!is_string($source))throw new RuntimeException('cannot read BookingService');
+    $start=strpos($source,'public function createAdminResident');$end=strpos($source,'public function moveIn(',$start===false?0:$start);
+    if($start===false||$end===false)throw new RuntimeException('cannot isolate direct resident service');
+    $create=substr($source,$start,$end-$start);
+    $same(true,str_contains($create,"Validator::only(\$input,['room_id','full_name','phone','email','move_in_date','idempotency_key','reuse_resident_id'])"));
+    $same(true,str_contains($create,"preg_match('/^[A-Za-z0-9_-]{16,64}$/',\$idempotency)"));
+    $same(true,str_contains($create,'$this->app->database()->transaction(function(PDO $pdo)'));
+
+    $roomLock=strpos($create,'SELECT id,monthly_rent,deleted_at FROM rooms WHERE id=? FOR UPDATE');
+    $keyRead=strpos($create,'SELECT * FROM bookings WHERE idempotency_key=? LIMIT 1');
+    $firstFingerprint=strpos($create,'if(!hash_equals($reference');
+    $bookingLock=strpos($create,'SELECT * FROM bookings WHERE id=? FOR UPDATE');
+    $secondFingerprint=strpos($create,'if(!hash_equals($reference',$firstFingerprint===false?0:$firstFingerprint+1);
+    $same(true,$roomLock!==false&&$keyRead!==false&&$firstFingerprint!==false&&$bookingLock!==false&&$secondFingerprint!==false
+        &&$roomLock<$keyRead&&$keyRead<$firstFingerprint&&$firstFingerprint<$bookingLock&&$bookingLock<$secondFingerprint);
+    $same(true,substr_count($create,"'IDEMPOTENCY_KEY_REUSED'")>=2);
+    $same(true,str_contains($create,'SELECT id,resident_id,room_id,move_in_date FROM occupancies WHERE booking_id=? LIMIT 1'));
+    $same(true,str_contains($create,"'idempotent_replay'=>true"));
+
+    $occupied=strpos($create,"SELECT id FROM occupancies WHERE room_id=? AND status='active' LIMIT 1 FOR UPDATE");
+    $reserved=strpos($create,"SELECT id FROM bookings WHERE room_id=? AND status IN ('pending','confirmed') LIMIT 1");
+    $activePhone=strpos($create,'SELECT id FROM bookings WHERE active_phone_norm=? LIMIT 1');
+    $insert=strpos($create,'INSERT INTO bookings (reference_no,room_id,full_name,phone_norm,booked_monthly_rent,status,idempotency_key,confirmed_by');
+    $moveIn=strpos($create,'$this->moveInWithPolicy');
+    $same(true,$occupied!==false&&$reserved!==false&&$activePhone!==false&&$insert!==false&&$moveIn!==false
+        &&$roomLock<$occupied&&$occupied<$reserved&&$reserved<$activePhone&&$activePhone<$insert&&$insert<$moveIn);
+    $same(true,str_contains($create,"VALUES (?,?,?,?,?,'confirmed',?,?,UTC_TIMESTAMP()"));
+    $same(true,str_contains($create,"'uq_bookings_one_active_per_phone'"));
+    $same(true,str_contains($create,"'uq_bookings_one_active_per_room'"));
+    $same(true,str_contains($create,"],true)"));
+    $same(true,str_contains($create,"\$result['idempotent_replay']=false"));
+
+    $referenceStart=strpos($source,'private function administrativeReference');$referenceEnd=strpos($source,'private function transition',$referenceStart===false?0:$referenceStart);
+    if($referenceStart===false||$referenceEnd===false)throw new RuntimeException('cannot isolate administrative reference');
+    $reference=substr($source,$referenceStart,$referenceEnd-$referenceStart);
+    foreach(["'email_provided'=>\$emailProvided","'email'=>\$email","'move_in_date'=>\$moveIn","'reuse_resident_id'=>\$reuseResidentId","hash('sha256',\$idempotency.\"\\0\".\$canonical)"]as$field)$same(true,str_contains($reference,$field));
+    $same(true,str_contains($source,'return $this->moveInWithPolicy($id,$adminId,$input,false)'));
+    $same(true,str_contains($source,'if(!$allowBeforeBookingDate&&$moveIn<$bookedDate)'));
+    $same(true,str_contains($source,'if($reuseResidentId!==$residentId)'));
+    $same(true,str_contains($source,"'RESIDENT_REUSE_CONFIRMATION_REQUIRED'"));
+    $same(true,str_contains($source,"SELECT id FROM occupancies WHERE resident_id=? AND status='active' LIMIT 1 FOR UPDATE"));
+    $residentBranch=strpos($source,'try { if ($resident) {');
+    $activeResidentGuard=strpos($source,"SELECT id FROM occupancies WHERE resident_id=? AND status='active' LIMIT 1 FOR UPDATE",$residentBranch===false?0:$residentBranch);
+    $reuseGuard=strpos($source,'if($reuseResidentId!==$residentId)',$residentBranch===false?0:$residentBranch);
+    $same(true,$residentBranch!==false&&$activeResidentGuard!==false&&$reuseGuard!==false&&$activeResidentGuard<$reuseGuard);
 });
 $test('booking holds use the database clock and inactive replays fail closed',function()use($same):void{
     $source=file_get_contents(dirname(__DIR__).'/src/Domain/BookingService.php');if(!is_string($source))throw new RuntimeException('cannot read BookingService');

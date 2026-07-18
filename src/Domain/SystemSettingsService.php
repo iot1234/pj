@@ -6,6 +6,7 @@ namespace Dormitory\Domain;
 use Dormitory\Application;
 use Dormitory\Http\HttpException;
 use Dormitory\Security\SecretCipher;
+use Dormitory\Support\Validator;
 use PDO;
 use RuntimeException;
 
@@ -330,14 +331,30 @@ final class SystemSettingsService
     {
         $integration = strtolower(trim($integration));
         if ($integration === 'promptpay') {
-            $target = trim((string) $this->value('PROMPTPAY_TARGET', ''));
-            if ($target === '') {
+            // Read the target and display name from one database snapshot so
+            // a concurrent settings update cannot mix values from revisions.
+            $settings = $this->row() ?? [];
+            $target = $this->nullableString($settings['promptpay_target'] ?? null);
+            if ($target === null) {
                 throw new HttpException(422, 'PromptPay is not configured', 'PROMPTPAY_NOT_CONFIGURED');
             }
-            // Building a deterministic one-baht payload validates the target
-            // format and EMV/CRC path without initiating a transaction.
-            PromptPayService::payload($target, '1.00');
-            return ['integration' => 'promptpay', 'ready' => true, 'target_hint' => '********' . substr($target, -4)];
+            // Keep the scan test deliberately small. This builds a live EMV
+            // payload locally, but does not create a bill/payment or call a
+            // verification provider. A bank transfer only happens if the user
+            // explicitly confirms it in their banking application.
+            $amount = Validator::decimalString(random_int(101, 199));
+            $payload = PromptPayService::payload($target, $amount);
+            return [
+                'integration' => 'promptpay',
+                'ready' => true,
+                'target_hint' => '********' . substr($target, -4),
+                'recipient_name' => $this->nullableString($settings['promptpay_name'] ?? null),
+                'test_qr' => [
+                    'amount' => $amount,
+                    'payload' => $payload,
+                    'generated_at' => gmdate('Y-m-d\TH:i:s\Z'),
+                ],
+            ];
         }
 
         if ($integration === 'slip') {
