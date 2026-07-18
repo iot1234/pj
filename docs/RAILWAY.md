@@ -60,6 +60,19 @@ DB_PASSWORD=<random-hex-อย่างน้อย-32-ตัวอักษร>
 จากนั้นลบ service และ `DB_DBA_*` ทันที ห้ามผูกคำสั่งนี้เป็น pre-deploy ถาวร และ
 ห้ามรันพร้อมกับ web/worker เพราะการสร้างบัญชีแบบ clean slate จะปฏิเสธ active session
 
+### ฐานข้อมูล Railway ที่ติดตั้งอยู่แล้ว
+
+ห้ามรัน `database-setup` หรือ import `schema.sql` ทับฐานที่มีข้อมูล ให้ snapshot/backup
+MySQL และทดสอบ restore ก่อน แล้วใช้ Railway Data/SQL console หรือ migration job ชั่วคราว
+ที่ถือ `DB_DBA_*` รันไฟล์ตามลำดับ `001` (เฉพาะเมื่อยังไม่มี `integration_settings`) →
+`002` หนึ่งครั้ง → `003` → `004_line_webhook.sql` โดยตรวจและแก้ค่า legacy ใน
+`residents.line_user_id`/`notification_outbox.recipient` ให้ตรง `^U[0-9a-f]{32}$`
+ก่อนรัน `004` บัญชี `dormitory_app` ใช้รัน migration ไม่ได้เพราะไม่มี DDL
+
+หลัง migration ให้รัน `php scripts/check_requirements.php --schema-audit` ด้วย schema
+owner และ `php scripts/check_requirements.php --db --strict --production` ด้วย runtime
+user เมื่อผ่านแล้วจึงลบ migration job กับ `DB_DBA_*` ออก
+
 ## 3. ตั้งค่า web
 
 สร้าง `APP_KEY` เป็น random hex 64 ตัวอักษรและเก็บค่าเดิมตลอดอายุระบบ เพราะใช้
@@ -112,8 +125,10 @@ printf '%s' "$ADMIN_PASSWORD" | php scripts/create_admin.php \
 ```
 
 ลบ `ADMIN_PASSWORD` ทันทีเมื่อสำเร็จ ห้ามเก็บไว้กับ process ระยะยาว จากนั้น login
-เข้า Admin → Settings เพื่อตั้ง billing, PromptPay receiver และ provider credentials
-ที่ระบบใช้งานจริง เมื่อค่าจำเป็นครบและ `ADMIN_PASSWORD` ถูกลบแล้วจึงรัน production gate:
+เข้า Admin → Settings เพื่อตั้ง billing, PromptPay receiver, LINE Channel access
+token/Channel secret และ provider credentials ที่ระบบใช้งานจริง ค่าลับทั้งหมดนี้เก็บ
+เข้ารหัสใน MySQL ไม่ต้องเพิ่มเป็น Railway Variables เมื่อค่าจำเป็นครบและ
+`ADMIN_PASSWORD` ถูกลบแล้วจึงรัน production gate:
 
 ```sh
 php scripts/check_requirements.php --db --strict --production
@@ -121,6 +136,12 @@ php scripts/check_requirements.php --db --strict --production
 
 โหมด `--strict` จะจบด้วย exit code ที่ไม่ใช่ศูนย์เมื่อยังมี warning จึงห้ามตีความว่า
 deploy พร้อมใช้งานจนกว่าคำสั่งนี้จะผ่าน
+
+ใน LINE Developers Console ให้ตั้ง Webhook URL เป็น
+`https://<web-domain>/api/webhooks/line` (URL เดียวกับที่หน้า Settings แสดง) แล้วเปิด
+**Use webhook** ต้องใช้ domain ของ `web` และ `APP_URL` ต้องตรง HTTPS origin นี้พอดี
+route นี้รับ request จาก LINE โดยตรวจ `X-Line-Signature` ด้วย Channel secret จึงไม่ต้อง
+และไม่ควรตั้ง public domain ให้ worker
 
 ## 5. ตั้งค่า worker
 
@@ -152,11 +173,13 @@ bounded exponential backoff เพื่อไม่ให้เกิด restar
 ```text
 GET https://<web-domain>/healthz.php  -> 200 {"status":"ok"}
 GET https://<web-domain>/             -> หน้าเว็บปกติ
+POST https://<web-domain>/api/webhooks/line ไม่มีลายเซ็นที่ถูกต้อง -> ถูกปฏิเสธ
 ```
 
 ตรวจ deployment log ของ `web` และ `worker` ว่าไม่มี restart loop แล้วทดสอบ login,
-สร้างบิล, อัปโหลดสลิป และ notification ด้วยข้อมูลทดสอบก่อนใช้งานจริง วางแผน backup
-ทั้ง MySQL และ Railway Volume เป็นคนละชุด เพราะ volume ไม่ได้รวมอยู่ใน database backup
+LINE webhook จากปุ่ม Verify ของ LINE Developers, สร้างบิล, อัปโหลดสลิป และ notification
+ด้วยข้อมูลทดสอบก่อนใช้งานจริง วางแผน backup ทั้ง MySQL และ Railway Volume เป็นคนละชุด
+เพราะ volume ไม่ได้รวมอยู่ใน database backup
 
 ลำดับที่ถูกต้องคือ Generate web domain → database setup/provision → ตั้ง web Variables
 และ volume → เปิด web healthcheck/deploy → สร้าง Owner → สร้าง worker

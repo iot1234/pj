@@ -130,7 +130,8 @@ final class BillingService
         $statement = $this->app->database()->pdo()->prepare(
             'SELECT b.*,b.room_code_snapshot AS room_code,b.resident_name_snapshot AS full_name,res.phone_norm,
                     res.id AS line_resident_id,res.line_user_id AS line_recipient,
-                    n.status AS line_status,n.attempts AS line_attempts,n.last_error AS line_last_error,n.sent_at AS line_sent_at
+                    n.status AS line_status,n.attempts AS line_attempts,n.last_error AS line_last_error,n.sent_at AS line_sent_at,
+                    n.line_request_id,n.line_accepted_request_id
                FROM bills b
                JOIN rooms r ON r.id=b.room_id
                JOIN residents res ON res.id=b.resident_id

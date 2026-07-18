@@ -11,7 +11,9 @@ is reference material only and is not modified.
 - Every JSON response has `{ "ok": bool, "data": ..., "message": string? }`.
 - JSON and multipart mutations require same-origin validation plus
   `X-CSRF-Token`: authenticated requests use a session token, while anonymous
-  login/booking pages use a two-hour signed stateless guest token.
+  login/booking pages use a two-hour signed stateless guest token. The sole
+  server-to-server exception is the LINE webhook, which authenticates the raw
+  body with `X-Line-Signature` and the encrypted Channel secret.
 - Admin roles are `owner` and `admin`; only `owner` manages admin accounts.
 - Resident authentication is normalized Thai phone number plus a 6-12 digit
   PIN. Room and occupancy are never editable by a resident.
@@ -40,6 +42,9 @@ is reference material only and is not modified.
 
 ### Public and authentication
 
+- `POST /api/webhooks/line` accepts signed LINE `follow`/text-message events
+  from direct users, deduplicates `webhookEventId`, and replies with the user's
+  LINE ID plus binding instructions. It stores no inbound message content.
 - `GET /api/public/rooms`
 - `POST /api/public/bookings` `{room_id, full_name, phone, idempotency_key}`
 - `POST /api/auth/admin/login` `{username,password}`
@@ -118,8 +123,9 @@ Room objects expose `id`, `room_code`, `floor`, `room_type`, `monthly_rent`,
 accept a client-provided total. PromptPay amount is always read from the bill.
 
 `integration_settings` is a singleton (`id=1`). Non-secret operational values
-are returned normally, but LINE/SlipOK/EasySlip credentials are never returned
-as plaintext or ciphertext. The API exposes only a `*_configured` boolean and
+are returned normally, but the LINE Channel access token/Channel secret and
+SlipOK/EasySlip credentials are never returned as plaintext or ciphertext. The
+API exposes only a `*_configured` boolean and
 masked `*_hint`. A missing, `null`, empty, or whitespace-only secret update
 keeps the current value; only the matching `*_clear=true` removes it. Web and
 worker processes query this row at use time, so an owner update applies without
@@ -140,8 +146,9 @@ an application restart.
   reference before a bill becomes paid. Missing receiver configuration or a
   receiver mismatch stays pending so an owner can correct settings and retry;
   terminally invalid evidence and amount mismatch are rejected.
-- LINE and slip API credentials are AES-256-GCM encrypted in
-  `integration_settings`. The key is derived from environment-only `APP_KEY`,
+- LINE Channel access token/Channel secret and slip API credentials are
+  AES-256-GCM encrypted in `integration_settings`. The key is derived from
+  environment-only `APP_KEY`,
   and field-specific AAD prevents moving a valid ciphertext between columns.
   Outbound URLs are fixed HTTPS allowlist endpoints, redirects are disabled,
   and responses are size/time bounded.
@@ -168,6 +175,12 @@ Then run `database/migrations/003_append_only_guards.sql`. Migration 003 is a
 rerunnable repair for installations that previously ran an older migration 002;
 it recreates the four append-only `bill_items` and `audit_logs` update/delete
 guards already present in the current schema and migration 002.
+After correcting/quarantining legacy LINE IDs that do not match
+`^U[0-9a-f]{32}$`, run `database/migrations/004_line_webhook.sql`. Migration
+004 is rerunnable and adds the encrypted Channel secret, LINE provider request
+IDs for reconciliation, strict 33-character ID columns, and their CHECK
+constraints; its preflight stops before any ALTER when legacy values are
+invalid.
 The application runtime account has only `SELECT`, `INSERT`, and `UPDATE` on the
 application database and must not run any migration. After upgrade, an owner
 configures integrations in Admin -> Settings.

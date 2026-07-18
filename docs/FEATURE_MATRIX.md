@@ -30,15 +30,16 @@
 | FR-11 | บันทึกมิเตอร์น้ำ/ไฟรายห้องรายเดือน | `GET /api/admin/meters?period=YYYY-MM`, `POST /api/admin/meters` | `meter_readings`; unique room/type/period, decimal 2 ตำแหน่ง | เดือน/ห้องเดียวมี water/electric ได้ประเภทละหนึ่งแถว; input ติดลบ/ย้อน/เกิน 9,999,999 ถูกปฏิเสธ; usage เกิน 10,000 หน่วยรวบรวมเตือนทุกประเภทก่อนยืนยัน และแก้หลังออกบิลไม่ได้ |
 | FR-12 | ดึงเดือนก่อนและคำนวณหน่วยอัตโนมัติ | API มิเตอร์เดียวกับ FR-11 | previous reading ล่าสุดก่อน period; first baseline previous=current; DB CHECK `units=current-previous` | เดือนแรก units=0; เดือนถัดไป previous ตรง current ล่าสุด; client กำหนด previous/units เองไม่ได้ |
 | FR-13 | ออกบิลหลายห้อง รวมเช่า น้ำ ไฟ อื่น ๆ | `POST /api/admin/bills/preview`, `POST /api/admin/bills/bulk`, `GET /api/admin/bills` | `billing_settings`, `bills`, `bill_items`; immutable snapshots, unique occupancy/period, HMAC preview token | preview แจ้งห้องขาดมิเตอร์; bulk ต้องใช้ token อายุ 5 นาทีที่ผูกยอด/ผู้พัก/มิเตอร์และหยุดเมื่อข้อมูลเปลี่ยน; transaction/idempotent; total คำนวณ server และตรง snapshot 2 ตำแหน่ง |
-| FR-14 | ส่งบิล LINE รายห้อง/พร้อมกัน | `POST /api/admin/bills/{id}/line`, `POST /api/admin/bills/line-bulk` | `notification_outbox`, `integration_settings`, append-only `audit_logs`; token เข้ารหัส, verified recipient HMAC, unique bill/purpose, stable UUID v4 retry key, backoff | ไม่มีหรือยังไม่ยืนยัน LINE ID ถูก skip/แจ้งชัด; worker ตรวจ ID กับ audit ล่าสุดก่อน network call; retry ใช้ `X-Line-Retry-Key` เดิม; 409 ถือว่าได้รับแล้ว; terminal failure มองเห็นได้ |
+| FR-14 | ส่งบิล LINE รายห้อง/พร้อมกัน | `POST /api/admin/bills/{id}/line`, `POST /api/admin/bills/line-bulk` | `notification_outbox`, `integration_settings`, append-only `audit_logs`; token เข้ารหัส, verified recipient HMAC, unique bill/purpose, stable UUID v4 retry key, provider request IDs, backoff | ไม่มีหรือยังไม่ยืนยัน LINE ID ถูก skip/แจ้งชัด; worker ตรวจ ID กับ audit ล่าสุดก่อน network call; retry ใช้ payload/ผู้รับ/`X-Line-Retry-Key` เดิม; 409 ถือว่าได้รับแล้ว; terminal failure มองเห็นได้และ request IDs ช่วย reconcile |
 | FR-15 | สร้าง QR พร้อมเพย์ตามยอดบิล | `GET /api/resident/bills/{id}/promptpay` | `bills.total_amount` snapshot + PromptPay target ใน `integration_settings`; EMV CRC | QR amount มาจากบิลของ resident ที่ login เท่านั้น; endpoint เปิดเมื่อ PromptPay และระบบตรวจสลิปพร้อมและไม่มี payment สถานะ pending/verified; target/amount invalid ถูกปฏิเสธ; CRC ถูกต้อง |
 | FR-16 | ตรวจสลิป SlipOK/EasySlip เทียบยอด/ปลายทาง แล้ว paid | `POST /api/resident/bills/{id}/slip`; Admin ใช้ paginated `GET /api/admin/payments`, `GET .../{id}/slip`, `POST .../{id}/retry`, `POST .../{id}/close` | `payments`, `integration_settings`, private slip storage; API key เข้ารหัส, HMAC/transaction unique; reserve + verification lease ก่อนเรียก provider และ finalize ด้วย bill lock | JPEG/PNG/WebP ไม่เกิน 4 MiB/4,096 px/8 MP; pending recovery เรียงก่อนและแบ่งหน้า; amount/receiver/transaction/เวลาโอนถูกต้องจึง verified+paid; timeout/ผลไม่ชัดเจน/ตั้งค่าผู้รับไม่ครบหรือผู้รับไม่ตรง (รวม SlipOK 1014) คง pending เพื่อแก้ค่าแล้ว retry; หลักฐานผิดแบบ terminalหรือยอดไม่ตรงเป็น rejected; ปิด pending ที่ lease หมดอายุได้โดยระบุเหตุผล แต่ไม่มี manual paid/approve |
 
 ## Operational settings ของ FR-14–FR-16
 
 - `GET /api/admin/settings` คืน billing settings และสถานะ integration ที่ปลอดภัย; `PUT /api/admin/settings/integrations` เปลี่ยนค่าได้เฉพาะ Owner
+- `POST /api/webhooks/line` ตรวจลายเซ็น raw body ด้วย Channel secret, deduplicate `webhookEventId` และตอบ LINE User ID/วิธีผูกบัญชีให้ event `follow` หรือข้อความตัวอักษรจากผู้ใช้โดยตรง โดยไม่เก็บเนื้อหาข้อความ
 - PromptPay target/name, บัญชีปลายทาง, LINE retry/batch, provider/branch, ขนาดไฟล์ และช่วงเผื่อเวลาถูกเก็บใน singleton `integration_settings`
-- LINE token และ SlipOK/EasySlip API key เข้ารหัส AES-256-GCM ด้วย key ที่ derive จาก `APP_KEY` และ field-specific AAD; API คืนเพียง configured flag กับ masked hint ไม่คืน plaintext/ciphertext
+- LINE Channel access token/Channel secret และ SlipOK/EasySlip API key เข้ารหัส AES-256-GCM ด้วย key ที่ derive จาก `APP_KEY` และ field-specific AAD; API คืนเพียง configured flag กับ masked hint ไม่คืน plaintext/ciphertext
 - ช่อง secret ว่าง/`null` หมายถึงเก็บค่าเดิม การลบต้องส่ง `*_clear=true` อย่างชัดเจน; web และ worker อ่านฐานข้อมูลในรอบใช้งานถัดไปโดยไม่ต้อง restart
 - `APP_KEY`, `APP_URL` และค่าเชื่อมต่อ MySQL เป็น infrastructure settings ที่ยังอยู่ใน environment ไม่อยู่ในหน้าหลังบ้าน
 - การยืนยันผู้รับเป็น provider-specific: SlipOK ใช้ผลตรวจบัญชีของ branch ที่กำหนดเมื่อส่ง `log=true` เพราะเลขผู้รับใน response ถูก mask; EasySlip ต้องได้ `matchedAccount` และนำ `matchedAccount.bankNumber` แบบเต็มมาเทียบ suffix อย่างน้อย 6 หลักกับ `payment_receiver_account_tail`
@@ -61,7 +62,7 @@
 
 - สัญญาเช่า/e-signature, เงินประกัน, แจ้งซ่อม, พัสดุ, ที่จอดรถ, ประตู/คีย์การ์ด
 - บัญชีแยกประเภท ภาษี ใบกำกับภาษี/ใบเสร็จเต็มรูป รายงานบัญชีขั้นสูง
-- OTP/MFA, social login, LINE webhook/login, mobile application
+- OTP/MFA สำหรับ login, social/LINE Login, bot command แบบสนทนาทั่วไป, การเก็บประวัติข้อความ และ mobile application
 - manual override ให้ paid โดยไม่มีหลักฐาน, partial payment, refund, chargeback
 - multi-property/multi-tenant, dynamic plugin/provider endpoint, arbitrary file manager
 - การย้ายข้อมูลอัตโนมัติจาก Node/PostgreSQL เดิม
@@ -77,7 +78,7 @@
 5. จด baseline และเดือนถัดไปทั้งน้ำ/ไฟ รวม rollback reading และ duplicate period
 6. preview/bulk บิลหลายห้อง รวมขาดมิเตอร์, ค่าอื่น, bulk ซ้ำ และ total mismatch จาก client
 7. ใช้ Owner บันทึก integration settings ตรวจว่า Admin ธรรมดาแก้ไม่ได้, API ไม่คืน secret, ช่องว่างเก็บค่าเดิม, explicit clear ลบจริง และ web/worker เห็นค่ารอบถัดไปโดยไม่ restart
-8. ส่ง LINE รายบิล/ทั้งเดือน ทดสอบ retry, 409 และ max attempts
+8. ตั้ง signed LINE webhook แล้วทดสอบลายเซ็นผิด, event ซ้ำ, event กลุ่ม/ห้อง และการตอบ ID โดย audit ต้องไม่เก็บข้อความ/LINE User ID ดิบ จากนั้นส่ง LINE รายบิล/ทั้งเดือน ทดสอบ retry payload เดิม, 409, provider request IDs และ max attempts
 9. เปิด PromptPay QR แล้ว decode ตรวจ target/amount/CRC
 10. อัปโหลดไฟล์ผิดประเภท/ใหญ่/ซ้ำ และ provider cases: timeout, amount mismatch, receiver mismatch, transaction ซ้ำ, verified
 11. ตรวจ bill paid, immutable snapshot, audit redaction และ restore backup บน staging

@@ -102,7 +102,7 @@ $residentInitial = preg_match('/^./us', $residentName, $initialMatch) === 1 ? $i
           <div class="card-block stack-form" id="resident-line-card">
             <div class="card-heading"><div><h3>รับบิลผ่าน LINE</h3><p id="resident-line-status">ยังไม่ได้ผูกบัญชี LINE</p></div></div>
             <form class="stack-form" id="resident-line-start-form" novalidate>
-              <label class="field"><span>LINE User ID</span><input name="line_user_id" type="text" minlength="21" maxlength="81" pattern="U[0-9A-Za-z_-]{20,80}" autocomplete="off" spellcheck="false" placeholder="U ตามด้วยรหัสบัญชี LINE" required><small>ระบบจะส่งรหัส 6 หลักไปยังบัญชีนี้เพื่อยืนยันว่าเป็นของคุณ</small></label>
+              <label class="field"><span>LINE User ID</span><input name="line_user_id" type="text" minlength="33" maxlength="33" pattern="U[0-9a-f]{32}" autocomplete="off" spellcheck="false" placeholder="U ตามด้วยเลขฐานสิบหก 32 ตัว" required><small>เพิ่มบัญชี LINE Official Account เป็นเพื่อนหรือส่งข้อความหา Bot แล้วคัดลอกรหัสที่ Bot ตอบกลับมาวางที่นี่</small></label>
               <label class="field"><span>PIN ปัจจุบัน</span><input name="current_pin" type="password" inputmode="numeric" pattern="[0-9]{6,12}" minlength="6" maxlength="12" autocomplete="current-password" required><small>ใช้ยืนยันตัวตนก่อนผูกหรือยกเลิก LINE</small></label>
               <button class="button button-secondary" type="submit">ส่งรหัสยืนยัน</button>
             </form>

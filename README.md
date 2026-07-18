@@ -46,7 +46,7 @@ php -r "echo bin2hex(random_bytes(32)), PHP_EOL;"
 - `APP_KEY` ต้องคงเดิมและมีค่าเดียวกันใน web/worker ทุก instance เพราะใช้สร้าง HMAC และถอดรหัส token/API key ใน `integration_settings`; ห้ามหมุนค่าโดยไม่มีขั้นตอน re-encrypt หรือล้างค่าลับด้วย key เดิมแล้วกรอกใหม่หลังเปลี่ยน key
 - `TRUSTED_PROXIES` ใส่เฉพาะ IP ของ reverse proxy ที่ควบคุมเอง คั่นด้วย comma; หากไม่ได้ใช้ proxy ให้เว้นว่าง
 - `BOOKING_HOLD_SECONDS` กำหนดอายุคำขอจองที่ยังไม่ยืนยัน ค่าเริ่มต้น 86,400 วินาที (24 ชั่วโมง) และกำหนดได้ 900–604,800 วินาที; เมื่อหมดอายุระบบจะยกเลิกคำขออัตโนมัติและคืนห้องให้จองใหม่
-- ค่าโครงสร้างพื้นฐาน เช่น `APP_KEY`, `APP_URL`, `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME` และ `DB_PASSWORD` ยังต้องมาจาก environment/secret manager ส่วนเบอร์พร้อมเพย์, LINE token และ SlipOK/EasySlip key ไม่ต้องและไม่ควรใส่ใน `.env`
+- ค่าโครงสร้างพื้นฐาน เช่น `APP_KEY`, `APP_URL`, `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME` และ `DB_PASSWORD` ยังต้องมาจาก environment/secret manager ส่วนเบอร์พร้อมเพย์, LINE Channel access token/Channel secret และ SlipOK/EasySlip key ไม่ต้องและไม่ควรใส่ใน `.env`
 
 ห้าม commit `.env` และห้ามส่งไฟล์นี้ทางแชตหรืออีเมล
 
@@ -214,22 +214,22 @@ MySQL ตีความ `_` และ `%` ในขอบเขต database ข
 
 การติดตั้งใหม่ที่ import `database/install.sql` ไฟล์เดียว หรือใช้วิธีขั้นสูง `database/schema.sql` ตามด้วย `database/defaults.sql` มีโครงสร้างล่าสุดและแถวตั้งค่าพร้อมแล้ว ไม่ต้องรัน migration ใดซ้ำ ส่วน `database/demo.sql` เป็นข้อมูลทดสอบแบบ optional สำหรับ local เท่านั้น
 
-ฐานข้อมูลเดิมต้องสำรองและทดสอบ restore ก่อน แล้วใช้บัญชี schema/migration ที่มีสิทธิ์ DDL (ไม่ใช่ `DB_USERNAME` ของแอป) รันตามลำดับ: `database/migrations/001_integration_settings.sql` เมื่อฐานยังไม่มี `integration_settings` (ไฟล์นี้ idempotent), รัน `database/migrations/002_operational_hardening.sql` **หนึ่งครั้งเท่านั้น**, แล้วรัน `database/migrations/003_append_only_guards.sql` เพื่อซ่อมฐานที่เคยใช้ `002` รุ่นต้นให้มีตัวกันแก้/ลบ bill items และ audit logs ครบ ไฟล์ `003` ปลอดภัยต่อการรันซ้ำ แต่ `002` ไม่ใช่ idempotent จึงต้องตรวจ staging และห้ามรัน `002` ซ้ำ
+ฐานข้อมูลเดิมต้องสำรองและทดสอบ restore ก่อน แล้วใช้บัญชี schema/migration ที่มีสิทธิ์ DDL (ไม่ใช่ `DB_USERNAME` ของแอป) รันตามลำดับ: `database/migrations/001_integration_settings.sql` เมื่อฐานยังไม่มี `integration_settings` (ไฟล์นี้ idempotent), รัน `database/migrations/002_operational_hardening.sql` **หนึ่งครั้งเท่านั้น**, รัน `database/migrations/003_append_only_guards.sql` เพื่อซ่อมฐานที่เคยใช้ `002` รุ่นต้น และสุดท้ายรัน `database/migrations/004_line_webhook.sql` เพื่อเพิ่ม Channel secret, LINE request IDs สำหรับ reconciliation และบังคับรูปแบบ LINE User ID อย่างเป็นทางการ ไฟล์ `003` และ `004` ปลอดภัยต่อการรันซ้ำ แต่ `002` ไม่ใช่ idempotent จึงต้องตรวจ staging และห้ามรัน `002` ซ้ำ ก่อน `004` ต้องแก้หรือกักแถว legacy ที่ LINE User ID ไม่ตรง `U` ตามด้วย hexadecimal ตัวพิมพ์เล็ก 32 ตัว มิฉะนั้น migration จะหยุดก่อนแก้ schema
 
-หลัง `001` (เมื่อจำเป็น) → `002` หนึ่งครั้ง → `003` ให้ login ด้วยบัญชี `owner` แล้วกรอกค่าที่ Admin → ตั้งค่า → “พร้อมเพย์, LINE Bot และตรวจสลิป” ระบบไม่ย้ายหรืออ่านค่าดำเนินงานเดิมจาก environment โดยอัตโนมัติ จึงต้องกรอกใหม่ในหน้าหลังบ้านก่อนเปิด LINE/ตรวจสลิป/PromptPay จากนั้นรัน `php scripts/check_requirements.php --db --strict` ด้วยบัญชี runtime และ `php scripts/check_requirements.php --schema-audit` ด้วยบัญชี migration ชั่วคราวอีกครั้ง
+หลัง `001` (เมื่อจำเป็น) → `002` หนึ่งครั้ง → `003` → `004` ให้ login ด้วยบัญชี `owner` แล้วกรอกค่าที่ Admin → ตั้งค่า → “พร้อมเพย์, LINE Bot และตรวจสลิป” ระบบไม่ย้ายหรืออ่านค่าดำเนินงานเดิมจาก environment โดยอัตโนมัติ จึงต้องกรอกใหม่ในหน้าหลังบ้านก่อนเปิด LINE webhook/ส่งบิล/ตรวจสลิป/PromptPay จากนั้นรัน `php scripts/check_requirements.php --db --strict` ด้วยบัญชี runtime และ `php scripts/check_requirements.php --schema-audit` ด้วยบัญชี migration ชั่วคราวอีกครั้ง
 
 ## ตั้งค่า PromptPay, LINE และตรวจสลิป
 
 ค่าใช้งานทั้งหมดในหัวข้อนี้จัดการจาก Admin → ตั้งค่า โดยบัญชี `owner` เท่านั้นที่บันทึกหรือเปลี่ยนค่าได้ บัญชี admin ทั่วไปอ่านค่าที่ไม่ลับและสถานะความพร้อมได้ แต่ credential จะแสดงเพียง hint แบบปิดบัง ค่าถูกเก็บใน singleton `integration_settings` และ web/worker อ่านจากฐานข้อมูลเมื่อใช้งาน จึงมีผลกับ request/รอบ worker ถัดไปโดยไม่ต้องแก้ `.env`, rebuild image หรือ restart process
 
 - PromptPay: กรอกเบอร์มือถือไทย 10 หลักหรือเลขผู้เสียภาษี 13 หลัก, ชื่อผู้รับ และเลขบัญชีปลายทาง/เลขท้าย 6–20 หลัก QR ใช้ยอดจาก bill snapshot ฝั่ง server เท่านั้น ไม่รับยอดจาก browser และจะแสดงเมื่อทั้ง PromptPay กับผู้ให้บริการตรวจสลิปพร้อม โดยไม่มีรายการชำระที่กำลังดำเนินการ เพื่อไม่ให้ผู้พักโอนเข้ากระบวนการที่ยังตรวจยืนยันไม่ได้
-- LINE: กรอก Channel access token, จำนวน retry 1–20 ครั้ง และ batch size 1–100 งาน จากนั้นให้ผู้พักผูก `line_user_id` เองในหน้าโปรไฟล์ด้วย PIN ปัจจุบันและรหัสยืนยัน 6 หลัก ระบบส่งเฉพาะ `https://api.line.me/v2/bot/message/push`; retry ใช้ `X-Line-Retry-Key` เดิมและ HTTP 409 หมายถึง request เดิมได้รับแล้ว
+- LINE: กรอก Channel access token, Channel secret, จำนวน retry 1–20 ครั้ง และ batch size 1–100 งาน จากนั้นคัดลอก Webhook URL ที่หน้า Settings แสดง (`<APP_URL>/api/webhooks/line`) ไปใส่ใน LINE Developers Console และเปิด **Use webhook** ต้องตั้ง `APP_URL` เป็น HTTPS origin สาธารณะที่ตรงกับโดเมนจริง Bot จะตอบ event `follow` และข้อความตัวอักษรจากแชตผู้ใช้โดยตรงด้วย LINE User ID และวิธีผูกบัญชี; event กลุ่ม/ห้องและเนื้อหาข้อความจะไม่ถูกนำไปเก็บ ผู้พักนำ ID ไปผูกในหน้าโปรไฟล์ด้วย PIN ปัจจุบันและรหัสยืนยัน 6 หลัก ส่วนการส่งบิลใช้ `https://api.line.me/v2/bot/message/push`, retry ด้วย `X-Line-Retry-Key` เดิม และถือ HTTP 409 ว่าคำขอเดิมได้รับแล้ว
 - SlipOK: เลือก provider เป็น SlipOK แล้วกรอก API key, Branch ID และบัญชีปลายทาง
 - EasySlip: เลือก provider เป็น EasySlip แล้วกรอก API key และบัญชีปลายทาง
 - การอัปโหลดสลิปตั้งขนาดได้ 1,024–4,194,304 bytes และช่วงผ่อนผันเวลา 0–3,600 วินาที (ค่าเริ่มต้น 300) เวลา provider ที่หาย/parse ไม่ได้ หรือยังยืนยันบัญชีผู้รับกับค่าที่ตั้งไว้ไม่ได้จะคง `pending` เพื่อไม่ fail-open
 - Admin เปิดดูหลักฐานที่เก็บแบบ private ผ่าน endpoint ที่ตรวจสิทธิ์และ audit ได้ ระบบจะตรวจ path, MIME, ขนาด/มิติรูป และ HMAC ซ้ำก่อนส่งไฟล์; รายการ `pending` ที่พ้น verification lease สามารถตรวจซ้ำหลัง Owner แก้ค่า provider/บัญชีผู้รับ หรือปิดรายการพร้อมเหตุผลเพื่อให้ผู้พักส่งสลิปใหม่ได้ แต่ไม่มีปุ่มบังคับให้เป็น paid
 
-LINE token, SlipOK API key และ EasySlip API key ถูกเข้ารหัสแบบ AES-256-GCM โดย derive key จาก `APP_KEY` และผูก AAD แยกตามชื่อ field ฐานข้อมูลจึงไม่เก็บ plaintext และ API หลังบ้านไม่คืนทั้ง plaintext หรือ ciphertext แต่คืนเฉพาะ `configured` กับ hint แบบปิดบัง ช่องค่าลับที่เว้นว่าง/ส่ง `null` จะเก็บค่าเดิมไว้ การลบต้องเลือก “ล้างค่า” (`*_clear=true`) อย่างชัดเจน และห้ามส่งค่าลับใหม่พร้อมคำสั่งล้างใน request เดียวกัน
+LINE Channel access token/Channel secret, SlipOK API key และ EasySlip API key ถูกเข้ารหัสแบบ AES-256-GCM โดย derive key จาก `APP_KEY` และผูก AAD แยกตามชื่อ field ฐานข้อมูลจึงไม่เก็บ plaintext และ API หลังบ้านไม่คืนทั้ง plaintext หรือ ciphertext แต่คืนเฉพาะ `configured` กับ hint แบบปิดบัง ช่องค่าลับที่เว้นว่าง/ส่ง `null` จะเก็บค่าเดิมไว้ การลบต้องเลือก “ล้างค่า” (`*_clear=true`) อย่างชัดเจน และห้ามส่งค่าลับใหม่พร้อมคำสั่งล้างใน request เดียวกัน
 
 ผู้พักต้องผูก LINE จากหน้าโปรไฟล์ของตนเองโดยยืนยัน PIN ปัจจุบันก่อน ระบบจะส่งรหัสใช้ครั้งเดียว 6 หลักไปยัง LINE User ID และยอมให้ส่งบิลหลังกรอกรหัสถูกต้องภายใน 10 นาทีเท่านั้น ผู้ดูแลไม่สามารถกรอก LINE User ID แทนผู้พักได้ ค่า LINE เดิมที่ไม่มี audit การยืนยันจะขึ้นว่า “รอยืนยันใหม่” และ worker จะไม่ส่งจนกว่าจะผ่านขั้นตอนนี้
 
@@ -281,9 +281,10 @@ docker compose exec worker php scripts/check_requirements.php --db --strict
 - `could not find driver`: เปิด `pdo_mysql` ใน `php.ini` ของ PHP/Apache ตัวที่กำลังรันจริง
 - import SQL ไม่ผ่าน: ตรวจว่าเป็น MySQL 8.0.16+ ไม่ใช่ MariaDB; ฐานใหม่ชื่อ `dormitory` ให้ใช้ `install.sql` ไฟล์เดียว หรือวิธีขั้นสูงต้องเลือกฐานก่อนแล้ว import `schema.sql` ก่อน `defaults.sql`; `demo.sql` ไม่จำเป็นต่อการทำงาน
 - อัปโหลดสลิปไม่ได้: ตรวจ `file_uploads`, `upload_max_filesize >= 4M`, `post_max_size >= 5M` (เผื่อ multipart overhead) และสิทธิ์เขียน `storage/private/slips`
+- LINE webhook ไม่ตอบ: ตรวจว่า `004_line_webhook.sql` รันแล้ว, ตั้งทั้ง Channel access token และ Channel secret, Webhook URL เป็น `<APP_URL>/api/webhooks/line`, เปิด Use webhook และ LINE เรียก HTTPS domain จริงได้ โดยห้ามพิมพ์ token/secret หรือลายเซ็นลง log
 - ส่ง LINE ไม่ได้: ตรวจ token, สถานะ OTP ของ `line_user_id`, quota และรายการ retry โดยไม่พิมพ์ token ลง log
 - สลิปถูกปฏิเสธ: ตรวจยอด 2 ตำแหน่งทศนิยม, เลขท้ายบัญชี, provider config และ transaction reference ซ้ำ
-- หน้า Settings แจ้งว่า integration ยังไม่พร้อม: ฐานใหม่ให้ import `install.sql` (หรือ `schema.sql` + `defaults.sql` แบบขั้นสูง); ฐานเดิมต้องรัน `001_integration_settings.sql` เมื่อจำเป็น, `002_operational_hardening.sql` หนึ่งครั้ง และ `003_append_only_guards.sql` (รันซ้ำได้) จากนั้น login ด้วย role `owner`; ช่อง secret ว่างหมายถึงเก็บค่าเดิม ไม่ได้ล้างค่า
+- หน้า Settings แจ้งว่า integration ยังไม่พร้อม: ฐานใหม่ให้ import `install.sql` (หรือ `schema.sql` + `defaults.sql` แบบขั้นสูง); ฐานเดิมต้องรัน `001_integration_settings.sql` เมื่อจำเป็น, `002_operational_hardening.sql` หนึ่งครั้ง, `003_append_only_guards.sql` และ `004_line_webhook.sql` จากนั้น login ด้วย role `owner`; ช่อง secret ว่างหมายถึงเก็บค่าเดิม ไม่ได้ล้างค่า
 
 ## โครงสร้างหลัก
 

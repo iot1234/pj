@@ -26,7 +26,15 @@ final class NotificationService
             'to'=>$lineUserId,
             'messages'=>[['type'=>'text','text'=>"รหัสยืนยันการรับบิล: {$code}\nรหัสหมดอายุใน 10 นาที หากคุณไม่ได้ร้องขอ ไม่ต้องดำเนินการใด ๆ"]],
         ];
-        $this->pushLine($payload,$this->randomUuid());
+        $body=json_encode($payload,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR);
+        try{
+            $this->pushLine($body,$this->randomUuid());
+        }catch(LineDeliveryException $error){
+            if($error->retryable){
+                throw new HttpException(503,'ไม่สามารถเชื่อมต่อ LINE ได้ชั่วคราว กรุณาลองใหม่','LINE_DELIVERY_TEMPORARY');
+            }
+            throw new HttpException(502,'LINE ปฏิเสธการส่งข้อความ กรุณาตรวจสอบ LINE User ID และการตั้งค่า Messaging API','LINE_DELIVERY_REJECTED');
+        }
     }
 
     /** @return array<string,mixed> */
@@ -56,7 +64,7 @@ final class NotificationService
 
             $payload=$this->billPayload($bill);
             $encoded=json_encode($payload,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR);
-            $existingStatement=$pdo->prepare("SELECT id,status FROM notification_outbox WHERE bill_id=? AND purpose='bill_delivery' LIMIT 1 FOR UPDATE");
+            $existingStatement=$pdo->prepare("SELECT id,status,attempts FROM notification_outbox WHERE bill_id=? AND purpose='bill_delivery' LIMIT 1 FOR UPDATE");
             $existingStatement->execute([$billId]);
             $existing=$existingStatement->fetch();
             $enqueueState='newly_queued';
@@ -65,7 +73,7 @@ final class NotificationService
                 $insert=$pdo->prepare("INSERT INTO notification_outbox
                     (bill_id,resident_id,channel,purpose,recipient,payload,status,attempts,next_attempt_at,retry_key,created_at,updated_at)
                     VALUES (?,?,'line','bill_delivery',?,?,'pending',0,UTC_TIMESTAMP(),?,UTC_TIMESTAMP(),UTC_TIMESTAMP())");
-                $insert->execute([$billId,$bill['resident_id'],$bill['line_user_id'],$encoded,$this->retryUuid($billId)]);
+                $insert->execute([$billId,$bill['resident_id'],$bill['line_user_id'],$encoded,$this->randomUuid()]);
                 $outboxId=(int)$pdo->lastInsertId();
             }else{
                 $outboxId=(int)$existing['id'];
@@ -73,15 +81,17 @@ final class NotificationService
                 if($existing['status']==='failed'){
                     $update=$pdo->prepare("UPDATE notification_outbox
                         SET resident_id=?,recipient=?,payload=?,status='pending',attempts=0,last_error=NULL,
-                            next_attempt_at=UTC_TIMESTAMP(),sent_at=NULL,updated_at=UTC_TIMESTAMP()
+                            next_attempt_at=UTC_TIMESTAMP(),retry_key=?,sent_at=NULL,
+                            line_request_id=NULL,line_accepted_request_id=NULL,
+                            created_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP()
                         WHERE id=? AND status='failed'");
-                    $update->execute([$bill['resident_id'],$bill['line_user_id'],$encoded,$outboxId]);
+                    $update->execute([$bill['resident_id'],$bill['line_user_id'],$encoded,$this->randomUuid(),$outboxId]);
                     $enqueueState='requeued';
-                }elseif($existing['status']==='pending'){
+                }elseif($existing['status']==='pending'&&(int)$existing['attempts']===0){
                     $update=$pdo->prepare("UPDATE notification_outbox
-                        SET resident_id=?,recipient=?,payload=?,updated_at=UTC_TIMESTAMP()
-                        WHERE id=? AND status='pending'");
-                    $update->execute([$bill['resident_id'],$bill['line_user_id'],$encoded,$outboxId]);
+                        SET resident_id=?,recipient=?,payload=?,retry_key=?,created_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP()
+                        WHERE id=? AND status='pending' AND attempts=0");
+                    $update->execute([$bill['resident_id'],$bill['line_user_id'],$encoded,$this->randomUuid(),$outboxId]);
                 }
             }
 
@@ -126,8 +136,7 @@ final class NotificationService
         });
         $result=['processed'=>0,'sent'=>0,'failed'=>0,'retried'=>0];$max=max(1,min(20,$this->app->settings()->intValue('line_max_attempts',5)));
         foreach($ids as $id){
-            $get=$this->app->database()->pdo()->prepare("SELECT n.id,n.retry_key,n.attempts,b.status AS bill_status,b.bill_no,b.period,b.due_date,b.total_amount,
-                    b.room_code_snapshot AS room_code,res.id AS resident_id,res.line_user_id
+            $get=$this->app->database()->pdo()->prepare("SELECT n.id,n.attempts,res.id AS resident_id
                 FROM notification_outbox n
                 JOIN bills b ON b.id=n.bill_id
                 JOIN residents res ON res.id=b.resident_id
@@ -145,32 +154,44 @@ final class NotificationService
                     // Reload after acquiring the binding lock. Confirm/unlink
                     // use the same lock, so a successful change cannot race a
                     // later delivery to the old recipient.
-                    $get=$this->app->database()->pdo()->prepare("SELECT n.id,n.retry_key,n.attempts,b.status AS bill_status,b.bill_no,b.period,b.due_date,b.total_amount,
-                            b.room_code_snapshot AS room_code,res.id AS resident_id,res.line_user_id
+                    $get=$this->app->database()->pdo()->prepare("SELECT n.id,n.retry_key,n.attempts,n.recipient,n.payload,
+                            (n.created_at<=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 24 HOUR)) AS retry_generation_expired,
+                            b.status AS bill_status,res.id AS resident_id,res.line_user_id
                         FROM notification_outbox n
                         JOIN bills b ON b.id=n.bill_id
                         JOIN residents res ON res.id=b.resident_id
                         WHERE n.id=? AND n.status='processing'");
                     $get->execute([$id]);$current=$get->fetch();
                     if(!$current)return ['terminal'=>'LINE delivery data is incomplete'];
+                    if((int)$current['retry_generation_expired']===1)return ['terminal'=>'ยกเลิกการส่ง เนื่องจาก X-Line-Retry-Key มีอายุครบ 24 ชั่วโมง'];
                     if($current['bill_status']!=='pending')return ['terminal'=>'ยกเลิกการส่ง เนื่องจากบิลชำระแล้ว'];
-                    if(!$this->validLineUserId($current['line_user_id']??null))return ['terminal'=>'ยกเลิกการส่ง เนื่องจากผู้พักไม่ได้ผูกบัญชี LINE'];
-                    if(!$this->isLineBindingVerified((int)$current['resident_id'],(string)$current['line_user_id']))return ['terminal'=>'ยกเลิกการส่ง เนื่องจากบัญชี LINE ยังไม่ผ่านการยืนยัน'];
-                    $payload=$this->billPayload($current);
-                    $encoded=json_encode($payload,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR);
-                    $refresh=$this->app->database()->pdo()->prepare("UPDATE notification_outbox
-                        SET resident_id=?,recipient=?,payload=?,updated_at=UTC_TIMESTAMP()
-                        WHERE id=? AND status='processing'");
-                    $refresh->execute([$current['resident_id'],$current['line_user_id'],$encoded,$id]);
-                    $this->pushLine($payload,(string)$current['retry_key']);
-                    $sent=$this->app->database()->pdo()->prepare("UPDATE notification_outbox SET status='sent',sent_at=UTC_TIMESTAMP(),last_error=NULL,updated_at=UTC_TIMESTAMP() WHERE id=? AND status='processing'");
-                    $sent->execute([$id]);
+                    $recipient=$current['recipient']??null;
+                    if(!$this->validLineUserId($recipient))return ['terminal'=>'ยกเลิกการส่ง เนื่องจากผู้รับที่บันทึกไว้ไม่ถูกต้อง'];
+                    $currentLineUserId=$current['line_user_id']??null;
+                    if(!$this->validLineUserId($currentLineUserId)||!hash_equals((string)$recipient,(string)$currentLineUserId)){
+                        return ['terminal'=>'ยกเลิกการส่ง เนื่องจากบัญชี LINE ที่ยืนยันแล้วไม่ตรงกับผู้รับเดิม'];
+                    }
+                    if(!$this->isLineBindingVerified((int)$current['resident_id'],(string)$recipient))return ['terminal'=>'ยกเลิกการส่ง เนื่องจากบัญชี LINE ยังไม่ผ่านการยืนยัน'];
+                    if(!$this->validRetryUuid($current['retry_key']??null))return ['terminal'=>'ยกเลิกการส่ง เนื่องจาก X-Line-Retry-Key ที่บันทึกไว้ไม่ถูกต้อง'];
+                    $body=$this->storedLinePayloadBody($current['payload']??null,(string)$recipient);
+                    $acceptance=$this->pushLine($body,(string)$current['retry_key']);
+                    $sent=$this->app->database()->pdo()->prepare("UPDATE notification_outbox SET status='sent',sent_at=UTC_TIMESTAMP(),last_error=NULL,line_request_id=?,line_accepted_request_id=?,updated_at=UTC_TIMESTAMP() WHERE id=? AND status='processing'");
+                    $sent->execute([$acceptance['request_id'],$acceptance['accepted_request_id'],$id]);
                     return ['sent'=>$sent->rowCount()===1];
                 });
                 if(is_string($delivery['terminal']??null)){
                     $this->markTerminalFailure($id,$delivery['terminal']);$result['failed']++;
                 }elseif(($delivery['sent']??false)===true)$result['sent']++;
+            }catch(LineDeliveryException $e){
+                $attempts=(int)$row['attempts'];$terminal=!$e->retryable||$attempts>=$max;$delay=min(3600,30*(2**min(6,max(0,$attempts-1))));
+                $message=substr(preg_replace('/[\x00-\x1F\x7F]+/u',' ',(string)$e->getMessage())??'LINE delivery failed',0,1000);
+                $sql=$terminal?"UPDATE notification_outbox SET status='failed',last_error=?,next_attempt_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP() WHERE id=? AND status='processing'":"UPDATE notification_outbox SET status='pending',last_error=?,next_attempt_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL {$delay} SECOND),updated_at=UTC_TIMESTAMP() WHERE id=? AND status='processing'";
+                $this->app->database()->pdo()->prepare($sql)->execute([$message,$id]);
+                $terminal?$result['failed']++:$result['retried']++;
             }catch(\Throwable $e){
+                // Database/lock failures are transient infrastructure errors. If
+                // the push was accepted before the failure, the immutable retry
+                // key makes the next attempt idempotent (LINE returns HTTP 409).
                 $attempts=(int)$row['attempts'];$terminal=$attempts>=$max;$delay=min(3600,30*(2**min(6,max(0,$attempts-1))));
                 $message=substr(preg_replace('/[\x00-\x1F\x7F]+/u',' ',(string)$e->getMessage())??'LINE delivery failed',0,1000);
                 $sql=$terminal?"UPDATE notification_outbox SET status='failed',last_error=?,next_attempt_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP() WHERE id=? AND status='processing'":"UPDATE notification_outbox SET status='pending',last_error=?,next_attempt_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL {$delay} SECOND),updated_at=UTC_TIMESTAMP() WHERE id=? AND status='processing'";
@@ -190,7 +211,7 @@ final class NotificationService
 
     private function validLineUserId(mixed $value): bool
     {
-        return is_string($value)&&preg_match('/^U[0-9A-Za-z_-]{20,80}$/D',$value)===1;
+        return is_string($value)&&preg_match('/^U[0-9a-f]{32}$/D',$value)===1;
     }
 
     public function lineBindingHash(int $residentId,string $lineUserId): string
@@ -278,27 +299,52 @@ final class NotificationService
         $statement->execute([$safe,$id]);
     }
 
-    /** @param array<string,mixed> $payload */
-    private function pushLine(array $payload,string $retryKey): void
+    private function storedLinePayloadBody(mixed $stored,string $recipient): string
     {
-        $token=trim((string)$this->app->settings()->value('line_channel_access_token',''));if($token==='')throw new \RuntimeException('LINE Messaging is not configured');
-        if(!function_exists('curl_init'))throw new \RuntimeException('PHP cURL extension is required');
-        $body=json_encode($payload,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR);
-        $ch=curl_init(self::LINE_ENDPOINT);if($ch===false)throw new \RuntimeException('Cannot initialize cURL');
-        $response='';$tooLarge=false;
-        curl_setopt_array($ch,[CURLOPT_POST=>true,CURLOPT_POSTFIELDS=>$body,CURLOPT_HTTPHEADER=>['Authorization: Bearer '.$token,'Content-Type: application/json','X-Line-Retry-Key: '.$retryKey],CURLOPT_RETURNTRANSFER=>false,CURLOPT_HEADER=>false,CURLOPT_FOLLOWLOCATION=>false,CURLOPT_PROTOCOLS=>CURLPROTO_HTTPS,CURLOPT_CONNECTTIMEOUT=>5,CURLOPT_TIMEOUT=>10,CURLOPT_MAXREDIRS=>0,CURLOPT_SSL_VERIFYPEER=>true,CURLOPT_SSL_VERIFYHOST=>2,CURLOPT_NOSIGNAL=>true,CURLOPT_WRITEFUNCTION=>static function($handle,string $chunk)use(&$response,&$tooLarge):int{if(strlen($response)+strlen($chunk)>65536){$tooLarge=true;return 0;}$response.=$chunk;return strlen($chunk);}]);
-        $executed=curl_exec($ch);$status=(int)curl_getinfo($ch,CURLINFO_RESPONSE_CODE);$error=curl_error($ch);curl_close($ch);
-        if($tooLarge)throw new \RuntimeException('LINE response exceeded limit');if($executed===false)throw new \RuntimeException('LINE request failed: '.$error);
-        // LINE returns 409 when the same retry UUID was already accepted. Treat it as delivered.
-        if(($status<200||$status>=300)&&$status!==409)throw new \RuntimeException('LINE API returned HTTP '.$status.': '.substr($response,0,300));
+        if(!is_string($stored)||$stored===''||strlen($stored)>65536){
+            throw new LineDeliveryException('Stored LINE payload is missing or exceeds the size limit',false);
+        }
+        try{$payload=json_decode($stored,false,16,JSON_THROW_ON_ERROR);}
+        catch(\JsonException){throw new LineDeliveryException('Stored LINE payload is not valid JSON',false);}
+        if(!$payload instanceof \stdClass||!is_string($payload->to??null)||!hash_equals($recipient,$payload->to)){
+            throw new LineDeliveryException('Stored LINE payload recipient does not match the immutable outbox recipient',false);
+        }
+        $messages=$payload->messages??null;
+        if(!is_array($messages)||count($messages)<1||count($messages)>5){
+            throw new LineDeliveryException('Stored LINE payload has an invalid messages list',false);
+        }
+        foreach($messages as $message){
+            if(!$message instanceof \stdClass||($message->type??null)!=='text'||!is_string($message->text??null)||trim($message->text)===''){
+                throw new LineDeliveryException('Stored LINE payload contains an invalid message',false);
+            }
+        }
+        return $stored;
     }
 
-    private function retryUuid(int $billId): string
+    /** @return array{request_id:?string,accepted_request_id:?string,status:int} */
+    private function pushLine(string $body,string $retryKey): array
     {
-        $bytes=substr(hash_hmac('sha256','line:bill_delivery:'.$billId,$this->app->config->appKey(),true),0,16);
-        $bytes[6]=chr((ord($bytes[6])&0x0f)|0x40);$bytes[8]=chr((ord($bytes[8])&0x3f)|0x80);
-        $hex=bin2hex($bytes);
-        return substr($hex,0,8).'-'.substr($hex,8,4).'-'.substr($hex,12,4).'-'.substr($hex,16,4).'-'.substr($hex,20,12);
+        $token=trim((string)$this->app->settings()->value('line_channel_access_token',''));
+        if($token==='')throw new LineDeliveryException('LINE Messaging is not configured',false);
+        if(!$this->validRetryUuid($retryKey))throw new LineDeliveryException('X-Line-Retry-Key is invalid',false);
+        if($body===''||strlen($body)>65536)throw new LineDeliveryException('LINE request body is invalid',false);
+        if(!function_exists('curl_init'))throw new LineDeliveryException('PHP cURL extension is required',false);
+        $ch=curl_init(self::LINE_ENDPOINT);if($ch===false)throw new LineDeliveryException('Cannot initialize LINE cURL request',true);
+        $response='';$tooLarge=false;$providerHeaders=[];
+        $configured=curl_setopt_array($ch,[CURLOPT_POST=>true,CURLOPT_POSTFIELDS=>$body,CURLOPT_HTTPHEADER=>['Authorization: Bearer '.$token,'Content-Type: application/json','X-Line-Retry-Key: '.$retryKey],CURLOPT_RETURNTRANSFER=>false,CURLOPT_HEADER=>false,CURLOPT_FOLLOWLOCATION=>false,CURLOPT_PROTOCOLS=>CURLPROTO_HTTPS,CURLOPT_CONNECTTIMEOUT=>5,CURLOPT_TIMEOUT=>10,CURLOPT_MAXREDIRS=>0,CURLOPT_SSL_VERIFYPEER=>true,CURLOPT_SSL_VERIFYHOST=>2,CURLOPT_NOSIGNAL=>true,CURLOPT_HEADERFUNCTION=>static function($handle,string $line)use(&$providerHeaders):int{$length=strlen($line);$separator=strpos($line,':');if($separator===false)return $length;$name=strtolower(trim(substr($line,0,$separator)));if(!in_array($name,['x-line-request-id','x-line-accepted-request-id'],true))return $length;$value=trim(substr($line,$separator+1));if($value!==''&&strlen($value)<=128&&preg_match('/^[\x21-\x7E]+$/D',$value)===1)$providerHeaders[$name]=$value;return $length;},CURLOPT_WRITEFUNCTION=>static function($handle,string $chunk)use(&$response,&$tooLarge):int{if(strlen($response)+strlen($chunk)>65536){$tooLarge=true;return 0;}$response.=$chunk;return strlen($chunk);}]);
+        if(!$configured){curl_close($ch);throw new LineDeliveryException('Cannot configure LINE cURL request',true);}
+        $executed=curl_exec($ch);$status=(int)curl_getinfo($ch,CURLINFO_RESPONSE_CODE);$curlError=(int)curl_errno($ch);curl_close($ch);
+        if($tooLarge)throw new LineDeliveryException('LINE response exceeded the size limit',false,$status>0?$status:null);
+        if($executed===false)throw new LineDeliveryException('LINE network request failed (cURL '.$curlError.')',true,$status>0?$status:null);
+        // LINE returns 409 when the same retry UUID was already accepted. Treat it as delivered.
+        if(($status>=200&&$status<300)||$status===409)return ['request_id'=>$providerHeaders['x-line-request-id']??null,'accepted_request_id'=>$providerHeaders['x-line-accepted-request-id']??null,'status'=>$status];
+        if($status>=500&&$status<=599)throw new LineDeliveryException('LINE API is temporarily unavailable (HTTP '.$status.')',true,$status);
+        throw new LineDeliveryException('LINE API rejected the request (HTTP '.$status.')',false,$status);
+    }
+
+    private function validRetryUuid(mixed $value): bool
+    {
+        return is_string($value)&&preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/D',$value)===1;
     }
 
     private function randomUuid(): string

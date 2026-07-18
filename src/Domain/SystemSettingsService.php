@@ -18,6 +18,8 @@ final class SystemSettingsService
         'payment_receiver_account_tail',
         'line_channel_access_token',
         'line_channel_access_token_clear',
+        'line_channel_secret',
+        'line_channel_secret_clear',
         'line_max_attempts',
         'notification_batch_size',
         'slip_provider',
@@ -48,6 +50,10 @@ final class SystemSettingsService
         'LINE_CHANNEL_ACCESS_TOKEN' => [
             'column' => 'line_channel_access_token_enc',
             'aad' => 'line_channel_access_token',
+        ],
+        'LINE_CHANNEL_SECRET' => [
+            'column' => 'line_channel_secret_enc',
+            'aad' => 'line_channel_secret',
         ],
         'SLIPOK_API_KEY' => [
             'column' => 'slipok_api_key_enc',
@@ -84,11 +90,13 @@ final class SystemSettingsService
     {
         $row = $this->row() ?? $this->defaults();
         $lineSecret = $this->secretMetadata($row, 'LINE_CHANNEL_ACCESS_TOKEN');
+        $lineChannelSecret = $this->secretMetadata($row, 'LINE_CHANNEL_SECRET');
         $slipOkSecret = $this->secretMetadata($row, 'SLIPOK_API_KEY');
         $easySlipSecret = $this->secretMetadata($row, 'EASYSLIP_API_KEY');
 
         $promptPayReady = $this->nullableString($row['promptpay_target'] ?? null) !== null;
         $lineReady = $lineSecret['configured'];
+        $lineWebhookReady = $lineReady && $lineChannelSecret['configured'];
         $provider = (string) ($row['slip_provider'] ?? 'none');
         $receiverConfigured = $this->nullableString($row['payment_receiver_account_tail'] ?? null) !== null;
         $slipReady = $receiverConfigured && match ($provider) {
@@ -109,6 +117,7 @@ final class SystemSettingsService
         }
         foreach ([
             'line_channel_access_token' => $lineSecret['configured'],
+            'line_channel_secret' => $lineChannelSecret['configured'],
             'slipok_api_key' => $slipOkSecret['configured'],
             'easyslip_api_key' => $easySlipSecret['configured'],
         ] as $field => $configured) {
@@ -129,6 +138,9 @@ final class SystemSettingsService
             'slip_time_tolerance_seconds' => $this->databaseInteger($row, 'slip_time_tolerance_seconds'),
             'line_channel_access_token_configured' => $lineSecret['configured'],
             'line_channel_access_token_hint' => $lineSecret['hint'],
+            'line_channel_secret_configured' => $lineChannelSecret['configured'],
+            'line_channel_secret_hint' => $lineChannelSecret['hint'],
+            'line_webhook_url' => rtrim($this->app->config->require('APP_URL'), '/') . '/api/webhooks/line',
             'slipok_api_key_configured' => $slipOkSecret['configured'],
             'slipok_api_key_hint' => $slipOkSecret['hint'],
             'easyslip_api_key_configured' => $easySlipSecret['configured'],
@@ -137,10 +149,12 @@ final class SystemSettingsService
             'readiness' => [
                 'promptpay' => $promptPayReady,
                 'line' => $lineReady,
+                'line_webhook' => $lineWebhookReady,
                 'slip_verification' => $slipReady,
             ],
             'promptpay_ready' => $promptPayReady,
             'line_ready' => $lineReady,
+            'line_webhook_ready' => $lineWebhookReady,
             'slip_verification_ready' => $slipReady,
             'updated_by' => isset($row['updated_by']) ? (int) $row['updated_by'] : null,
             'updated_at' => $row['updated_at'] ?? null,
@@ -203,6 +217,7 @@ final class SystemSettingsService
             }
 
             $this->mergeSecret($settings, $input, 'line_channel_access_token', 'line_channel_access_token_enc');
+            $this->mergeSecret($settings, $input, 'line_channel_secret', 'line_channel_secret_enc');
             $this->mergeSecret($settings, $input, 'slipok_api_key', 'slipok_api_key_enc');
             $this->mergeSecret($settings, $input, 'easyslip_api_key', 'easyslip_api_key_enc');
             $this->assertProviderReady($settings);
@@ -210,15 +225,16 @@ final class SystemSettingsService
             $upsert = $pdo->prepare(
                 'INSERT INTO integration_settings
                  (id,promptpay_target,promptpay_name,payment_receiver_account_tail,
-                  line_channel_access_token_enc,line_max_attempts,notification_batch_size,
+                  line_channel_access_token_enc,line_channel_secret_enc,line_max_attempts,notification_batch_size,
                   slip_provider,slipok_api_key_enc,slipok_branch_id,easyslip_api_key_enc,
                   slip_max_bytes,slip_time_tolerance_seconds,updated_by,updated_at)
-                 VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP(6))
+                 VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP(6))
                  ON DUPLICATE KEY UPDATE
                   promptpay_target=VALUES(promptpay_target),
                   promptpay_name=VALUES(promptpay_name),
                   payment_receiver_account_tail=VALUES(payment_receiver_account_tail),
                   line_channel_access_token_enc=VALUES(line_channel_access_token_enc),
+                  line_channel_secret_enc=VALUES(line_channel_secret_enc),
                   line_max_attempts=VALUES(line_max_attempts),
                   notification_batch_size=VALUES(notification_batch_size),
                   slip_provider=VALUES(slip_provider),
@@ -235,6 +251,7 @@ final class SystemSettingsService
                 $settings['promptpay_name'],
                 $settings['payment_receiver_account_tail'],
                 $settings['line_channel_access_token_enc'],
+                $settings['line_channel_secret_enc'],
                 $settings['line_max_attempts'],
                 $settings['notification_batch_size'],
                 $settings['slip_provider'],
@@ -339,8 +356,15 @@ final class SystemSettingsService
                 if($probe['status']!==200||($probe['body']['success']??false)!==true){
                     throw new HttpException(422,'SlipOK ปฏิเสธ API Key หรือ Branch ID ที่บันทึกไว้ (HTTP '.$probe['status'].')','SLIP_TEST_FAILED');
                 }
-                $quota=$probe['body']['data']['quota']??null;
-                return ['integration'=>'slip','ready'=>true,'provider'=>'slipok','quota_remaining'=>is_numeric($quota)?(int)$quota:null];
+                $quotaRaw=$probe['body']['data']['quota']??null;
+                $quota=self::quotaRemaining($quotaRaw);
+                if($quota===null){
+                    throw new HttpException(422,'SlipOK ส่งข้อมูลโควตาที่ไม่ถูกต้อง','SLIP_TEST_FAILED');
+                }
+                if($quota<=0){
+                    throw new HttpException(422,'โควตา SlipOK หมดแล้ว กรุณาเติมโควตาก่อนใช้งาน','SLIP_QUOTA_EXHAUSTED');
+                }
+                return ['integration'=>'slip','ready'=>true,'provider'=>'slipok','quota_remaining'=>$quota];
             }
             $probe=$this->fixedJsonGet(
                 'https://api.easyslip.com/v2/info',
@@ -350,10 +374,29 @@ final class SystemSettingsService
             if($probe['status']!==200||($probe['body']['success']??false)!==true){
                 throw new HttpException(422,'EasySlip ปฏิเสธ API Key/Branch ที่บันทึกไว้ (HTTP '.$probe['status'].')','SLIP_TEST_FAILED');
             }
-            $branchActive=$probe['body']['data']['branch']['isActive']??true;
-            if($branchActive!==true)throw new HttpException(422,'EasySlip branch ถูกปิดใช้งาน','SLIP_TEST_FAILED');
-            $quota=$probe['body']['data']['application']['quota']['remaining']??null;
-            return ['integration'=>'slip','ready'=>true,'provider'=>'easyslip','quota_remaining'=>is_numeric($quota)?(int)$quota:null];
+            $providerData=$probe['body']['data']??null;
+            $branch=is_array($providerData)?($providerData['branch']??null):null;
+            if(!is_array($branch)||!array_key_exists('isActive',$branch)||!is_bool($branch['isActive'])){
+                throw new HttpException(422,'EasySlip ส่งข้อมูลสถานะ branch ไม่ครบถ้วน','SLIP_TEST_FAILED');
+            }
+            if($branch['isActive']!==true)throw new HttpException(422,'EasySlip branch ถูกปิดใช้งาน','SLIP_TEST_FAILED');
+            $application=is_array($providerData)?($providerData['application']??null):null;
+            $quotaInfo=is_array($application)?($application['quota']??null):null;
+            // Explicit null means unlimited. A missing field is contract drift
+            // and must not be silently interpreted as unlimited quota.
+            if(!is_array($quotaInfo)||!array_key_exists('remaining',$quotaInfo)){
+                throw new HttpException(422,'EasySlip ส่งข้อมูลโควตาไม่ครบถ้วน','SLIP_TEST_FAILED');
+            }
+            $quotaRaw=$quotaInfo['remaining'];
+            // EasySlip uses null to represent an unlimited application quota.
+            $quota=$quotaRaw===null?null:self::quotaRemaining($quotaRaw);
+            if($quotaRaw!==null&&$quota===null){
+                throw new HttpException(422,'EasySlip ส่งข้อมูลโควตาที่ไม่ถูกต้อง','SLIP_TEST_FAILED');
+            }
+            if($quota!==null&&$quota<=0){
+                throw new HttpException(422,'โควตา EasySlip หมดแล้ว กรุณาเติมโควตาก่อนใช้งาน','SLIP_QUOTA_EXHAUSTED');
+            }
+            return ['integration'=>'slip','ready'=>true,'provider'=>'easyslip','quota_remaining'=>$quota];
         }
 
         if ($integration !== 'line') {
@@ -462,6 +505,7 @@ final class SystemSettingsService
             'promptpay_name' => null,
             'payment_receiver_account_tail' => null,
             'line_channel_access_token_enc' => null,
+            'line_channel_secret_enc' => null,
             'line_max_attempts' => self::INTEGER_DEFAULTS['line_max_attempts'],
             'notification_batch_size' => self::INTEGER_DEFAULTS['notification_batch_size'],
             'slip_provider' => 'none',
@@ -658,6 +702,35 @@ final class SystemSettingsService
             throw $this->validation($field, "{$field} must be an integer between {$minimum} and {$maximum}");
         }
         return (int) $validated;
+    }
+
+    private static function quotaRemaining(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value;
+        }
+        if (is_float($value)) {
+            $numeric = $value;
+        } elseif (is_string($value)) {
+            $value = trim($value);
+            if ($value === '' || !preg_match('/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/D', $value)) {
+                return null;
+            }
+            $numeric = (float) $value;
+        } else {
+            return null;
+        }
+        if (!is_finite($numeric)) {
+            return null;
+        }
+        if ($numeric <= 0) {
+            return 0;
+        }
+        if ($numeric >= PHP_INT_MAX) {
+            return PHP_INT_MAX;
+        }
+        // A fractional remainder below one cannot pay for another request.
+        return (int) floor($numeric);
     }
 
     private function boolean(mixed $value, string $field): bool

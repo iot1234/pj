@@ -2,12 +2,12 @@
 -- Import this one file from phpMyAdmin's server-level Import tab.
 -- It creates/uses the `dormitory` database, current schema, triggers, and
 -- safe baseline settings. It contains no owner, room, resident, demo data,
--- PromptPay number, LINE token, or slip-provider credential.
+-- PromptPay number, LINE channel credential, or slip-provider credential.
 -- Fresh installations only: it stops before changing a non-empty database.
 -- Never use a force/continue-on-error import option with this file.
 -- Regenerate: php scripts/build_install_sql.php
 -- Verify current: php scripts/build_install_sql.php --check
--- Source digest: 9dff099b9b3372885ed22f84ce7d65035ba294ec382ec53801675a4843eb1044
+-- Source digest: fa19358ca529a7e83ecb470e396a4b4cb0782c1adc96e550afcca8219667c788
 -- BEGIN database/00-create-database.sql
 -- Advanced/manual fresh-install step. For the simplest new installation,
 -- import database/install.sql once instead. Run this standalone file from the
@@ -58,7 +58,8 @@ DEALLOCATE PREPARE dormitory_fresh_install_guard;
 -- Do not use this file to upgrade a legacy installation. Back up first and run
 -- database/migrations/001_integration_settings.sql when needed, followed by
 -- database/migrations/002_operational_hardening.sql exactly once, then
--- database/migrations/003_append_only_guards.sql (safe to rerun).
+-- database/migrations/003_append_only_guards.sql and
+-- database/migrations/004_line_webhook.sql (both safe to rerun).
 
 SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
 -- Store timestamps in UTC. PHP formats them for Asia/Bangkok at the UI edge.
@@ -93,7 +94,7 @@ CREATE TABLE IF NOT EXISTS residents (
     phone_norm CHAR(10) NOT NULL,
     email VARCHAR(254) NULL,
     pin_hash VARCHAR(255) NOT NULL,
-    line_user_id VARCHAR(81) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    line_user_id VARCHAR(33) CHARACTER SET ascii COLLATE ascii_bin NULL,
     auth_version INT UNSIGNED NOT NULL DEFAULT 1,
     active TINYINT(1) NOT NULL DEFAULT 1,
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
@@ -106,7 +107,7 @@ CREATE TABLE IF NOT EXISTS residents (
     CONSTRAINT chk_residents_phone_norm CHECK (phone_norm REGEXP '^0[0-9]{9}$'),
     CONSTRAINT chk_residents_email CHECK (email IS NULL OR CHAR_LENGTH(email) BETWEEN 3 AND 254),
     CONSTRAINT chk_residents_line_user_id CHECK (
-        line_user_id IS NULL OR line_user_id REGEXP '^U[0-9A-Za-z_-]{20,80}$'
+        line_user_id IS NULL OR line_user_id REGEXP '^U[0-9a-f]{32}$'
     ),
     CONSTRAINT chk_residents_auth_version CHECK (auth_version >= 1),
     CONSTRAINT chk_residents_active CHECK (active IN (0, 1))
@@ -306,6 +307,7 @@ CREATE TABLE IF NOT EXISTS integration_settings (
     promptpay_name VARCHAR(120) NULL,
     payment_receiver_account_tail VARCHAR(20) CHARACTER SET ascii COLLATE ascii_bin NULL,
     line_channel_access_token_enc TEXT CHARACTER SET ascii COLLATE ascii_bin NULL,
+    line_channel_secret_enc TEXT CHARACTER SET ascii COLLATE ascii_bin NULL,
     line_max_attempts TINYINT UNSIGNED NOT NULL DEFAULT 5,
     notification_batch_size TINYINT UNSIGNED NOT NULL DEFAULT 25,
     slip_provider ENUM('none', 'slipok', 'easyslip') NOT NULL DEFAULT 'none',
@@ -337,6 +339,10 @@ CREATE TABLE IF NOT EXISTS integration_settings (
     CONSTRAINT chk_integration_settings_line_token CHECK (
         line_channel_access_token_enc IS NULL
         OR CHAR_LENGTH(line_channel_access_token_enc) BETWEEN 20 AND 65000
+    ),
+    CONSTRAINT chk_integration_settings_line_secret CHECK (
+        line_channel_secret_enc IS NULL
+        OR CHAR_LENGTH(line_channel_secret_enc) BETWEEN 20 AND 65000
     ),
     CONSTRAINT chk_integration_settings_line_attempts CHECK (line_max_attempts BETWEEN 1 AND 20),
     CONSTRAINT chk_integration_settings_batch CHECK (notification_batch_size BETWEEN 1 AND 100),
@@ -530,12 +536,14 @@ CREATE TABLE IF NOT EXISTS notification_outbox (
     resident_id BIGINT UNSIGNED NOT NULL,
     channel ENUM('line') NOT NULL DEFAULT 'line',
     purpose VARCHAR(32) NOT NULL DEFAULT 'bill_delivery',
-    recipient VARCHAR(81) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    recipient VARCHAR(33) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     payload JSON NOT NULL,
     status ENUM('pending', 'processing', 'sent', 'failed') NOT NULL DEFAULT 'pending',
     attempts SMALLINT UNSIGNED NOT NULL DEFAULT 0,
     next_attempt_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     retry_key CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    line_request_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    line_accepted_request_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NULL,
     last_error VARCHAR(1000) NULL,
     sent_at DATETIME(6) NULL,
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
@@ -555,9 +563,13 @@ CREATE TABLE IF NOT EXISTS notification_outbox (
     CONSTRAINT chk_notification_outbox_purpose
         CHECK (CHAR_LENGTH(TRIM(purpose)) BETWEEN 1 AND 32),
     CONSTRAINT chk_notification_outbox_recipient
-        CHECK (recipient REGEXP '^U[0-9A-Za-z_-]{20,80}$'),
+        CHECK (recipient REGEXP '^U[0-9a-f]{32}$'),
     CONSTRAINT chk_notification_outbox_retry_key
         CHECK (retry_key REGEXP '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'),
+    CONSTRAINT chk_notification_outbox_line_request_id
+        CHECK (line_request_id IS NULL OR line_request_id REGEXP '^[!-~]{1,128}$'),
+    CONSTRAINT chk_notification_outbox_line_accepted_request_id
+        CHECK (line_accepted_request_id IS NULL OR line_accepted_request_id REGEXP '^[!-~]{1,128}$'),
     CONSTRAINT chk_notification_outbox_attempts CHECK (attempts <= 100),
     CONSTRAINT chk_notification_outbox_sent CHECK (
         (status = 'sent' AND sent_at IS NOT NULL)

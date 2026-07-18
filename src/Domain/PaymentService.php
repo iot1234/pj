@@ -29,12 +29,25 @@ final class PaymentService
         if(($settings['slip_verification_ready']??false)!==true){
             throw new HttpException(503,'ระบบตรวจสลิปยังตั้งค่าไม่ครบ กรุณาติดต่อผู้ดูแล','SLIP_NOT_CONFIGURED');
         }
-        $bill=$this->bill($billId,$residentId);if($bill['status']!=='pending')throw new HttpException(409,'บิลนี้ชำระแล้ว','BILL_ALREADY_PAID');
+        // Reserve performs the authoritative locked status check after it has
+        // checked the canonical slip HMAC. Keeping that order lets a client
+        // recover the original verified result when its first response was
+        // lost even though that request has already marked the bill paid.
+        $bill=$this->bill($billId,$residentId);
         [$absolute,$relative,$mime,$hmac]=$this->store($file,$residentId,$billId);
         $token=bin2hex(random_bytes(32));
         try{
             $payment=$this->reserve($bill,$residentId,$relative,$mime,$hmac,$token);
         }catch(\Throwable $e){if(is_file($absolute))@unlink($absolute);throw $e;}
+
+        // The canonical image HMAC is also a natural idempotency key. If the
+        // browser repeats the same upload after losing the first response,
+        // return that payment instead of spending provider quota again.
+        if(($payment['idempotent_replay']??false)===true){
+            if(is_file($absolute))@unlink($absolute);
+            if($afterFinalize!==null)$afterFinalize($payment);
+            return $payment;
+        }
 
         // The local reservation is committed before spending provider credit.
         // Concurrent uploads now stop at the unique/active-payment guards and
@@ -188,16 +201,34 @@ final class PaymentService
         try{return $this->app->database()->transaction(function(PDO $pdo)use($bill,$residentId,$relative,$mime,$hmac,$token):array{
             $lock=$pdo->prepare('SELECT id,resident_id,status,total_amount FROM bills WHERE id=? FOR UPDATE');$lock->execute([$bill['id']]);$current=$lock->fetch();
             if(!$current||(int)$current['resident_id']!==$residentId)throw new HttpException(404,'ไม่พบบิล','BILL_NOT_FOUND');
+            $duplicate=$pdo->prepare('SELECT id,bill_id,resident_id FROM payments WHERE slip_hmac=? LIMIT 1 FOR UPDATE');$duplicate->execute([$hmac]);
+            if($row=$duplicate->fetch()){
+                if((int)$row['bill_id']===(int)$bill['id']&&(int)$row['resident_id']===$residentId){
+                    $replay=$this->get($pdo,(int)$row['id']);$replay['idempotent_replay']=true;return $replay;
+                }
+                throw new HttpException(409,'สลิปนี้เคยถูกส่งแล้ว','DUPLICATE_SLIP',['payment_id'=>(int)$row['id']]);
+            }
+            // Check the natural idempotency key before bill status so a client
+            // that lost the original verified response can recover it even
+            // though the first request has already marked the bill paid.
             if($current['status']!=='pending')throw new HttpException(409,'บิลนี้ชำระแล้ว','BILL_ALREADY_PAID');
             $active=$pdo->prepare("SELECT id,status FROM payments WHERE bill_id=? AND status IN ('pending','verified') LIMIT 1 FOR UPDATE");$active->execute([$bill['id']]);
             if($row=$active->fetch())throw new HttpException(409,'บิลนี้มีสลิปที่กำลังตรวจอยู่แล้ว','PAYMENT_ALREADY_PENDING',['payment_id'=>(int)$row['id']]);
-            $duplicate=$pdo->prepare('SELECT id FROM payments WHERE slip_hmac=? LIMIT 1 FOR UPDATE');$duplicate->execute([$hmac]);
-            if($row=$duplicate->fetch())throw new HttpException(409,'สลิปนี้เคยถูกส่งแล้ว','DUPLICATE_SLIP',['payment_id'=>(int)$row['id']]);
             $provider=strtolower(trim((string)$this->app->settings()->value('slip_provider','')));
             $insert=$pdo->prepare("INSERT INTO payments (bill_id,resident_id,amount,status,slip_path,slip_mime,slip_hmac,provider,rejection_reason,verification_lease_until,verification_token,verification_attempts,created_at,updated_at) VALUES (?,?,?,'pending',?,?,?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 60 SECOND),?,1,UTC_TIMESTAMP(),UTC_TIMESTAMP())");
             $insert->execute([$bill['id'],$residentId,$current['total_amount'],$relative,$mime,$hmac,$provider,'กำลังตรวจสอบกับผู้ให้บริการ',$token]);
             return $this->get($pdo,(int)$pdo->lastInsertId());
-        });}catch(PDOException $e){if((int)($e->errorInfo[1]??0)===1062||(string)$e->getCode()==='23000')throw new HttpException(409,'สลิปหรือบิลนี้มีรายการตรวจอยู่แล้ว','DUPLICATE_PAYMENT');throw $e;}
+        });}catch(PDOException $e){
+            if((int)($e->errorInfo[1]??0)===1062||(string)$e->getCode()==='23000'){
+                $duplicate=$this->app->database()->pdo()->prepare('SELECT id,bill_id,resident_id FROM payments WHERE slip_hmac=? LIMIT 1');
+                $duplicate->execute([$hmac]);$row=$duplicate->fetch();
+                if($row&&(int)$row['bill_id']===(int)$bill['id']&&(int)$row['resident_id']===$residentId){
+                    $replay=$this->get($this->app->database()->pdo(),(int)$row['id']);$replay['idempotent_replay']=true;return $replay;
+                }
+                throw new HttpException(409,'สลิปหรือบิลนี้มีรายการตรวจอยู่แล้ว','DUPLICATE_PAYMENT');
+            }
+            throw $e;
+        }
     }
 
     /** @param array<string,mixed> $v @return array<string,mixed> */
@@ -264,9 +295,24 @@ final class PaymentService
         try{$written=$mime==='image/jpeg'?$encoder($resource,$absolute,90):($mime==='image/png'?$encoder($resource,$absolute,6):$encoder($resource,$absolute,90));}finally{imagedestroy($resource);}
         if(!$written||!is_file($absolute)){@unlink($absolute);throw new \RuntimeException('Cannot canonicalize uploaded slip');}
         if(filesize($absolute)===false||filesize($absolute)>$max){@unlink($absolute);throw new HttpException(413,'ไฟล์สลิปหลังตรวจรูปภาพเกินขนาดที่ตั้งไว้','SLIP_TOO_LARGE');}
+        $this->secureStoredSlipPermissions($absolute);
         $hmac=hash_hmac_file('sha256',$absolute,$this->app->config->appKey());if(!is_string($hmac)){@unlink($absolute);throw new \RuntimeException('Cannot fingerprint slip');}
-        @chmod($absolute,0600);
         $relative=substr($absolute,strlen($this->app->config->root)+1);return [$absolute,str_replace('\\','/',$relative),$mime,$hmac];
+    }
+
+    private function secureStoredSlipPermissions(string $absolute): void
+    {
+        $changed=@chmod($absolute,0600);
+        // Windows chmod does not implement POSIX owner/group/other mode bits.
+        // The file remains outside the public document root there, while
+        // production POSIX systems must prove that the effective mode is 0600.
+        if(PHP_OS_FAMILY==='Windows')return;
+        clearstatcache(true,$absolute);
+        $permissions=@fileperms($absolute);
+        if(!$changed||$permissions===false||($permissions&0777)!==0600){
+            @unlink($absolute);
+            throw new HttpException(500,'ระบบไม่สามารถจัดเก็บไฟล์สลิปอย่างปลอดภัย กรุณาลองใหม่','SLIP_STORAGE_PERMISSION_FAILED');
+        }
     }
 
     private function assertImageMemoryBudget(int $width,int $height,int $fileSize): void

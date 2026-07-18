@@ -4,7 +4,11 @@ declare(strict_types=1);
 use Dormitory\Domain\PromptPayService;
 use Dormitory\Domain\BillingService;
 use Dormitory\Domain\AdminUserService;
+use Dormitory\Domain\LineDeliveryException;
+use Dormitory\Domain\LineWebhookService;
+use Dormitory\Domain\NotificationService;
 use Dormitory\Domain\PaymentService;
+use Dormitory\Domain\SystemSettingsService;
 use Dormitory\AuditLogger;
 use Dormitory\Config;
 use Dormitory\Database;
@@ -51,6 +55,40 @@ $test=static function(string $name,callable $callback)use(&$passed,&$failed):voi
 $same=static function(mixed $expected,mixed $actual):void{if($expected!==$actual)throw new RuntimeException('expected '.var_export($expected,true).', got '.var_export($actual,true));};
 $throws=static function(callable $callback,string $code):void{try{$callback();}catch(HttpException $e){if($e->errorCode!==$code)throw new RuntimeException("expected {$code}, got {$e->errorCode}");return;}throw new RuntimeException("expected exception {$code}");};
 $throwsHttp=static function(callable $callback,string $code,int $status):void{try{$callback();}catch(HttpException $e){if($e->errorCode!==$code||$e->status!==$status)throw new RuntimeException("expected {$status} {$code}, got {$e->status} {$e->errorCode}");return;}throw new RuntimeException("expected exception {$status} {$code}");};
+
+$test('session release persists state and frees the file lock',function()use($same,$app):void{
+    $manager=$app->session();$cookieName=session_name();$sessionId='';$sessionFile='';
+    try{
+        $same(PHP_SESSION_NONE,session_status());
+        $challenge=['resident_id'=>7,'nonce'=>'release-lock-test','attempts'=>0];
+        $manager->storeLineLinkChallenge($challenge);
+        $same(PHP_SESSION_ACTIVE,session_status());
+        $sessionId=session_id();
+        if(!preg_match('/^[A-Za-z0-9,-]{22,128}$/D',$sessionId))throw new RuntimeException('unexpected test session id');
+        $sessionFile=rtrim((string)ini_get('session.save_path'),'/\\').DIRECTORY_SEPARATOR.'sess_'.$sessionId;
+
+        $manager->release();
+        $same(PHP_SESSION_NONE,session_status());
+        clearstatcache(true,$sessionFile);$same(true,is_file($sessionFile));
+
+        // A later mutation in the same request can reopen the persisted
+        // session after the slow network section has released its lock.
+        $_COOKIE[$cookieName]=$sessionId;
+        $same($challenge,$manager->lineLinkChallenge());
+        $manager->clearLineLinkChallenge();
+        $same(null,$manager->lineLinkChallenge());
+        $manager->logout();
+        $same(PHP_SESSION_NONE,session_status());
+        clearstatcache(true,$sessionFile);$same(false,is_file($sessionFile));
+    }finally{
+        if($sessionId!==''&&session_status()!==PHP_SESSION_ACTIVE)$_COOKIE[$cookieName]=$sessionId;
+        if(session_status()===PHP_SESSION_ACTIVE||($sessionId!==''&&is_file($sessionFile))){
+            try{$manager->logout();}catch(Throwable){if(session_status()===PHP_SESSION_ACTIVE){$_SESSION=[];@session_destroy();}}
+        }
+        unset($_COOKIE[$cookieName]);
+        if($sessionFile!=='')@unlink($sessionFile);
+    }
+});
 
 $test('Thai phone normalization',function()use($same):void{$same('0812345678',Validator::phone('+66 81-234-5678'));$same('0812345678',Validator::phone('66812345678'));$same('0812345678',Validator::phone('081.234.5678'));});
 $test('Thai phone rejection',fn()=>$throws(fn()=>Validator::phone('12345'),'VALIDATION_ERROR'));
@@ -371,6 +409,211 @@ $test('LINE bill delivery requires an authenticated one-time-code link flow',fun
     $same(true,str_contains($notification,"resident.line_link_verified','resident.line_unlinked"));
     $routesSource=file_get_contents(dirname(__DIR__).'/src/Http/Routes.php');if(!is_string($routesSource))throw new RuntimeException('cannot read Routes');
     $same(true,str_contains($routesSource,'line_user_id_hash'));
+});
+$test('LINE outbox retries preserve identity, payload bytes, and retry UUID',function()use($same,$app):void{
+    $service=$app->notifications();
+    $validId=new ReflectionMethod(NotificationService::class,'validLineUserId');
+    $recipient='U0123456789abcdef0123456789abcdef';
+    $same(true,$validId->invoke($service,$recipient));
+    foreach([
+        null,'','0123456789abcdef0123456789abcdef','U0123456789abcdef0123456789abcde',
+        'U0123456789abcdef0123456789abcdef0','U0123456789abcdef0123456789abcdeF',
+        'u0123456789abcdef0123456789abcdef','U0123456789abcdef0123456789abcdeg',
+    ]as$value)$same(false,$validId->invoke($service,$value));
+
+    $randomUuid=new ReflectionMethod(NotificationService::class,'randomUuid');
+    $validUuid=new ReflectionMethod(NotificationService::class,'validRetryUuid');$seen=[];
+    for($i=0;$i<32;$i++){
+        $uuid=$randomUuid->invoke($service);$same(true,$validUuid->invoke($service,$uuid));
+        if(isset($seen[$uuid]))throw new RuntimeException('duplicate LINE retry UUID generated');
+        $seen[$uuid]=true;
+    }
+    foreach(['','550e8400-e29b-11d4-a716-446655440000','550E8400-E29B-41D4-A716-446655440000','550e8400-e29b-41d4-c716-446655440000']as$uuid)$same(false,$validUuid->invoke($service,$uuid));
+
+    $storedBody=new ReflectionMethod(NotificationService::class,'storedLinePayloadBody');
+    $stored='{"to":"'.$recipient.'","messages":[{"type":"text","text":"bill 2026-07 / 1,234.56"}]}';
+    $same($stored,$storedBody->invoke($service,$stored,$recipient));
+    $terminal=static function(callable $callback):void{
+        try{$callback();}
+        catch(LineDeliveryException $error){if($error->retryable)throw new RuntimeException('corrupt stored LINE data was marked retryable');return;}
+        throw new RuntimeException('corrupt stored LINE data was accepted');
+    };
+    $terminal(fn()=>$storedBody->invoke($service,$stored,'Ufedcba9876543210fedcba9876543210'));
+    $terminal(fn()=>$storedBody->invoke($service,'{"to":"'.$recipient.'","messages":[]}',$recipient));
+    $terminal(fn()=>$storedBody->invoke($service,'{"to":"'.$recipient.'","messages":[{"type":"image","text":"x"}]}',$recipient));
+    $terminal(fn()=>$storedBody->invoke($service,'{"to":',$recipient));
+
+    $source=file_get_contents(dirname(__DIR__).'/src/Domain/NotificationService.php');
+    if(!is_string($source))throw new RuntimeException('cannot read NotificationService');
+    $same(true,str_contains($source,"\$existing['status']==='pending'&&(int)\$existing['attempts']===0"));
+    $same(true,str_contains($source,"line_request_id=NULL,line_accepted_request_id=NULL"));
+    $same(true,str_contains($source,'created_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP()'));
+    $same(true,str_contains($source,'n.recipient,n.payload'));
+    $same(true,str_contains($source,'retry_generation_expired'));
+});
+$test('LINE delivery response classification is fail closed and provider IDs are retained',function()use($same):void{
+    $source=file_get_contents(dirname(__DIR__).'/src/Domain/NotificationService.php');
+    if(!is_string($source))throw new RuntimeException('cannot read NotificationService');
+    $accepted=strpos($source,'if(($status>=200&&$status<300)||$status===409)return');
+    $retryable=strpos($source,'if($status>=500&&$status<=599)throw new LineDeliveryException');
+    $terminal=strpos($source,"throw new LineDeliveryException('LINE API rejected the request");
+    if($accepted===false||$retryable===false||$terminal===false||!($accepted<$retryable&&$retryable<$terminal))throw new RuntimeException('LINE HTTP outcome order is unsafe');
+    $same(true,str_contains($source,"['x-line-request-id','x-line-accepted-request-id']"));
+    $same(true,str_contains($source,"preg_match('/^[\\x21-\\x7E]+$/D',\$value)===1"));
+    $same(true,str_contains($source,"'request_id'=>\$providerHeaders['x-line-request-id']??null"));
+    $same(true,str_contains($source,"'accepted_request_id'=>\$providerHeaders['x-line-accepted-request-id']??null"));
+    $same(true,str_contains($source,"new LineDeliveryException('LINE network request failed"));
+    $same(false,str_contains($source,"if(\$status>=400&&\$status<500)throw new LineDeliveryException('LINE API rejected the request (HTTP '.\$status.')',true"));
+});
+$test('signed LINE webhook binds the exact raw body and strict direct-user IDs',function()use($same,$throwsHttp,$app):void{
+    $service=new LineWebhookService($app);$signatureMethod=new ReflectionMethod(LineWebhookService::class,'assertSignature');
+    $raw='{"destination":"Uffffffffffffffffffffffffffffffff","events":[]}';$secret='webhook-secret-test';
+    $signature=base64_encode(hash_hmac('sha256',$raw,$secret,true));
+    $request=new Request('POST','/api/webhooks/line',['content-type'=>'application/json; charset=utf-8','x-line-signature'=>$signature],[],[],[],['REMOTE_ADDR'=>'100.64.0.8'],'line-webhook-test',$raw);
+    $signatureMethod->invoke($service,$request,$raw,$secret);
+    $same($raw,$request->withParams(['ignored'=>'value'])->rawBody);
+    $throwsHttp(fn()=>$signatureMethod->invoke($service,$request,$raw."\n",$secret),'LINE_WEBHOOK_SIGNATURE_INVALID',401);
+    $wrong=new Request('POST','/api/webhooks/line',['x-line-signature'=>base64_encode(str_repeat('x',32))],[],[],[],[],'line-webhook-wrong',$raw);
+    $throwsHttp(fn()=>$signatureMethod->invoke($service,$wrong,$raw,$secret),'LINE_WEBHOOK_SIGNATURE_INVALID',401);
+    $malformed=new Request('POST','/api/webhooks/line',['x-line-signature'=>'not base64 ***'],[],[],[],[],'line-webhook-malformed',$raw);
+    $throwsHttp(fn()=>$signatureMethod->invoke($service,$malformed,$raw,$secret),'LINE_WEBHOOK_SIGNATURE_INVALID',401);
+
+    $candidateMethod=new ReflectionMethod(LineWebhookService::class,'replyCandidate');
+    $lineUserId='U0123456789abcdef0123456789abcdef';
+    $event=[
+        'webhookEventId'=>'01ARZ3NDEKTSV4RRFFQ69G5FAV','mode'=>'active','type'=>'message',
+        'replyToken'=>'reply_token_1234567890','source'=>['type'=>'user','userId'=>$lineUserId],
+        'message'=>['type'=>'text','id'=>'123','text'=>'เลข LINE ของฉันคืออะไร'],
+    ];
+    $candidate=$candidateMethod->invoke($service,$event);
+    $same(['event_id','event_type','line_user_id','reply_token'],array_keys($candidate));
+    $same($lineUserId,$candidate['line_user_id']);$same('message',$candidate['event_type']);
+    $follow=$event;$follow['type']='follow';unset($follow['message']);$same('follow',$candidateMethod->invoke($service,$follow)['event_type']);
+    $invalid=[];
+    $copy=$event;$copy['source']['userId']='U0123456789abcdef0123456789abcdeF';$invalid[]=$copy;
+    $copy=$event;$copy['source']['userId']='U0123456789abcdef0123456789abcde';$invalid[]=$copy;
+    $copy=$event;$copy['source']['type']='group';$invalid[]=$copy;
+    $copy=$event;$copy['mode']='standby';$invalid[]=$copy;
+    $copy=$event;$copy['message']['type']='image';$invalid[]=$copy;
+    $copy=$event;$copy['webhookEventId']=strtolower($copy['webhookEventId']);$invalid[]=$copy;
+    $copy=$event;$copy['replyToken']='short';$invalid[]=$copy;
+    foreach($invalid as$item)$same(null,$candidateMethod->invoke($service,$item));
+
+    $source=file_get_contents(dirname(__DIR__).'/src/Domain/LineWebhookService.php');
+    if(!is_string($source))throw new RuntimeException('cannot read LineWebhookService');
+    $same(true,str_contains($source,"return 'token_unavailable'"));
+    $same(true,str_contains($source,"action IN ('line.webhook_user_id_replied','line.webhook_reply_token_unavailable')"));
+    $same(true,str_contains($source,"'line_user_id_hash' => \$this->identityHash"));
+});
+$test('Railway proxy trust requires runtime identity, edge request ID, and an internal peer',function()use($same,$app):void{
+    $keys=['RAILWAY_PROJECT_ID','RAILWAY_ENVIRONMENT_ID','RAILWAY_SERVICE_ID','TRUSTED_PROXIES'];$before=[];
+    foreach($keys as$key)$before[$key]=getenv($key);
+    try{
+        putenv('RAILWAY_PROJECT_ID=project-test');putenv('RAILWAY_ENVIRONMENT_ID=environment-test');putenv('RAILWAY_SERVICE_ID=service-test');putenv('TRUSTED_PROXIES=');
+        $same(true,$app->config->isRailwayProxyRequest('edge-request','100.64.0.2'));
+        $same(true,$app->config->isRailwayProxyRequest('edge-request','100.255.255.255'));
+        $same(false,$app->config->isRailwayProxyRequest('edge-request','101.0.0.1'));
+        $same(false,$app->config->isRailwayProxyRequest('edge-request','203.0.113.40'));
+        $same(false,$app->config->isRailwayProxyRequest('','100.64.0.2'));
+        putenv('RAILWAY_SERVICE_ID=');$same(false,$app->config->isRailwayProxyRequest('edge-request','100.64.0.2'));putenv('RAILWAY_SERVICE_ID=service-test');
+
+        $forged=new Request('GET','/',['x-railway-request-id'=>'forged','x-real-ip'=>'198.51.100.9','x-forwarded-for'=>'198.51.100.9'],[],[],[],['REMOTE_ADDR'=>'203.0.113.40'],'forged-proxy');
+        $same('203.0.113.40',$app->security()->clientIp($forged));
+        $edge=new Request('GET','/',['x-railway-request-id'=>'edge-request','x-real-ip'=>'198.51.100.9'],[],[],[],['REMOTE_ADDR'=>'100.64.0.2'],'railway-proxy');
+        $same('198.51.100.9',$app->security()->clientIp($edge));
+    }finally{
+        foreach($before as$key=>$value){if($value===false)putenv($key);else putenv($key.'='.$value);}
+    }
+});
+$test('slip quota accounting blocks exhausted and fractional credits',function()use($same):void{
+    $quota=new ReflectionMethod(SystemSettingsService::class,'quotaRemaining');
+    $same(null,$quota->invoke(null,null));$same(0,$quota->invoke(null,0));$same(-2,$quota->invoke(null,-2));
+    $same(0,$quota->invoke(null,0.999));$same(1,$quota->invoke(null,'1.999'));$same(20,$quota->invoke(null,'2e1'));
+    $same(null,$quota->invoke(null,''));$same(null,$quota->invoke(null,'NaN'));$same(null,$quota->invoke(null,INF));$same(null,$quota->invoke(null,[]));
+    $source=file_get_contents(dirname(__DIR__).'/src/Domain/SystemSettingsService.php');
+    if(!is_string($source))throw new RuntimeException('cannot read SystemSettingsService');
+    $same(2,substr_count($source,'SLIP_QUOTA_EXHAUSTED'));
+    $same(true,str_contains($source,'if($quota<=0)'));
+    $same(true,str_contains($source,"array_key_exists('isActive',\$branch)"));
+    $same(true,str_contains($source,"array_key_exists('remaining',\$quotaInfo)"));
+    $same(true,str_contains($source,'$quota=$quotaRaw===null?null:self::quotaRemaining($quotaRaw)'));
+    $same(true,str_contains($source,'if($quota!==null&&$quota<=0)'));
+});
+$test('provider-declared duplicate slips remain pending for reconciliation',function()use($same):void{
+    $same(false,SlipVerifier::isTransientProviderError('slipok',1012,400));
+    $same(false,SlipVerifier::isTransientProviderError('easyslip','DUPLICATE_SLIP',400));
+    $source=file_get_contents(dirname(__DIR__).'/src/Integration/SlipVerifier.php');
+    if(!is_string($source))throw new RuntimeException('cannot read SlipVerifier');
+    $ambiguous=strpos($source,"if((\$raw['ambiguous_duplicate']??false)===true)");
+    $ordinary=strpos($source,"\$transient=(bool)(\$raw['transient']??false)");
+    if($ambiguous===false||$ordinary===false||$ambiguous>$ordinary)throw new RuntimeException('ambiguous provider duplicates are finalized before pending handling');
+    $slipDuplicate=strpos($source,"if(\$providerCode==='1012')");$slipSuccess=strpos($source,'$success=',$slipDuplicate?:0);
+    $easyDuplicate=strpos($source,'if($wasDuplicate)');$easySuccess=strpos($source,"'transaction_ref'=>\$this->scalarString",$easyDuplicate?:0);
+    if($slipDuplicate===false||$slipSuccess===false||$slipDuplicate>$slipSuccess||$easyDuplicate===false||$easySuccess===false||$easyDuplicate>$easySuccess)throw new RuntimeException('provider duplicate branch occurs after success construction');
+    $same(true,substr_count($source,"'ambiguous_duplicate'=>true")>=2);
+    $same(true,str_contains($source,"'checkDuplicate'=>'true'"));
+    $same(true,str_contains($source,"'log'=>'true'"));
+});
+$test('stored slip permissions are private on POSIX systems',function()use($same,$app):void{
+    $directory=$app->config->root.'/storage/private/slips';
+    if(!is_dir($directory)&&!mkdir($directory,0700,true)&&!is_dir($directory))throw new RuntimeException('cannot create private slip test directory');
+    $file=tempnam($directory,'permission-test-');if($file===false)throw new RuntimeException('cannot create permission test file');
+    try{
+        if(file_put_contents($file,'test')===false)throw new RuntimeException('cannot write permission test file');
+        @chmod($file,0666);
+        $method=new ReflectionMethod(PaymentService::class,'secureStoredSlipPermissions');
+        $method->invoke(new PaymentService($app),$file);$same(true,is_file($file));
+        if(PHP_OS_FAMILY!=='Windows'){
+            clearstatcache(true,$file);$permissions=fileperms($file);
+            if($permissions===false)throw new RuntimeException('cannot read stored slip permissions');
+            $same(0600,$permissions&0777);
+        }
+    }finally{@unlink($file);}
+});
+$test('canonical slip HMAC provides safe upload idempotency',function()use($same):void{
+    $source=file_get_contents(dirname(__DIR__).'/src/Domain/PaymentService.php');$schema=file_get_contents(dirname(__DIR__).'/database/schema.sql');
+    if(!is_string($source)||!is_string($schema))throw new RuntimeException('cannot read payment idempotency sources');
+    $uploadStart=strpos($source,'public function upload(');$uploadEnd=strpos($source,'public function list(',$uploadStart?:0);$upload=substr($source,(int)$uploadStart,(int)$uploadEnd-(int)$uploadStart);
+    $replay=strpos($upload,"if((\$payment['idempotent_replay']??false)===true)");$provider=strpos($upload,'$this->verifier->verify(');
+    if($replay===false||$provider===false||$replay>$provider)throw new RuntimeException('idempotent replay reaches the slip provider');
+    $same(false,str_contains($upload,"\$bill['status']!=='pending'"));
+    $same(true,str_contains($upload,'if(is_file($absolute))@unlink($absolute)'));
+    $reserveStart=strpos($source,'private function reserve(');$reserveEnd=strpos($source,'private function finalizeReserved(',$reserveStart?:0);$reserve=substr($source,(int)$reserveStart,(int)$reserveEnd-(int)$reserveStart);
+    $duplicate=strpos($reserve,'WHERE slip_hmac=? LIMIT 1 FOR UPDATE');$active=strpos($reserve,"status IN ('pending','verified')");$insert=strpos($reserve,'INSERT INTO payments');
+    if($duplicate===false||$active===false||$insert===false||!($duplicate<$active&&$active<$insert))throw new RuntimeException('slip HMAC replay is checked too late');
+    $billStatus=strpos($reserve,"\$current['status']!=='pending'");
+    if($billStatus===false||$duplicate>$billStatus)throw new RuntimeException('paid-bill status blocks a matching idempotent replay');
+    $same(true,substr_count($reserve,"['idempotent_replay']=true")>=2);
+    $same(true,str_contains($reserve,"(int)\$row['bill_id']===(int)\$bill['id']&&(int)\$row['resident_id']===\$residentId"));
+    $same(true,str_contains($reserve,"'DUPLICATE_SLIP'"));
+    $same(1,preg_match('/UNIQUE KEY\s+uq_payments_slip_hmac\s*\(slip_hmac\)/i',$schema));
+});
+$test('LINE and slip safety states are wired through UI, routes, and schema',function()use($same,$app):void{
+    $root=dirname(__DIR__);$js=file_get_contents($root.'/public/assets/js/app.js');$admin=file_get_contents($root.'/templates/admin/console.php');$schema=file_get_contents($root.'/database/schema.sql');$migration=file_get_contents($root.'/database/migrations/004_line_webhook.sql');
+    if(!is_string($js)||!is_string($admin)||!is_string($schema)||!is_string($migration))throw new RuntimeException('cannot read LINE UI/schema sources');
+    $lineStart=strpos($js,"lineStartForm.addEventListener('submit'");$lineConfirm=strpos($js,"lineConfirmForm.addEventListener('submit'",$lineStart?:0);$lineStartSource=substr($js,(int)$lineStart,(int)$lineConfirm-(int)$lineStart);
+    $same(true,str_contains($lineStartSource,"'LINE_DELIVERY_REJECTED'"));
+    $same(false,str_contains($lineStartSource,"'LINE_DELIVERY_TEMPORARY'"));
+    $same(true,str_contains($js,"sent: 'LINE รับคำขอแล้ว'"));
+    $same(true,str_contains($js,"? 'โควตาไม่จำกัด'"));
+    $same(true,str_contains($js,"integrations.line_webhook_url"));
+    $same(true,str_contains($admin,'name="line_channel_secret" type="password"'));
+    $same(true,str_contains($admin,'data-line-webhook-url readonly'));
+
+    $same(1,preg_match('/line_user_id VARCHAR\(33\).*?CHECK\s*\(\s*line_user_id IS NULL OR line_user_id REGEXP \'\^U\[0-9a-f\]\{32\}\$\'\s*\)/s',$schema));
+    $same(1,preg_match('/recipient VARCHAR\(33\).*?CHECK\s*\(\s*recipient REGEXP \'\^U\[0-9a-f\]\{32\}\$\'\s*\)/s',$schema));
+    foreach(['line_channel_secret_enc','line_request_id','line_accepted_request_id']as$column){$same(true,str_contains($schema,$column));$same(true,str_contains($migration,$column));}
+    $same(true,str_contains($migration,'@dormitory_004_invalid_line_ids'));
+    $same(true,str_contains($migration,"line_user_id NOT REGEXP '^U[0-9a-f]{32}$'"));
+    $same(true,str_contains($migration,"recipient NOT REGEXP '^U[0-9a-f]{32}$'"));
+
+    $routes=new ReflectionProperty(Dormitory\Http\Router::class,'routes');$registered=$routes->getValue(Dormitory\Http\Routes::build($app));
+    $webhooks=array_values(array_filter($registered,static fn(array$route):bool=>str_contains($route['regex'],'api/webhooks/line')));
+    $same(1,count($webhooks));$same('POST',$webhooks[0]['method']);$same([],$webhooks[0]['options']);
+    $application=file_get_contents($root.'/src/Application.php');if(!is_string($application))throw new RuntimeException('cannot read Application');
+    $same(true,str_contains($application,"\$request->method === 'POST' && \$request->path === '/api/webhooks/line'"));
+    $health=file_get_contents($root.'/public/healthz.php');if(!is_string($health))throw new RuntimeException('cannot read health check');
+    foreach(['line_channel_secret_enc','line_request_id','line_accepted_request_id']as$column)$same(true,str_contains($health,$column));
 });
 $test('container runtime command dispatches by fail-closed role',function()use($same):void{
     $script=file_get_contents(dirname(__DIR__).'/scripts/start-runtime.sh');$docker=file_get_contents(dirname(__DIR__).'/Dockerfile');

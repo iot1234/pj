@@ -161,15 +161,21 @@ final class Config
             return true;
         }
 
-        return $this->isRailwayProxyRequest($railwayRequestId);
+        return $this->isRailwayProxyRequest($railwayRequestId, $remote);
     }
 
-    public function isRailwayProxyRequest(?string $railwayRequestId): bool
+    public function isRailwayProxyRequest(?string $railwayRequestId, ?string $remote = null): bool
     {
+        $peer = trim($remote ?? (string) ($_SERVER['REMOTE_ADDR'] ?? ''));
         return trim((string) $railwayRequestId) !== ''
             && trim((string) $this->get('RAILWAY_PROJECT_ID', '')) !== ''
             && trim((string) $this->get('RAILWAY_ENVIRONMENT_ID', '')) !== ''
-            && trim((string) $this->get('RAILWAY_SERVICE_ID', '')) !== '';
+            && trim((string) $this->get('RAILWAY_SERVICE_ID', '')) !== ''
+            // Railway's public edge forwards requests to deployments from
+            // its internal 100.0.0.0/8 proxy range. Runtime variables and an
+            // attacker-supplied header alone must never make a public peer a
+            // trusted proxy.
+            && $this->ipInCidr($peer, '100.0.0.0/8');
     }
 
     public function isTrustedProxyAddress(string $address): bool

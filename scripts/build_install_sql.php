@@ -58,7 +58,7 @@ $content = <<<SQL
 -- Import this one file from phpMyAdmin's server-level Import tab.
 -- It creates/uses the `dormitory` database, current schema, triggers, and
 -- safe baseline settings. It contains no owner, room, resident, demo data,
--- PromptPay number, LINE token, or slip-provider credential.
+-- PromptPay number, LINE channel credential, or slip-provider credential.
 -- Fresh installations only: it stops before changing a non-empty database.
 -- Never use a force/continue-on-error import option with this file.
 -- Regenerate: php scripts/build_install_sql.php

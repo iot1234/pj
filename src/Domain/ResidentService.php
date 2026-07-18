@@ -25,7 +25,7 @@ final class ResidentService
             ORDER BY rm.floor,rm.room_code")->fetchAll();
         $bindings=[];foreach($rows as $row)$bindings[]=['resident_id'=>(int)$row['id'],'line_user_id'=>$row['line_user_id']??null];
         $verified=$this->app->notifications()->verifiedLineBindings($bindings);
-        foreach($rows as &$row){$row['id']=(int)$row['id'];$row['occupancy_id']=(int)$row['occupancy_id'];$row['room_id']=$row['room_id']!==null?(int)$row['room_id']:null;$row['active']=(bool)$row['active'];$row['line_verified']=$verified[$row['id']]??false;}
+        foreach($rows as &$row){$row['id']=(int)$row['id'];$row['occupancy_id']=(int)$row['occupancy_id'];$row['room_id']=$row['room_id']!==null?(int)$row['room_id']:null;$row['active']=(bool)$row['active'];$row['line_verified']=$verified[$row['id']]??false;$row['line_user_id_hint']=is_string($row['line_user_id'])&&$row['line_user_id']!==''?'•••'.substr($row['line_user_id'],-6):null;unset($row['line_user_id']);}
         return $rows;
     }
 
@@ -117,7 +117,7 @@ final class ResidentService
     {
         Validator::only($input,['line_user_id','current_pin']);
         $lineUserId=trim(is_string($input['line_user_id']??null)?$input['line_user_id']:'');
-        if(!preg_match('/^U[0-9A-Za-z_-]{20,80}$/D',$lineUserId)){
+        if(!preg_match('/^U[0-9a-f]{32}$/D',$lineUserId)){
             throw new HttpException(422,'LINE User ID ไม่ถูกต้อง','VALIDATION_ERROR',['field'=>'line_user_id']);
         }
         $this->profile($id);
@@ -135,10 +135,13 @@ final class ResidentService
             'attempts'=>0,
         ];
         $this->app->session()->storeLineLinkChallenge($challenge);
+        $this->app->session()->release();
         try{
             $this->app->notifications()->sendLineLinkCode($lineUserId,$code);
         }catch(HttpException $error){
-            if($error->errorCode==='LINE_NOT_CONFIGURED')$this->app->session()->clearLineLinkChallenge();
+            if(in_array($error->errorCode,['LINE_NOT_CONFIGURED','LINE_DELIVERY_REJECTED'],true)){
+                $this->app->session()->clearLineLinkChallenge();
+            }
             throw $error;
         }
         return ['line_user_id_hint'=>'•••'.substr($lineUserId,-6),'expires_in'=>600];

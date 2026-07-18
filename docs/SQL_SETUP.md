@@ -1,6 +1,6 @@
 # คู่มือตั้งค่า MySQL
 
-ระบบต้องเชื่อมต่อฐานข้อมูลได้ก่อนจึงจะเปิดหน้าหลังบ้านได้ ดังนั้นค่าการเชื่อมต่อ MySQL (`DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`) เป็นค่าโครงสร้างพื้นฐานที่ตั้งในไฟล์ `.env` หรือ secret manager ของเครื่อง deploy ไม่สามารถย้ายไปตั้งจากหน้า Admin ได้ phpMyAdmin เป็นเพียงหน้าจอสำหรับ import/ตรวจ/ดูแลฐานข้อมูล ไม่ใช่จุดที่แอปอ่านค่าการเชื่อมต่อ ส่วนเบอร์ PromptPay, LINE token และ API key ตรวจสลิปให้ตั้งจาก Admin → ตั้งค่า หลังระบบเชื่อมต่อฐานข้อมูลแล้ว
+ระบบต้องเชื่อมต่อฐานข้อมูลได้ก่อนจึงจะเปิดหน้าหลังบ้านได้ ดังนั้นค่าการเชื่อมต่อ MySQL (`DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`) เป็นค่าโครงสร้างพื้นฐานที่ตั้งในไฟล์ `.env` หรือ secret manager ของเครื่อง deploy ไม่สามารถย้ายไปตั้งจากหน้า Admin ได้ phpMyAdmin เป็นเพียงหน้าจอสำหรับ import/ตรวจ/ดูแลฐานข้อมูล ไม่ใช่จุดที่แอปอ่านค่าการเชื่อมต่อ ส่วนเบอร์ PromptPay, LINE Channel access token/Channel secret และ API key ตรวจสลิปให้ตั้งจาก Admin → ตั้งค่า หลังระบบเชื่อมต่อฐานข้อมูลแล้ว
 
 ## ค่าที่ต้องตั้ง
 
@@ -40,7 +40,8 @@
 1. รัน `database/migrations/001_integration_settings.sql` หากฐานเดิมยังไม่มีตาราง `integration_settings`; ไฟล์นี้ idempotent
 2. รัน `database/migrations/002_operational_hardening.sql` **หนึ่งครั้งเท่านั้น** เพื่อเพิ่ม snapshot ค่าเช่าตอนจอง/ชื่อผู้พัก/รหัสห้อง, payment verification lease และ integrity triggers ให้ครบ 15 รายการ ไฟล์นี้ไม่ใช่ idempotent และห้ามรันซ้ำ
 3. รัน `database/migrations/003_append_only_guards.sql` หลัง `002` เพื่อซ่อมฐานที่เคยรัน `002` รุ่นต้นให้มี trigger แบบ append-only ของ `bill_items` และ `audit_logs` ครบ ไฟล์นี้ตรวจ schema ก่อนแก้และปลอดภัยต่อการรันซ้ำ
-4. รัน `php scripts/check_requirements.php --db --strict` ด้วยบัญชี runtime แล้วรัน `php scripts/check_requirements.php --schema-audit` ด้วยบัญชี DBA/schema owner ชั่วคราว เพื่อตรวจชื่อ event/timing/table ของ trigger ทั้ง 15 รายการหลังอัปเกรด
+4. ตรวจแถว `residents.line_user_id` และ `notification_outbox.recipient` ให้เป็น `U` ตามด้วย hexadecimal ตัวพิมพ์เล็ก 32 ตัวทั้งหมด แล้วรัน `database/migrations/004_line_webhook.sql` เพื่อเพิ่ม Channel secret ที่เข้ารหัส, LINE request IDs สำหรับ reconciliation และ CHECK รูปแบบ LINE User ID ไฟล์จะหยุดก่อน ALTER หากพบค่า legacy ที่แก้ไม่ได้โดยอัตโนมัติ และปลอดภัยต่อการรันซ้ำ
+5. รัน `php scripts/check_requirements.php --db --strict` ด้วยบัญชี runtime แล้วรัน `php scripts/check_requirements.php --schema-audit` ด้วยบัญชี DBA/schema owner ชั่วคราว เพื่อตรวจคอลัมน์ migration 004, CHECK constraints และชื่อ event/timing/table ของ trigger ทั้ง 15 รายการหลังอัปเกรด
 
 ข้อมูล snapshot ของรายการเก่าที่ migration สร้างขึ้นเป็นการประกอบย้อนจากข้อมูลที่ยังมีอยู่: ค่าเช่าจะเลือกจาก occupancy ก่อนแล้วจึง fallback ไปค่าเช่าห้องปัจจุบัน ส่วนชื่อผู้พัก/รหัสห้องของบิลเก่าอาจไม่ใช่ค่าประวัติเดิมหากเคยแก้ไข จึงต้องตรวจเอกสารย้อนหลังหรือ export เดิมบน staging ก่อนเปิดใช้งานจริง
 
@@ -53,7 +54,7 @@ Copy-Item .env.production.example .env
 php -r "echo bin2hex(random_bytes(32)), PHP_EOL;"
 ```
 
-นำค่าสุ่ม 64 ตัวใส่ `APP_KEY` เปลี่ยน `APP_URL` เป็น HTTPS origin จริง และกำหนด `DB_PASSWORD` กับ `DB_ROOT_PASSWORD` เป็นคนละค่าสุ่ม ห้ามใส่ LINE/slip credential ใน `.env`
+นำค่าสุ่ม 64 ตัวใส่ `APP_KEY` เปลี่ยน `APP_URL` เป็น HTTPS origin จริง และกำหนด `DB_PASSWORD` กับ `DB_ROOT_PASSWORD` เป็นคนละค่าสุ่ม ห้ามใส่ LINE Channel access token/Channel secret หรือ slip credential ใน `.env`
 
 สำหรับเครื่องพัฒนา local เท่านั้นให้ใช้:
 
@@ -133,6 +134,7 @@ php scripts/check_requirements.php --db
 
 1. สร้างบัญชี Owner คนแรกตาม README
 2. เข้าหน้า Admin → ตั้งค่า แล้วบันทึกอัตราค่าน้ำ ค่าไฟ และวันครบกำหนดจริง
-3. กรอก PromptPay, LINE และผู้ให้บริการตรวจสลิปจากหน้าเดียวกัน ค่าลับจะถูกเข้ารหัสใน MySQL โดยใช้ key ที่ derive จาก `APP_KEY`; `APP_KEY` เองยังต้องอยู่ใน `.env`/secret manager และต้องตรงกันทุก web/worker instance
-4. เพิ่มห้องจริงจากหลังบ้าน; production ไม่มีห้องตัวอย่างอัตโนมัติ
-5. รัน requirement checker อีกครั้งก่อนเปิดให้ผู้ใช้จริง
+3. กรอก PromptPay, LINE Channel access token/Channel secret และผู้ให้บริการตรวจสลิปจากหน้าเดียวกัน ค่าลับจะถูกเข้ารหัสใน MySQL โดยใช้ key ที่ derive จาก `APP_KEY`; `APP_KEY` เองยังต้องอยู่ใน `.env`/secret manager และต้องตรงกันทุก web/worker instance
+4. คัดลอก Webhook URL ที่หน้า Settings แสดง (`<APP_URL>/api/webhooks/line`) ไปใส่ใน LINE Developers Console แล้วเปิด **Use webhook** โดย `APP_URL` ต้องเป็น HTTPS origin สาธารณะที่ตรงกับโดเมนจริง
+5. เพิ่มห้องจริงจากหลังบ้าน; production ไม่มีห้องตัวอย่างอัตโนมัติ
+6. รัน requirement checker อีกครั้งก่อนเปิดให้ผู้ใช้จริง ค่า LINE webhook จะพร้อมเมื่อถอดรหัสได้ทั้ง Channel access token และ Channel secret

@@ -81,7 +81,7 @@ final class Security
     public function clientIp(Request $request): string
     {
         $remote = (string) ($request->server['REMOTE_ADDR'] ?? '0.0.0.0');
-        $railwayProxy = $this->config->isRailwayProxyRequest($request->header('x-railway-request-id'));
+        $railwayProxy = $this->config->isRailwayProxyRequest($request->header('x-railway-request-id'), $remote);
         if ($railwayProxy) {
             $real = trim((string) ($request->header('x-real-ip') ?? ''));
             if (filter_var($real, FILTER_VALIDATE_IP)) {

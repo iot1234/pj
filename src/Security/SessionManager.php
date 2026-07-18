@@ -130,6 +130,20 @@ final class SessionManager
         unset($_SESSION[self::LINE_LINK_KEY]);
     }
 
+    /**
+     * Persist session changes and release PHP's file-session lock. Protected
+     * requests keep their resolved actor in Application's request-local cache,
+     * so unrelated AJAX calls no longer wait for slow provider/network work.
+     * A later session mutation in the same request transparently reopens it.
+     */
+    public function release(): void
+    {
+        if(session_status()===PHP_SESSION_ACTIVE&&!session_write_close()){
+            throw new \RuntimeException('Unable to persist the session');
+        }
+        $this->initialized=false;
+    }
+
     public function revokeLocal(): void
     {
         if(!$this->start(false))return;

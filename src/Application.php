@@ -8,6 +8,7 @@ use Dormitory\Domain\AdminUserService;
 use Dormitory\Domain\BillingService;
 use Dormitory\Domain\BookingService;
 use Dormitory\Domain\MeterService;
+use Dormitory\Domain\LineWebhookService;
 use Dormitory\Domain\NotificationService;
 use Dormitory\Domain\PaymentService;
 use Dormitory\Domain\RoomService;
@@ -36,6 +37,7 @@ final class Application
     private BillingService $billing;
     private SystemSettingsService $settings;
     private NotificationService $notifications;
+    private LineWebhookService $lineWebhook;
     private PaymentService $payments;
     /** @var array<string,mixed>|null|false */
     private array|null|false $actorCache = false;
@@ -57,6 +59,7 @@ final class Application
         $this->billing = new BillingService($this);
         $this->settings = new SystemSettingsService($this);
         $this->notifications = new NotificationService($this);
+        $this->lineWebhook = new LineWebhookService($this);
         $this->payments = new PaymentService($this);
     }
 
@@ -75,6 +78,7 @@ final class Application
     public function billing(): BillingService { return $this->billing; }
     public function settings(): SystemSettingsService { return $this->settings; }
     public function notifications(): NotificationService { return $this->notifications; }
+    public function lineWebhook(): LineWebhookService { return $this->lineWebhook; }
     public function payments(): PaymentService { return $this->payments; }
 
     /** @return array<string,mixed>|null */
@@ -94,17 +98,22 @@ final class Application
     /** @param array<string,mixed> $options */
     public function guard(Request $request, array $options): void
     {
-        if ($request->isMutation() && str_starts_with($request->path, '/api/')) {
+        $required = $options['auth'] ?? null;
+        $actor = null;
+        if ($required !== null) {
+            $actor = $this->actor();
+            if (!$actor || ($actor['type'] ?? null) !== $required) {
+                throw new HttpException(401, 'Authentication required', 'UNAUTHENTICATED');
+            }
+        }
+
+        $signedLineWebhook = $request->method === 'POST' && $request->path === '/api/webhooks/line';
+        if ($request->isMutation() && str_starts_with($request->path, '/api/') && !$signedLineWebhook) {
             $this->security->assertMutation($request);
         }
 
-        $required = $options['auth'] ?? null;
         if ($required === null) {
             return;
-        }
-        $actor = $this->actor();
-        if (!$actor || ($actor['type'] ?? null) !== $required) {
-            throw new HttpException(401, 'Authentication required', 'UNAUTHENTICATED');
         }
         if (isset($options['role'])) {
             $roles = is_array($options['role']) ? $options['role'] : [$options['role']];
@@ -112,5 +121,6 @@ final class Application
                 throw new HttpException(403, 'Insufficient permission', 'FORBIDDEN');
             }
         }
+        $this->session->release();
     }
 }

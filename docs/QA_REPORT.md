@@ -1,13 +1,13 @@
 # รายงานตรวจรับระบบ
 
-วันที่ตรวจล่าสุด: 2026-07-15
+วันที่ตรวจล่าสุด: 2026-07-18
 
 ขอบเขตคือโปรเจกต์ PHP/MySQL ใน `php-mysql` ตาม FR-01–FR-16 โดยใช้ `newap` เป็นข้อมูลอ้างอิงแบบอ่านอย่างเดียวและไม่แก้ไข `ap` ผลที่ต้องใช้ credential หรือระบบ production จริงถูกแยกไว้ชัดเจนเพื่อไม่อ้างผลเกินหลักฐาน
 
 ## ผลตรวจอัตโนมัติ
 
-- PHP 8.3.29 lint ผ่าน 43/43 ไฟล์ ไม่มี syntax error
-- `php tests/run.php` ผ่าน 44/44 tests, 0 failures รวม regression ของ signed bill preview, guest CSRF/lazy session, ตัวกัน QR เมื่อเส้นทางชำระเงินยังไม่พร้อม และ UX guard สำคัญ
+- PHP 8.3.32 lint ผ่าน 45/45 ไฟล์ ไม่มี syntax error
+- `php tests/run.php` ผ่าน 61/61 tests, 0 failures รวม regression ของ signed LINE webhook/retry, Railway proxy trust, session lock release, slip quota/duplicate/idempotency, signed bill preview, guest CSRF/lazy session, ตัวกัน QR เมื่อเส้นทางชำระเงินยังไม่พร้อม และ UX/schema guards สำคัญ
 - `node --check public/assets/js/app.js` ผ่าน
 - ไม่พบ PHP warning, fatal error หรือ deprecation ใน log ของ HTTP/browser E2E
 - ตรวจหน้า Admin ทั้ง desktop และ mobile แล้ว เมนู/กล่องยืนยันทำงานได้ คอลัมน์ปุ่มสำคัญยังมองเห็นเมื่อเลื่อนตาราง และ browser console ไม่มี warning/error
@@ -15,10 +15,12 @@
 ## ผลตรวจ Oracle MySQL 8.4.10
 
 - Fresh import `database/install.sql` ไฟล์เดียวผ่าน: 14 ตาราง, integrity triggers 15 รายการ, `billing_settings`/`integration_settings` อย่างละ 1 แถว และไม่มี Owner/ข้อมูลตัวอย่าง; import ซ้ำถูกตัวกันฐานไม่ว่างปฏิเสธก่อนแตะ schema โดยจำนวนตาราง/trigger/settings ไม่เปลี่ยน
-- Fresh import `database/schema.sql` + `database/defaults.sql` ผ่าน: 14 ตาราง, 70 CHECK constraints และ integrity triggers 15 รายการ
+- Fresh import `database/schema.sql` + `database/defaults.sql` ผ่านบน MySQL 8.4.10: 14 ตาราง, 73 CHECK constraints และ integrity triggers 15 รายการ รวม Channel secret, LINE provider request IDs และคอลัมน์ LINE User ID แบบ 33 ตัว
 - รัน `003_append_only_guards.sql` ซ้ำ 2 รอบบนฐานใหม่ได้โดยไม่เกิดข้อผิดพลาด และจำนวน trigger ยังคงเป็น 15
 - จำลองฐานรุ่นก่อนแล้วรัน `002_operational_hardening.sql` สำเร็จ: เพิ่มคอลัมน์/ดัชนีที่ต้องใช้และสร้าง trigger ครบ 15 รายการ
 - ทดสอบ `003_append_only_guards.sql` ในฐานที่อาจเคยใช้ migration 002 รุ่นเก่าแล้ว: สร้างตัวป้องกัน `bill_items` และ `audit_logs` ครบ 4 รายการแบบรันซ้ำได้
+- ทดสอบ `004_line_webhook.sql` บน schema ก่อนเพิ่ม webhook แล้วรันซ้ำ 2 รอบสำเร็จ: ได้ 73 CHECK constraints และคอลัมน์/ชนิดข้อมูล LINE webhook/reconciliation ครบ; กรณีมี LINE User ID legacy ผิดรูปแบบ migration หยุดก่อนสร้างคอลัมน์ใหม่ตาม preflight
+- `scripts/check_requirements.php --db` ด้วย runtime user ที่มีเฉพาะ `SELECT`/`INSERT`/`UPDATE` ตรวจชนิดคอลัมน์ LINE 5 รายการและ CHECK constraints ที่เกี่ยวข้องครบ โดยจบด้วย 0 error; warning ที่เหลือเป็นค่าธุรกิจ/credential/Owner ที่จงใจไม่ใส่ในฐาน fresh-install QA
 - Final release database ใช้ runtime user ที่มีเฉพาะ `SELECT`/`INSERT`/`UPDATE` บน schema และผ่าน `check_requirements.php --db`: 33 ผ่าน, ข้าม trigger metadata 1 รายการตามข้อจำกัดสิทธิ์, เตือน 1 รายการเพราะไม่ได้ใส่ credential ตรวจสลิปจริง และ 0 error
 - Schema audit ด้วยบัญชี schema owner ผ่าน 34 รายการ ตรวจ trigger ครบ 15 รายการ เตือน 2 รายการตามที่คาดไว้จาก root local ที่ไม่มีรหัสผ่านและ credential ตรวจสลิปจริงที่ไม่ได้ใส่ใน QA และ 0 error
 - ทดสอบตรงว่า `audit_logs` แก้ไขและลบไม่ได้ทั้งคู่
@@ -59,11 +61,11 @@ Negative/positive invariants ที่ยิงตรงผ่าน MySQL ผ�
 - Admin เปลี่ยนข้อมูล/เบอร์ผู้พักได้จากหลังบ้าน การเปลี่ยนเบอร์เพิ่ม `auth_version`, session เดิมใช้ต่อไม่ได้ และเบอร์ใหม่ login ด้วย PIN เดิมได้
 - ค่ามิเตอร์น้ำและไฟที่สูงผิดปกติถูกรวบรวมเตือนพร้อมกัน 2 ประเภท ต้องยืนยันทั้งชุด และแก้ค่าหลังออกบิลไม่ได้
 - bill preview ผูก HMAC กับข้อมูลจริงและหมดอายุ; เปลี่ยนมิเตอร์หลัง preview แล้วใช้ token เดิมถูกปฏิเสธด้วย `BILL_PREVIEW_CHANGED` ส่วน preview ใหม่ออกบิลสำเร็จ
-- PromptPay QR, LINE outbox, booking/payment pagination และการเก็บ LINE token แบบ ciphertext โดยไม่คืน secret ผ่าน API ทำงานตาม contract
+- PromptPay QR, LINE outbox, signed webhook contract, booking/payment pagination และการเก็บ LINE Channel access token/Channel secret แบบ ciphertext โดยไม่คืน secret ผ่าน API ทำงานตาม contract
 
 ## สิ่งที่ต้องตรวจด้วย credential/ระบบ deploy จริง
 
-- LINE push จริง รวม quota/permission, retry key เดิม และ HTTP 409 replay
+- LINE Developers Verify webhook/ข้อความตอบจริงและ LINE push จริง รวม quota/permission, retry payload/recipient/key เดิม, provider request IDs และ HTTP 409 replay
 - SlipOK/EasySlip ด้วยสลิปจริง: สำเร็จ, ยอดผิด, ผู้รับผิด, transaction ซ้ำ, cached duplicate, 429 และ timeout
 - HTTPS/HSTS/reverse proxy, firewall/network policy และ trusted proxy ของโดเมนจริง
 - Worker/cron หลาย process, health monitoring และ alert/log aggregation บนเครื่อง deploy

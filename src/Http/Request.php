@@ -8,6 +8,7 @@ use JsonException;
 final class Request
 {
     private const MAX_BODY_BYTES = 5_500_000;
+    private const MAX_LINE_WEBHOOK_BYTES = 262_144;
 
     /** @param array<string,string> $headers
      *  @param array<string,mixed> $query
@@ -24,6 +25,7 @@ final class Request
         public readonly array $files,
         public readonly array $server,
         public readonly string $requestId,
+        public readonly string $rawBody = '',
         private array $params = [],
     ) {
     }
@@ -50,33 +52,45 @@ final class Request
             }
         }
 
+        $lineWebhook = $method === 'POST' && $path === '/api/webhooks/line';
+        $bodyLimit = $lineWebhook
+            ? self::MAX_LINE_WEBHOOK_BYTES
+            : self::MAX_BODY_BYTES;
         $contentLength = (int) ($headers['content-length'] ?? 0);
-        if ($contentLength > self::MAX_BODY_BYTES) {
+        if ($contentLength > $bodyLimit) {
             throw new HttpException(413, 'Request body is too large', 'REQUEST_TOO_LARGE');
         }
 
         $body = $_POST;
+        $rawBody = '';
         $contentType = strtolower((string) ($headers['content-type'] ?? ''));
-        if (str_contains($contentType, 'application/json')) {
+        if ($lineWebhook || str_contains($contentType, 'application/json')) {
             // Do not rely only on Content-Length: a chunked or dishonest
             // client can omit it. Read at most one byte beyond the limit so
             // oversized JSON never needs to be buffered in full.
-            $raw = file_get_contents('php://input', false, null, 0, self::MAX_BODY_BYTES + 1);
-            if (is_string($raw) && strlen($raw) > self::MAX_BODY_BYTES) {
+            $raw = file_get_contents('php://input', false, null, 0, $bodyLimit + 1);
+            if (is_string($raw) && strlen($raw) > $bodyLimit) {
                 throw new HttpException(413, 'Request body is too large', 'REQUEST_TOO_LARGE');
             }
             if ($raw === false || $raw === '') {
                 $body = [];
             } else {
-                try {
-                    $decoded = json_decode($raw, true, 64, JSON_THROW_ON_ERROR);
-                } catch (JsonException) {
-                    throw new HttpException(400, 'Malformed JSON body', 'INVALID_JSON');
+                $rawBody = $raw;
+                if ($lineWebhook) {
+                    // Signature verification must happen against the exact
+                    // bytes before the webhook JSON is interpreted.
+                    $body = [];
+                } else {
+                    try {
+                        $decoded = json_decode($raw, true, 64, JSON_THROW_ON_ERROR);
+                    } catch (JsonException) {
+                        throw new HttpException(400, 'Malformed JSON body', 'INVALID_JSON');
+                    }
+                    if (!is_array($decoded)) {
+                        throw new HttpException(400, 'JSON body must be an object', 'INVALID_JSON_SHAPE');
+                    }
+                    $body = $decoded;
                 }
-                if (!is_array($decoded)) {
-                    throw new HttpException(400, 'JSON body must be an object', 'INVALID_JSON_SHAPE');
-                }
-                $body = $decoded;
             }
         }
 
@@ -89,6 +103,7 @@ final class Request
             $_FILES,
             array_filter($_SERVER, 'is_string'),
             bin2hex(random_bytes(8)),
+            $rawBody,
         );
     }
 

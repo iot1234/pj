@@ -108,7 +108,7 @@ final class BookingService
         $statement=$this->app->database()->pdo()->prepare(
             "SELECT b.*,r.room_code,r.monthly_rent,au.username AS confirmed_by_username,
                     existing.id AS existing_resident_id,existing.full_name AS existing_resident_name,
-                    existing.email AS existing_resident_email,existing.line_user_id AS existing_resident_line_user_id
+                    existing.email AS existing_resident_email
                FROM bookings b JOIN rooms r ON r.id=b.room_id
                LEFT JOIN admin_users au ON au.id=b.confirmed_by
                LEFT JOIN residents existing ON existing.phone_norm=b.phone_norm".$where.
@@ -273,7 +273,7 @@ final class BookingService
             'booked_monthly_rent'=>isset($row['booked_monthly_rent'])?(string)$row['booked_monthly_rent']:null,
             'existing_resident'=>isset($row['existing_resident_id'])&&$row['existing_resident_id']!==null?[
                 'id'=>(int)$row['existing_resident_id'],'full_name'=>$row['existing_resident_name'],
-                'email'=>$row['existing_resident_email']??null,'line_user_id'=>$row['existing_resident_line_user_id']??null,
+                'email'=>$row['existing_resident_email']??null,
             ]:null,
         ];
     }

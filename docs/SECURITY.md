@@ -24,7 +24,7 @@
 
 ## CSRF, origin และ input
 
-- mutation ทุก JSON/multipart API ต้องมี `Origin` หรือ `Referer` ตรงกับ normalized `APP_URL` และ `X-CSRF-Token`: ผู้ใช้ที่มี session ต้องใช้ token ที่ผูกกับ session ส่วน Guest/login/public booking ใช้ token แบบ stateless อายุไม่เกิน 2 ชั่วโมงที่ลงลายเซ็น HMAC ด้วย `APP_KEY` จึงไม่ต้องสร้าง anonymous session
+- mutation ทุก JSON/multipart API ที่มาจาก browser ต้องมี `Origin` หรือ `Referer` ตรงกับ normalized `APP_URL` และ `X-CSRF-Token`: ผู้ใช้ที่มี session ต้องใช้ token ที่ผูกกับ session ส่วน Guest/login/public booking ใช้ token แบบ stateless อายุไม่เกิน 2 ชั่วโมงที่ลงลายเซ็น HMAC ด้วย `APP_KEY` จึงไม่ต้องสร้าง anonymous session ข้อยกเว้นมีเฉพาะ `POST /api/webhooks/line` ที่ LINE เรียกจาก server ภายนอกและตรวจ HMAC-SHA256 ของ raw body ด้วย Channel secret แทน
 - production ต้องกำหนด `APP_URL` แบบ HTTPS ให้ตรง origin จริง ห้ามอนุญาต wildcard origin
 - request body จำกัดประมาณ 5 MiB; JSON ต้อง parse ได้และมี object shape
 - validator ใช้ allowlist field, type, length, enum, phone/date/period และ decimal scale; field ที่ไม่รู้จักต้องถูกปฏิเสธเพื่อกัน mass assignment
@@ -72,6 +72,8 @@ constraint ไม่สามารถกัน active booking กับ active 
 - URL ถูก hard-code เป็น HTTPS เท่านั้น: LINE `api.line.me`, SlipOK `api.slipok.com`, EasySlip `api.easyslip.com` ไม่มี environment สำหรับเปลี่ยน scheme/host
 - cURL จำกัด protocol เป็น HTTPS, ปิด redirect, connect timeout 5 วินาที, total timeout จำกัด, จำกัดขนาด/depth response และ reject malformed JSON
 - secret ส่งใน header ไป host ที่กำหนดเท่านั้นและต้องไม่อยู่ใน error/audit/browser response
+- LINE webhook จำกัดขนาด raw body/event, ตรวจ `X-Line-Signature` แบบ constant-time ก่อน parse JSON, รับเฉพาะ event active แบบ `follow` หรือข้อความตัวอักษรจาก source `user` โดยตรง และ deduplicate ด้วย `webhookEventId` ภายใต้ advisory lock; event กลุ่ม/ห้องและชนิดอื่นถูกข้าม
+- Bot ใช้ reply token ตอบ LINE User ID และวิธีผูกบัญชีเท่านั้น ไม่บันทึกข้อความที่ผู้ใช้ส่งหรือ LINE User ID ดิบลง audit; audit เก็บ event ID, ชนิด event และ HMAC ของ user ID เพื่อ reconcile โดยไม่เปิดเผย identifier
 - LINE ใช้ UUID v4 ที่บันทึกใน outbox เป็น `X-Line-Retry-Key` เดิมทุก retry; HTTP 409 หมายถึง request เดิมได้รับแล้วและต้อง finalize เป็น sent ไม่ส่งใหม่ด้วย key ใหม่
 - LINE User ID ต้องผูกโดยผู้พักที่ login อยู่และยืนยัน PIN ปัจจุบัน จากนั้นกรอก OTP 6 หลักภายใน 10 นาที; audit แบบ append-only เก็บ HMAC ของ resident+LINE ID และการ unlink โดยไม่เก็บ OTP/PIN worker ตรวจ audit ล่าสุดกับ ID ปัจจุบันก่อนส่งทุกครั้ง ค่า legacy ที่ไม่มีหลักฐานนี้จึง fail-closed
 - outbox ใช้ `FOR UPDATE SKIP LOCKED`, processing timeout recovery, exponential backoff และ maximum attempts เพื่อลดทั้ง duplicate และ retry storm; worker กับขั้นตอน confirm/unlink ใช้ MySQL advisory lock แยกตาม resident เพื่อไม่ให้การส่งไป LINE ID เดิมแข่งกับการเปลี่ยนหรือยกเลิกการผูก
@@ -79,7 +81,7 @@ constraint ไม่สามารถกัน active booking กับ active 
 ## การปกป้อง integration settings
 
 - PromptPay/LINE/SlipOK/EasySlip เป็น operational settings ใน MySQL ไม่ใช่ environment settings และไม่มี environment fallback; Owner เปลี่ยนค่าจาก Admin → ตั้งค่า ส่วน Admin ทั่วไปอ่านได้เฉพาะค่าปกติและสถานะความพร้อม
-- LINE Channel access token, SlipOK API key และ EasySlip API key เข้ารหัสแบบ AES-256-GCM; key ขนาด 256 บิต derive จาก `APP_KEY` ด้วย HKDF-SHA256 และใช้ nonce สุ่ม 12 bytes/tag 16 bytes
+- LINE Channel access token/Channel secret, SlipOK API key และ EasySlip API key เข้ารหัสแบบ AES-256-GCM; key ขนาด 256 บิต derive จาก `APP_KEY` ด้วย HKDF-SHA256 และใช้ nonce สุ่ม 12 bytes/tag 16 bytes
 - AAD มี namespace/version และชื่อ field จึงย้าย ciphertext ที่ valid ไปอีกคอลัมน์ไม่ได้โดยไม่ทำให้ authentication fail; หาก payload, key หรือ AAD ไม่ตรง ระบบปฏิเสธการถอดรหัสด้วย error เดียวกัน
 - API หลังบ้านไม่คืน plaintext หรือ ciphertext ของ credential แต่คืนเฉพาะ `*_configured` และ hint แบบ `********` ตามด้วยท้ายค่าไม่เกิน 4 ตัว รวมทั้ง readiness ที่ไม่เผยค่า secret
 - update แบบ partial ที่ไม่มี field, ส่ง `null`, ว่าง หรือมีแต่ whitespace จะเก็บ secret เดิม การลบต้องส่ง `*_clear=true` โดยชัดเจน และ request ที่ทั้งตั้งค่าใหม่กับ clear พร้อมกันถูกปฏิเสธ
@@ -89,7 +91,7 @@ constraint ไม่สามารถกัน active booking กับ active 
 
 - `.env` ถูก ignore จาก Git และ Docker build context แต่ operator ต้องตรวจ secret scanning ใน CI, image เก่า และ history ด้วย การเพิ่ม ignore file ไม่ลบ secret ที่เคย commit/build
 - `APP_KEY`, `APP_URL`, DB credential และ admin bootstrap password เป็น infrastructure configuration ที่ต้องมาจาก environment/secret manager หรือไฟล์ permission จำกัด; ห้ามย้าย `APP_KEY` เข้า `integration_settings` เพราะต้องใช้ถอดรหัสตารางนั้น
-- LINE token และ SlipOK/EasySlip key ต้องกรอกผ่าน Owner UI และเก็บเข้ารหัสใน MySQL ไม่ควรซ้ำไว้ใน `.env`, command line, log หรือ audit payload
+- LINE Channel access token/Channel secret และ SlipOK/EasySlip key ต้องกรอกผ่าน Owner UI และเก็บเข้ารหัสใน MySQL ไม่ควรซ้ำไว้ใน `.env`, command line, log หรือ audit payload
 - รหัสผ่าน Owner bootstrap เป็น input ชั่วคราวของ one-shot process แนะนำ `scripts/create_admin.php --password-stdin` เพื่อไม่ให้ปรากฏใน command line; Compose ไม่ส่งรหัสนี้หรือ `DB_ROOT_PASSWORD` ให้ app/worker ระยะยาว
 - `DB_ROOT_PASSWORD` ใช้เฉพาะ database service ของ Docker; XAMPP/Laragon ต้องเว้นว่าง/ลบจาก runtime `.env` หลัง DBA สร้าง user แล้ว
 - แยก MySQL migration user ออกจาก runtime user; runtime มีเฉพาะ global `USAGE` และ `SELECT`/`INSERT`/`UPDATE` บน database ระบบ ไม่มี `DELETE` หรือสิทธิ์ DDL
@@ -120,12 +122,13 @@ constraint ไม่สามารถกัน active booking กับ active 
 ## Checklist ก่อนเปิด production
 
 - [ ] `php scripts/check_requirements.php --production` ผ่าน; Docker ต้องผ่านทั้ง service `app` และ `worker` ตาม README
-- [ ] ฐานข้อมูลใหม่ชื่อ `dormitory` import `install.sql` ไฟล์เดียว หรือฐานชื่ออื่นใช้วิธีขั้นสูงโดยเลือกฐานเป้าหมายแล้ว import `schema.sql` + `defaults.sql` ครบ (`demo.sql` ใช้ได้เฉพาะ local แบบ optional และฐานใหม่ไม่ต้องรัน migration) หรือฐานข้อมูลเดิมสำรองแล้ว รัน `001_integration_settings.sql` เมื่อจำเป็น → `002_operational_hardening.sql` หนึ่งครั้ง → `003_append_only_guards.sql` (รันซ้ำได้) พร้อมรัน `--db --strict` ด้วยบัญชี runtime และ `--schema-audit` ด้วยบัญชี schema owner ที่คงอยู่เพื่อตรวจ integrity triggers 15 รายการ; ห้ามลบ trigger `DEFINER` หลังติดตั้ง
+- [ ] ฐานข้อมูลใหม่ชื่อ `dormitory` import `install.sql` ไฟล์เดียว หรือฐานชื่ออื่นใช้วิธีขั้นสูงโดยเลือกฐานเป้าหมายแล้ว import `schema.sql` + `defaults.sql` ครบ (`demo.sql` ใช้ได้เฉพาะ local แบบ optional และฐานใหม่ไม่ต้องรัน migration) หรือฐานข้อมูลเดิมสำรองแล้ว รัน `001_integration_settings.sql` เมื่อจำเป็น → `002_operational_hardening.sql` หนึ่งครั้ง → `003_append_only_guards.sql` → `004_line_webhook.sql` หลังตรวจ/แก้ LINE User ID legacy พร้อมรัน `--db --strict` ด้วยบัญชี runtime และ `--schema-audit` ด้วยบัญชี schema owner ที่คงอยู่เพื่อตรวจคอลัมน์ webhook/reconciliation, CHECK constraints และ integrity triggers 15 รายการ; ห้ามลบ trigger `DEFINER` หลังติดตั้ง
 - [ ] HTTPS/HSTS/CSP/security headers ตรวจจากภายนอกแล้ว
 - [ ] `.env`, source และ `storage/private` เปิดผ่าน URL ไม่ได้
 - [ ] ไม่มี default credential, สร้าง Owner ผ่าน `--password-stdin`/secret store และลบตัวแปรรหัสผ่านชั่วคราวหลัง bootstrap
 - [ ] owner คนแรก login ได้ และ role/IDOR/CSRF/rate-limit negative tests ผ่าน
 - [ ] Owner ตั้ง integration ได้, Admin ทั่วไปแก้ไม่ได้, API ไม่คืน secret, ช่องว่างเก็บค่าเดิม, explicit clear ลบจริง และ web/worker เห็นค่ารอบถัดไปโดยไม่ restart
+- [ ] ตั้ง LINE Channel access token/Channel secret แล้วนำ `<APP_URL>/api/webhooks/line` ไปตั้งใน LINE Developers Console; request ที่ไม่มี/ปลอม `X-Line-Signature` ถูกปฏิเสธ, event ซ้ำไม่ตอบซ้ำ และ audit ไม่มีเนื้อหาข้อความหรือ LINE User ID ดิบ
 - [ ] ทดลอง booking race, move-in race, duplicate bill และ duplicate slip/transaction
 - [ ] ทดสอบ LINE retry ด้วย key เดิม รวมกรณี HTTP 409
 - [ ] ทดสอบ SlipOK/EasySlip ด้วย amount mismatch, receiver mismatch, duplicate และ timeout รวมเปิดดูหลักฐาน, แก้ค่า receiver แล้ว retry รายการ pending และปิดรายการหลัง verification lease หมด

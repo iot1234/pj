@@ -44,6 +44,29 @@ try {
         throw new RuntimeException('schema readiness check failed');
     }
 
+    // A table-count-only probe can stay green while application code expects
+    // columns from a newer migration. Keep this list to the deployment-critical
+    // additive columns that the current runtime reads or writes immediately.
+    $requiredColumns = [
+        ['integration_settings', 'line_channel_secret_enc'],
+        ['notification_outbox', 'line_request_id'],
+        ['notification_outbox', 'line_accepted_request_id'],
+    ];
+    $columnPredicates = implode(' OR ', array_fill(0, count($requiredColumns), '(table_name=? AND column_name=?)'));
+    $columns = $pdo->prepare(
+        'SELECT COUNT(*) FROM information_schema.columns'
+        . ' WHERE table_schema=? AND (' . $columnPredicates . ')'
+    );
+    $columnParameters = [$app->config->require('DB_DATABASE')];
+    foreach ($requiredColumns as [$table, $column]) {
+        $columnParameters[] = $table;
+        $columnParameters[] = $column;
+    }
+    $columns->execute($columnParameters);
+    if ((int) $columns->fetchColumn() !== count($requiredColumns)) {
+        throw new RuntimeException('schema migration readiness check failed');
+    }
+
     $defaults = $pdo->query(
         'SELECT '
         . 'EXISTS(SELECT 1 FROM billing_settings WHERE id=1) AS billing_ready,'

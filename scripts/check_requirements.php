@@ -612,8 +612,8 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
         $checkStatement=$pdo->prepare("SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema=? AND constraint_type='CHECK'");
         $checkStatement->execute([$database]);
         $checkCount=(int)$checkStatement->fetchColumn();
-        if($checkCount>=70)addResult($successes,'พบ CHECK constraints ครบอย่างน้อย 70 รายการ');
-        else addResult($errors,'schema มี CHECK constraints ไม่ครบ; พบ '.$checkCount.' จากอย่างน้อย 70');
+        if($checkCount>=73)addResult($successes,'พบ CHECK constraints ครบอย่างน้อย 73 รายการ');
+        else addResult($errors,'schema มี CHECK constraints ไม่ครบ; พบ '.$checkCount.' จากอย่างน้อย 73');
 
         $generatedStatement=$pdo->prepare("SELECT table_name,column_name FROM information_schema.columns WHERE table_schema=? AND extra LIKE '%STORED GENERATED%'");
         $generatedStatement->execute([$database]);
@@ -624,7 +624,46 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
         if($missingGenerated===[])addResult($successes,'พบ generated uniqueness guards ครบ 4 คอลัมน์');
         else addResult($errors,'schema ขาด generated uniqueness guards: '.implode(', ',$missingGenerated));
 
-        if ($missing === []) {
+        $requiredLineColumns = [
+            'integration_settings.line_channel_secret_enc' => ['text', 'YES'],
+            'notification_outbox.line_accepted_request_id' => ['varchar(128)', 'YES'],
+            'notification_outbox.line_request_id' => ['varchar(128)', 'YES'],
+            'notification_outbox.recipient' => ['varchar(33)', 'NO'],
+            'residents.line_user_id' => ['varchar(33)', 'YES'],
+        ];
+        $lineColumnsStatement=$pdo->prepare("SELECT table_name,column_name,column_type,is_nullable
+            FROM information_schema.columns
+            WHERE table_schema=? AND (
+                (table_name='integration_settings' AND column_name='line_channel_secret_enc')
+                OR (table_name='notification_outbox' AND column_name IN ('line_request_id','line_accepted_request_id','recipient'))
+                OR (table_name='residents' AND column_name='line_user_id')
+            )");
+        $lineColumnsStatement->execute([$database]);
+        $lineColumns=[];
+        foreach($lineColumnsStatement->fetchAll() as $row){
+            $table=(string)($row['TABLE_NAME']??$row['table_name']??'');
+            $column=(string)($row['COLUMN_NAME']??$row['column_name']??'');
+            $lineColumns[$table.'.'.$column]=[
+                strtolower((string)($row['COLUMN_TYPE']??$row['column_type']??'')),
+                strtoupper((string)($row['IS_NULLABLE']??$row['is_nullable']??'')),
+            ];
+        }
+        $invalidLineColumns=[];
+        foreach($requiredLineColumns as $column=>$definition){
+            if(($lineColumns[$column]??null)!==$definition)$invalidLineColumns[]=$column;
+        }
+        if($invalidLineColumns===[])addResult($successes,'พบคอลัมน์ LINE webhook/reconciliation และชนิดข้อมูลครบ 5 คอลัมน์');
+        else addResult($errors,'schema ขาดคอลัมน์/ชนิดข้อมูลจาก migration 004: '.implode(', ',$invalidLineColumns));
+
+        $requiredLineChecks=['chk_integration_settings_line_secret','chk_notification_outbox_line_accepted_request_id','chk_notification_outbox_line_request_id','chk_notification_outbox_recipient','chk_residents_line_user_id'];
+        $lineChecksStatement=$pdo->prepare("SELECT constraint_name FROM information_schema.table_constraints WHERE constraint_schema=? AND constraint_type='CHECK' AND constraint_name IN ('chk_integration_settings_line_secret','chk_notification_outbox_line_accepted_request_id','chk_notification_outbox_line_request_id','chk_notification_outbox_recipient','chk_residents_line_user_id')");
+        $lineChecksStatement->execute([$database]);
+        $lineChecks=array_map(static fn(array $row):string=>(string)($row['CONSTRAINT_NAME']??$row['constraint_name']??''),$lineChecksStatement->fetchAll());
+        $missingLineChecks=array_values(array_diff($requiredLineChecks,$lineChecks));
+        if($missingLineChecks===[])addResult($successes,'พบ LINE webhook/reconciliation CHECK constraints ครบ 5 รายการ');
+        else addResult($errors,'schema ขาด CHECK constraints จาก migration 004: '.implode(', ',$missingLineChecks));
+
+        if ($missing === [] && $invalidLineColumns === []) {
             $ownerCount = (int) $pdo->query("SELECT COUNT(*) FROM admin_users WHERE role='owner' AND active=1")->fetchColumn();
             if ($ownerCount < 1) {
                 addResult($warnings, 'ฐานข้อมูลยังไม่มี owner ที่ active');
@@ -637,7 +676,7 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
             else addResult($successes, 'ผู้ดูแลยืนยันค่าการเรียกเก็บรายเดือนผ่านหลังบ้านแล้ว');
             $integration = $pdo->query(
                 'SELECT promptpay_target,payment_receiver_account_tail,
-                        line_channel_access_token_enc,slip_provider,
+                        line_channel_access_token_enc,line_channel_secret_enc,slip_provider,
                         slipok_api_key_enc,slipok_branch_id,easyslip_api_key_enc
                    FROM integration_settings WHERE id=1'
             )->fetch();
@@ -651,6 +690,12 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
                 $lineReady = configuredIntegrationSecret(
                     $integration['line_channel_access_token_enc'] ?? null,
                     'line_channel_access_token',
+                    $secretCipher,
+                    $errors,
+                );
+                $lineChannelSecretReady = configuredIntegrationSecret(
+                    $integration['line_channel_secret_enc'] ?? null,
+                    'line_channel_secret',
                     $secretCipher,
                     $errors,
                 );
@@ -669,6 +714,8 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
 
                 if ($lineReady) addResult($successes, 'ตั้ง LINE Channel access token แบบเข้ารหัสและตรวจสอบความถูกต้องแล้ว');
                 else addResult($warnings, 'ยังไม่ได้ตั้ง LINE token จากหลังบ้าน; worker จะยังส่งบิลไม่ได้');
+                if ($lineReady && $lineChannelSecretReady) addResult($successes, 'ตั้ง LINE Channel secret แล้ว; signed webhook พร้อมตรวจสอบลายเซ็น');
+                else addResult($warnings, 'ยังตั้ง LINE webhook ไม่ครบ; ต้องมีทั้ง Channel access token และ Channel secret');
 
                 $provider = (string) ($integration['slip_provider'] ?? 'none');
                 // PromptPay is intentionally not a receiver-account fallback:

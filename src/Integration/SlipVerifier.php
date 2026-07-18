@@ -86,13 +86,28 @@ final class SlipVerifier
         $d=is_array($json['data']??null)?$json['data']:[];
         $status=(int)($json['_status']??0);
         $providerCode=is_scalar($json['code']??null)?strtoupper(trim((string)$json['code'])):'';
+        $receiver=$d['receiver']['account']['value']??$d['receiver']['account']??$d['receiver']['proxy']['value']??null;
+        // Error 1012 can include complete slip data, but the provider cannot
+        // prove whether this application, another bill, or another client made
+        // the original check. Never auto-pay from cached duplicate evidence.
+        if($providerCode==='1012'){
+            return [
+                'ok'=>false,
+                'transient'=>false,
+                'reason'=>'SlipOK reports a duplicate slip; manual reconciliation is required',
+                'provider_code'=>'1012',
+                'http_status'=>$status,
+                'ambiguous_duplicate'=>true,
+                'amount'=>$this->scalarString($d['amount']??null),
+                'receiver_ref'=>$this->scalarString($receiver),
+                'account_matched'=>($d['success']??false)===true,
+                'receiver_match_source'=>'slipok_branch_log',
+                'provider_branch'=>$branch,
+                'transferred_at'=>self::extractTransferredAt('slipok',$d),
+            ];
+        }
         $success=$status===200&&($json['success']??false)===true&&($d['success']??false)===true&&$d!==[];
-        // SlipOK documents that error 1012 includes the complete slip data.
-        // Reconcile that cached evidence exactly like a success response. This
-        // recovers a reservation after the provider accepted it but PHP died
-        // before the local transaction could be finalized.
-        $recoverableDuplicate=$status===400&&$providerCode==='1012'&&$d!==[]&&($d['success']??false)===true;
-        if(!$success&&!$recoverableDuplicate){
+        if(!$success){
             $contractIncomplete=$status===200&&($json['success']??false)===true&&(!$success||$d===[]);
             return [
                 'ok'=>false,
@@ -103,7 +118,6 @@ final class SlipVerifier
                 'ambiguous_duplicate'=>$providerCode==='1012'||str_contains(strtoupper((string)($json['message']??'')),'DUPLICATE'),
             ];
         }
-        $receiver=$d['receiver']['account']['value']??$d['receiver']['account']??$d['receiver']['proxy']['value']??null;
         return [
             'ok'=>true,
             'transaction_ref'=>$this->scalarString($d['transRef']??$d['ref']??$d['transactionRef']??null),
@@ -119,7 +133,7 @@ final class SlipVerifier
             'provider_branch'=>$branch,
             'transferred_at'=>self::extractTransferredAt('slipok',$d),
             'http_status'=>$status,
-            'provider_code'=>$recoverableDuplicate?'1012':null,
+            'provider_code'=>null,
         ];
     }
 
@@ -143,15 +157,12 @@ final class SlipVerifier
             return [
                 'ok'=>false,
                 'transient'=>!$duplicate&&self::isTransientProviderError('easyslip',$providerCode,$status),
-                'reason'=>$duplicate?'The provider reports that this slip was already used':$this->providerReason($json,'EasySlip rejected the slip'),
+                'reason'=>$duplicate?'EasySlip reports a duplicate slip; manual reconciliation is required':$this->providerReason($json,'EasySlip rejected the slip'),
                 'provider_code'=>$providerCode,
                 'http_status'=>$status,
                 'ambiguous_duplicate'=>$duplicate,
             ];
         }
-        // EasySlip returns a normal 200 response with the complete cached slip
-        // contract and isDuplicate=true. Validate it below; transaction_ref and
-        // the local slip HMAC uniqueness guards still prevent cross-bill replay.
         $wasDuplicate=($d['isDuplicate']??false)===true;
         $matchedAccount=is_array($d['matchedAccount']??null)?$d['matchedAccount']:null;
         $matchedAccountReference=$matchedAccount['bankNumber']??null;
@@ -161,6 +172,22 @@ final class SlipVerifier
         // six-digit comparison impossible.
         $receiver=$raw['receiver']['account']['bank']['account']??$raw['receiver']['account']['proxy']['account']??null;
         $rawAmount=is_array($raw['amount']??null)?($raw['amount']['amount']??null):($raw['amount']??null);
+        if($wasDuplicate){
+            return [
+                'ok'=>false,
+                'transient'=>false,
+                'reason'=>'EasySlip reports a duplicate slip; manual reconciliation is required',
+                'provider_code'=>'DUPLICATE',
+                'http_status'=>$status,
+                'ambiguous_duplicate'=>true,
+                'amount'=>$this->scalarString($d['amountInSlip']??$rawAmount??$d['amount']??null),
+                'receiver_ref'=>$this->scalarString($receiver),
+                'account_matched'=>$matchedAccount!==null,
+                'matched_account_ref'=>$this->scalarString($matchedAccountReference),
+                'receiver_match_source'=>'easyslip_registered_account',
+                'transferred_at'=>self::extractTransferredAt('easyslip',$d),
+            ];
+        }
         return [
             'ok'=>true,
             'transaction_ref'=>$this->scalarString($raw['transRef']??$d['transRef']??null),
@@ -171,7 +198,7 @@ final class SlipVerifier
             'receiver_match_source'=>'easyslip_registered_account',
             'transferred_at'=>self::extractTransferredAt('easyslip',$d),
             'http_status'=>$status,
-            'provider_code'=>$wasDuplicate?'DUPLICATE':null,
+            'provider_code'=>null,
         ];
     }
 
