@@ -511,10 +511,8 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
         $retiredResidentCredentialColumns=(int)$retiredResidentCredentialStatement->fetchColumn();
         if($retiredResidentCredentialColumns===0){
             addResult($successes,'schema ไม่มีคอลัมน์ credential ของ Resident ที่เลิกใช้แล้ว');
-        }elseif($schemaAudit){
-            addResult($errors,'schema ยังมี residents.pin_hash; สำรองฐาน รอให้แอป phone-only ทุก replica พร้อม แล้วรัน migration 006');
         }else{
-            addResult($warnings,'schema ยังมี residents.pin_hash ชั่วคราวสำหรับ rolling deploy; รัน --schema-audit หลัง migration 006');
+            addResult($errors,'schema ยังมี residents.pin_hash ซึ่งไม่รองรับกับ source ปัจจุบัน; ใช้ transitional commit a52bc33 ให้ทุก replica พร้อม รัน migration 006 ตรวจว่าคอลัมน์หาย แล้วจึง deploy source ปัจจุบัน');
         }
 
         $grantRows = $pdo->query('SHOW GRANTS')->fetchAll(PDO::FETCH_NUM);

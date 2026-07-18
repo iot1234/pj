@@ -24,7 +24,7 @@
 - ทดสอบ `003_append_only_guards.sql` ในฐานที่อาจเคยใช้ migration 002 รุ่นเก่าแล้ว: สร้างตัวป้องกัน `bill_items` และ `audit_logs` ครบ 4 รายการแบบรันซ้ำได้
 - ทดสอบ `004_line_webhook.sql` บน schema ก่อนเพิ่ม webhook แล้วรันซ้ำ 2 รอบสำเร็จ: ได้ 73 CHECK constraints และคอลัมน์/ชนิดข้อมูล LINE webhook/reconciliation ครบ; กรณีมี LINE User ID legacy ผิดรูปแบบ migration หยุดก่อนสร้างคอลัมน์ใหม่ตาม preflight
 - ทดสอบ `005_booking_active_phone.sql` บน MySQL 8.4.10 ทั้งรอบแรกและรันซ้ำสำเร็จ; duplicate active phone, composite/lookalike index, generated expression ที่ผิด `ELSE` และ literal หลอกถูกปฏิเสธ ขณะที่ canonical expression และลำดับ `IN` ที่สลับกันผ่าน
-- ทดสอบ flow phone-only กับ MySQL 8.4.10 จริงครบทั้ง fresh schema ที่ไม่มี `pin_hash` และฐาน legacy ที่คอลัมน์ยังเป็น `NOT NULL`: move-in, login ด้วยเบอร์, การปฏิเสธ payload ที่แอบส่ง `pin`, compatibility credential แบบสุ่ม และ login หลังลบคอลัมน์ผ่านทั้งหมด; `006_remove_resident_pin.sql` รันซ้ำ 2 รอบได้และยืนยันว่าคอลัมน์ถูกลบ
+- ทดสอบ transitional commit `a52bc33` กับ MySQL 8.4.10 บนฐาน legacy ที่ `pin_hash NOT NULL`, รัน `006_remove_resident_pin.sql` ซ้ำ 2 รอบและยืนยันว่าคอลัมน์ถูกลบ จากนั้นทดสอบ source ปัจจุบันบน fresh/post-migration schema: move-in, login ด้วยเบอร์ และการปฏิเสธ payload ที่แอบส่ง `pin` ผ่านทั้งหมด
 - `scripts/check_requirements.php --db` ด้วย runtime user ที่มีเฉพาะ `SELECT`/`INSERT`/`UPDATE` ตรวจชนิดคอลัมน์ LINE 5 รายการและ CHECK constraints ที่เกี่ยวข้องครบ โดยจบด้วย 0 error; warning ที่เหลือเป็นค่าธุรกิจ/credential/Owner ที่จงใจไม่ใส่ในฐาน fresh-install QA
 - Final release database ใช้ runtime user ที่มีเฉพาะ `SELECT`/`INSERT`/`UPDATE` บน schema และผ่าน `check_requirements.php --db` โดยข้าม trigger metadata ตามข้อจำกัดสิทธิ์และไม่มี schema error
 - Schema audit ด้วยบัญชี schema owner ตรวจ trigger ครบ 15 รายการ ตรวจว่าไม่มี `residents.pin_hash` และไม่มี schema error; warning ที่เหลือเป็น credential ธุรกิจที่จงใจไม่ใส่ใน QA
@@ -75,6 +75,6 @@ Negative/positive invariants ที่ยิงตรงผ่าน MySQL ผ�
 - HTTPS/HSTS/reverse proxy, firewall/network policy และ trusted proxy ของโดเมนจริง
 - Worker/cron หลาย process, health monitoring และ alert/log aggregation บนเครื่อง deploy
 - Backup/restore drill ที่กู้ MySQL, private slips และ `APP_KEY` รุ่นเดียวกับ ciphertext ได้
-- ฐานเดิมต้องทดสอบลำดับ deploy แอป phone-only ก่อนรัน `006_remove_resident_pin.sql`, รัน migration ซ้ำได้ และยืนยันว่า move-in ยังทำงานได้ทั้งช่วงที่ `pin_hash NOT NULL` ยังอยู่กับหลังคอลัมน์ถูกลบ; fresh schema ต้องไม่มีคอลัมน์นี้
+- ฐานเดิมต้องทดสอบลำดับ transitional commit `a52bc33` → `006_remove_resident_pin.sql` → ตรวจว่าไม่มีคอลัมน์ → deploy source ปัจจุบัน; source ปัจจุบันต้องไม่ถูก deploy บน schema ที่ยังมี `pin_hash NOT NULL` และ fresh schema ต้องไม่มีคอลัมน์นี้
 
 ระบบทำงานแบบ fail-closed: provider ที่ยังไม่พร้อมจะไม่ทำให้ bill เป็น paid, ไม่มี endpoint ให้ Admin กดอนุมัติชำระเอง, รายการที่ผลยังไม่แน่นอนคงเป็น pending เพื่อ retry หรือปิดพร้อมเหตุผล และ credential ไม่ถูกคืนผ่าน API หรือบันทึกใน log/audit

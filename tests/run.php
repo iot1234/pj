@@ -175,7 +175,7 @@ $test('critical usability guards remain in the web UI',function()use($same):void
     $same(1,preg_match('/จำนวนเงินอื่น \/ ห้อง/',$admin));
     $same(1,preg_match('/water_units.*water_rate.*water_amount/s',$js));
 });
-$test('resident PIN surfaces are retired with a rolling-safe schema contract',function()use($same,$app):void{
+$test('resident PIN surfaces and runtime compatibility paths are retired',function()use($same,$app):void{
     $root=dirname(__DIR__);
     $auth=file_get_contents($root.'/src/Domain/AuthService.php');
     $resident=file_get_contents($root.'/src/Domain/ResidentService.php');
@@ -202,11 +202,13 @@ $test('resident PIN surfaces are retired with a rolling-safe schema contract',fu
     $same(true,str_contains($migration,'ALTER TABLE residents DROP COLUMN pin_hash'));
     $same(true,str_contains($migration,'DORMITORY_MIGRATION_006_ABORT_RESIDENTS_TABLE_MISSING'));
     $same(true,str_contains($migration,'DORMITORY_MIGRATION_006_ABORT_PIN_COLUMN_REMAINS'));
-    $same(true,str_contains($booking,'hasLegacyResidentCredentialColumn'));
-    $same(true,str_contains($booking,'Password::hash(bin2hex(random_bytes(32)))'));
+    $same(false,str_contains($booking,'pin_hash'));
+    $same(false,str_contains($booking,'hasLegacyResidentCredentialColumn'));
+    $same(false,str_contains($booking,'disabledLegacyCredential'));
     $requirements=file_get_contents($root.'/scripts/check_requirements.php');if(!is_string($requirements))throw new RuntimeException('cannot read requirements checker');
     $same(true,str_contains($requirements,"column_name='pin_hash'"));
     $same(true,str_contains($requirements,'schema ยังมี residents.pin_hash'));
+    $same(true,str_contains($requirements,'ไม่รองรับกับ source ปัจจุบัน'));
     foreach([$login,$portal,$admin,$js]as$surface)$same(0,preg_match('/\bPIN\b/i',$surface));
     $routesProperty=new ReflectionProperty(Dormitory\Http\Router::class,'routes');
     $registered=$routesProperty->getValue(Dormitory\Http\Routes::build($app));

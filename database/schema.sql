@@ -6,9 +6,10 @@
 -- database/migrations/002_operational_hardening.sql exactly once, then
 -- database/migrations/003_append_only_guards.sql and
 -- database/migrations/004_line_webhook.sql and
--- database/migrations/005_booking_active_phone.sql. Then deploy the phone-only
--- application to every replica, verify health, back up and test restore before
--- database/migrations/006_remove_resident_pin.sql. Never run 006 before deploy.
+-- database/migrations/005_booking_active_phone.sql. Then deploy transitional
+-- commit a52bc33 to every replica, verify health, back up and test restore,
+-- run database/migrations/006_remove_resident_pin.sql, verify the column is
+-- absent, and only then deploy the current source.
 
 SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
 -- Store timestamps in UTC. PHP formats them for Asia/Bangkok at the UI edge.

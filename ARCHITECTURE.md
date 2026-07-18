@@ -174,12 +174,11 @@ rows without credentials, rooms, residents, or admin accounts.
 `database/demo.sql` is optional local-development data and is never imported by
 the production bootstrap.
 
-Fresh schema no longer contains `residents.pin_hash`. During a rolling upgrade,
-the new application can temporarily coexist with an older production schema
-whose `pin_hash` column is still `NOT NULL`: move-in writes a random,
-unexposed, unusable compatibility credential only to satisfy that old column,
-and no API accepts it. Migration `006_remove_resident_pin.sql` removes the
-legacy column after the new application is active.
+Fresh schema no longer contains `residents.pin_hash`, and the current runtime
+never probes or writes that column. An installation upgrading from an older
+schema must use transitional commit `a52bc33` for the rolling boundary, wait
+until every replica is healthy, run `006_remove_resident_pin.sql`, verify that
+the column is absent, and only then deploy the current source.
 
 Existing installations must be backed up and upgraded by a schema-owning
 account. Run `database/migrations/001_integration_settings.sql` if the
@@ -198,11 +197,11 @@ IDs for reconciliation, strict 33-character ID columns, and their CHECK
 constraints; its preflight stops before any ALTER when legacy values are
 invalid.
 Run `database/migrations/005_booking_active_phone.sql` after resolving duplicate
-active bookings per phone, then deploy the phone-only application before
+active bookings per phone, then deploy transitional commit `a52bc33` before
 running `database/migrations/006_remove_resident_pin.sql`. Migration 006 is a
 destructive schema cleanup, so back up and test restore first; an old
 PIN-dependent application version cannot be rolled back after the column is
-removed.
+removed. Deploy the current source only after migration 006 succeeds.
 The application runtime account has only `SELECT`, `INSERT`, and `UPDATE` on the
 application database and must not run any migration. After upgrade, an owner
 configures integrations in Admin -> Settings.

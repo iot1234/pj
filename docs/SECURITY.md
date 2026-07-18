@@ -54,7 +54,7 @@ MySQL ต้องเป็น 8.0.16+ เพื่อให้ `CHECK` ทำ�
 
 constraint ไม่สามารถกัน active booking กับ active occupancy ที่อยู่คนละตารางพร้อมกันได้ด้วย unique index ตัวเดียว service จึงต้อง lock ห้องและตรวจทั้งสองตารางใน transaction การแก้ business flow ต้องรักษา invariant นี้
 
-Fresh schema ไม่มี `residents.pin_hash` ฐาน production รุ่นเก่าอาจยังมีคอลัมน์ `NOT NULL` ชั่วคราวระหว่าง rolling deploy; แอปรุ่น phone-only จะใส่ค่า credential สุ่มที่ไม่เปิดเผยและไม่มี route ใดตรวจเฉพาะเพื่อรักษาความเข้ากันได้จน deploy เสร็จ จากนั้น DBA ต้องรัน `006_remove_resident_pin.sql` เพื่อลบคอลัมน์ สำรอง/ทดสอบ restore ก่อนเพราะหลังลบแล้วแอปรุ่น PIN เดิม rollback กลับมาใช้ schema นี้ไม่ได้
+Fresh schema ไม่มี `residents.pin_hash` และ source ปัจจุบันไม่อ่านหรือเขียนคอลัมน์นี้ ฐานรุ่นเก่าต้อง deploy transitional commit `a52bc33`, รอทุก replica healthy, สำรอง/ทดสอบ restore, รัน `006_remove_resident_pin.sql`, ตรวจว่าคอลัมน์หาย แล้วจึง deploy source ปัจจุบัน หลังลบแล้วแอปรุ่น PIN เดิม rollback กลับมาใช้ schema นี้ไม่ได้โดยไม่ restore schema/backup
 
 ## Slip upload และการเปลี่ยนสถานะ paid
 
@@ -124,7 +124,7 @@ Fresh schema ไม่มี `residents.pin_hash` ฐาน production รุ่
 ## Checklist ก่อนเปิด production
 
 - [ ] `php scripts/check_requirements.php --production` ผ่าน; Docker ต้องผ่านทั้ง service `app` และ `worker` ตาม README
-- [ ] ฐานข้อมูลใหม่ชื่อ `dormitory` import `install.sql` ไฟล์เดียว หรือฐานชื่ออื่นใช้วิธีขั้นสูงโดยเลือกฐานเป้าหมายแล้ว import `schema.sql` + `defaults.sql` ครบและยืนยันว่าไม่มี `residents.pin_hash`; ฐานเดิมต้องสำรอง/ทดสอบ restore แล้วรัน `001` เมื่อจำเป็น → `002` หนึ่งครั้ง → `003` → `004` หลังแก้ LINE ID legacy → `005` หลังปิด active booking ซ้ำต่อเบอร์ → deploy แอป phone-only → `006_remove_resident_pin.sql` พร้อมรัน `--db --strict` และ `--schema-audit`; ห้ามลบ trigger `DEFINER` หลังติดตั้ง
+- [ ] ฐานข้อมูลใหม่ชื่อ `dormitory` import `install.sql` ไฟล์เดียว หรือฐานชื่ออื่นใช้วิธีขั้นสูงโดยเลือกฐานเป้าหมายแล้ว import `schema.sql` + `defaults.sql` ครบและยืนยันว่าไม่มี `residents.pin_hash`; ฐานเดิมต้องสำรอง/ทดสอบ restore แล้วรัน `001` เมื่อจำเป็น → `002` หนึ่งครั้ง → `003` → `004` หลังแก้ LINE ID legacy → `005` หลังปิด active booking ซ้ำต่อเบอร์ → transitional commit `a52bc33` → `006_remove_resident_pin.sql` → ตรวจ schema → deploy source ปัจจุบัน พร้อมรัน `--db --strict` และ `--schema-audit`; ห้ามลบ trigger `DEFINER` หลังติดตั้ง
 - [ ] HTTPS/HSTS/CSP/security headers ตรวจจากภายนอกแล้ว
 - [ ] `.env`, source และ `storage/private` เปิดผ่าน URL ไม่ได้
 - [ ] ไม่มี default credential, สร้าง Owner ผ่าน `--password-stdin`/secret store และลบตัวแปรรหัสผ่านชั่วคราวหลัง bootstrap

@@ -42,9 +42,10 @@
 3. รัน `database/migrations/003_append_only_guards.sql` หลัง `002` เพื่อซ่อมฐานที่เคยรัน `002` รุ่นต้นให้มี trigger แบบ append-only ของ `bill_items` และ `audit_logs` ครบ ไฟล์นี้ตรวจ schema ก่อนแก้และปลอดภัยต่อการรันซ้ำ
 4. ตรวจแถว `residents.line_user_id` และ `notification_outbox.recipient` ให้เป็น `U` ตามด้วย hexadecimal ตัวพิมพ์เล็ก 32 ตัวทั้งหมด แล้วรัน `database/migrations/004_line_webhook.sql` เพื่อเพิ่ม Channel secret ที่เข้ารหัส, LINE request IDs สำหรับ reconciliation และ CHECK รูปแบบ LINE User ID ไฟล์จะหยุดก่อน ALTER หากพบค่า legacy ที่แก้ไม่ได้โดยอัตโนมัติ และปลอดภัยต่อการรันซ้ำ
 5. ตรวจและปิดคำขอจองซ้ำให้แต่ละเบอร์เหลือสถานะ `pending`/`confirmed` ไม่เกินหนึ่งรายการ แล้วรัน `database/migrations/005_booking_active_phone.sql` เพื่อเพิ่ม generated unique guard ต่อเบอร์ ไฟล์จะหยุดก่อน ALTER หากยังมีข้อมูลซ้ำ และปลอดภัยต่อการรันซ้ำ
-6. Deploy แอปรุ่น phone-only ที่รองรับทั้ง schema เก่าและใหม่ให้ทุก replica healthy ก่อน ระหว่างนี้หาก `residents.pin_hash` เดิมยังเป็น `NOT NULL` แอปอาจเขียน credential สุ่มที่ไม่เปิดเผยและไม่มี endpoint ใดใช้ตรวจเพื่อให้ move-in ทำงานได้ชั่วคราว
-7. สำรองและทดสอบ restore แล้วรัน `database/migrations/006_remove_resident_pin.sql` เพื่อลบคอลัมน์ legacy ไฟล์นี้ปลอดภัยต่อการรันซ้ำ ห้ามรันก่อน deploy และหลังรันแล้วห้าม rollback ไปแอปรุ่น PIN เดิมโดยไม่ restore schema/backup
-8. รัน `php scripts/check_requirements.php --db --strict` ด้วยบัญชี runtime แล้วรัน `php scripts/check_requirements.php --schema-audit` ด้วยบัญชี DBA/schema owner ชั่วคราว เพื่อตรวจ generated guards, คอลัมน์ migration 004, CHECK constraints, การไม่มี `pin_hash` และ trigger ทั้ง 15 รายการหลังอัปเกรด
+6. Deploy transitional commit `a52bc33` ให้ทุก replica healthy เพื่อสร้างขอบเขต rolling upgrade ที่ไม่รับ PIN แต่ยังรองรับ schema เก่าชั่วคราว
+7. สำรองและทดสอบ restore แล้วรัน `database/migrations/006_remove_resident_pin.sql` เพื่อลบคอลัมน์ legacy ไฟล์นี้ปลอดภัยต่อการรันซ้ำ ห้ามรันขณะยังมีแอปรุ่น PIN และหลังรันแล้วห้าม rollback ไปแอปรุ่น PIN เดิมโดยไม่ restore schema/backup
+8. ยืนยันว่า `residents.pin_hash` ไม่มีแล้วจึง deploy source ปัจจุบัน ซึ่งไม่มี runtime compatibility สำหรับคอลัมน์นี้
+9. รัน `php scripts/check_requirements.php --db --strict` ด้วยบัญชี runtime แล้วรัน `php scripts/check_requirements.php --schema-audit` ด้วยบัญชี DBA/schema owner ชั่วคราว เพื่อตรวจ generated guards, คอลัมน์ migration 004, CHECK constraints, การไม่มี `pin_hash` และ trigger ทั้ง 15 รายการหลังอัปเกรด
 
 ข้อมูล snapshot ของรายการเก่าที่ migration สร้างขึ้นเป็นการประกอบย้อนจากข้อมูลที่ยังมีอยู่: ค่าเช่าจะเลือกจาก occupancy ก่อนแล้วจึง fallback ไปค่าเช่าห้องปัจจุบัน ส่วนชื่อผู้พัก/รหัสห้องของบิลเก่าอาจไม่ใช่ค่าประวัติเดิมหากเคยแก้ไข จึงต้องตรวจเอกสารย้อนหลังหรือ export เดิมบน staging ก่อนเปิดใช้งานจริง
 

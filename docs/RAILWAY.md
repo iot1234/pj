@@ -70,11 +70,10 @@ MySQL และทดสอบ restore ก่อน แล้วใช้ Railwa
 ก่อนรัน `004` บัญชี `dormitory_app` ใช้รัน migration ไม่ได้เพราะไม่มี DDL
 ก่อนรัน `005` ต้องยกเลิกหรือปิดคำขอซ้ำให้เหลือ pending/confirmed ไม่เกินหนึ่งรายการต่อเบอร์
 
-จากนั้น deploy image รุ่น phone-only และรอให้ทุก web replica healthy ก่อนจึง snapshot/backup อีกครั้งแล้วรัน
-`006_remove_resident_pin.sql` เพื่อลบ `residents.pin_hash` Migration 006 รันซ้ำได้แต่ห้ามรันก่อน deploy;
-หลังลบคอลัมน์แล้วแอปรุ่น PIN เดิม rollback ไม่ได้โดยไม่ restore schema/backup ระหว่างที่คอลัมน์เก่า
-`NOT NULL` ยังอยู่ แอปรุ่นใหม่อาจใส่ credential สุ่มที่ไม่เปิดเผยและไม่มี endpoint ใช้ตรวจเพียงเพื่อให้ move-in
-ทำงานได้จน migration เสร็จ Fresh database จาก `install.sql` ไม่มีคอลัมน์นี้และไม่ต้องรัน 006
+จากนั้น deploy transitional commit `a52bc33` และรอให้ทุก web replica healthy ก่อนจึง snapshot/backup อีกครั้งแล้วรัน
+`006_remove_resident_pin.sql` เพื่อลบ `residents.pin_hash` Migration 006 รันซ้ำได้แต่ห้ามรันขณะยังมีแอปรุ่น PIN;
+หลังลบคอลัมน์แล้วแอปรุ่น PIN เดิม rollback ไม่ได้โดยไม่ restore schema/backup ให้ตรวจว่าคอลัมน์หายแล้วจึง deploy
+source ปัจจุบัน ซึ่งไม่อ่านหรือเขียน `pin_hash` อีก Fresh database จาก `install.sql` ไม่มีคอลัมน์นี้และไม่ต้องรัน 006
 
 หลัง migration ให้รัน `php scripts/check_requirements.php --schema-audit` ด้วย schema
 owner และ `php scripts/check_requirements.php --db --strict --production` ด้วย runtime
