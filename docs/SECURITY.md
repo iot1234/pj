@@ -130,7 +130,7 @@ Fresh schema ไม่มี `residents.pin_hash` และ source ปัจจ�
 - [ ] ไม่มี default credential, สร้าง Owner ผ่าน `--password-stdin`/secret store และลบตัวแปรรหัสผ่านชั่วคราวหลัง bootstrap
 - [ ] owner คนแรก login ได้ และ role/IDOR/CSRF/rate-limit negative tests ผ่าน
 - [ ] Owner ตั้ง integration ได้, Admin ทั่วไปแก้ไม่ได้, API ไม่คืน secret, ช่องว่างเก็บค่าเดิม, explicit clear ลบจริง และ web/worker เห็นค่ารอบถัดไปโดยไม่ restart
-- [ ] ตั้ง LINE Channel access token/Channel secret แล้วนำ `<APP_URL>/api/webhooks/line` ไปตั้งใน LINE Developers Console; request ที่ไม่มี/ปลอม `X-Line-Signature` ถูกปฏิเสธ, event ซ้ำไม่ตอบซ้ำ และ audit ไม่มีเนื้อหาข้อความหรือ LINE User ID ดิบ
+- [ ] ตั้ง LINE Channel access token/Channel secret แล้วนำ `<APP_URL>/api/webhooks/line` ไปตั้งใน LINE Developers Console เปิด Use webhook และ Webhook redelivery แล้วกด Verify; request ที่ไม่มี/ปลอม `X-Line-Signature` ถูกปฏิเสธ, event ซ้ำไม่ตอบซ้ำ และ audit ไม่มีเนื้อหาข้อความหรือ LINE User ID ดิบ
 - [ ] ทดลอง booking race, move-in race, duplicate bill และ duplicate slip/transaction
 - [ ] ทดสอบ LINE retry ด้วย key เดิม รวมกรณี HTTP 409
 - [ ] ทดสอบ SlipOK/EasySlip ด้วย amount mismatch, receiver mismatch, duplicate และ timeout รวมเปิดดูหลักฐาน, แก้ค่า receiver แล้ว retry รายการ pending และปิดรายการหลัง verification lease หมด

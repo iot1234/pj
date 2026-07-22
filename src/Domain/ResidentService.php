@@ -65,50 +65,67 @@ final class ResidentService
     {
         Validator::only($input,['full_name','phone','email']);
         if($input===[])throw new HttpException(422,'กรุณาระบุข้อมูลที่ต้องการแก้ไข','VALIDATION_ERROR');
+        $requestedPhone=array_key_exists('phone',$input)?Validator::phone($input['phone']):null;
 
-        $pdo=$this->app->database()->pdo();
-        $lock=$pdo->prepare("SELECT r.full_name,r.phone_norm,r.email,r.line_user_id
-            FROM residents r
-            JOIN occupancies o ON o.resident_id=r.id AND o.status='active'
-            WHERE r.id=? AND r.active=1
-            FOR UPDATE");
-        $lock->execute([$id]);
-        $current=$lock->fetch();
-        if(!$current)throw new HttpException(404,'ไม่พบผู้พักอาศัยปัจจุบัน','RESIDENT_NOT_FOUND');
-
-        $name=array_key_exists('full_name',$input)
-            ?Validator::string($input['full_name'],'full_name',1,150)
-            :(string)$current['full_name'];
-        $phone=array_key_exists('phone',$input)
-            ?Validator::phone($input['phone'])
-            :(string)$current['phone_norm'];
-        $email=array_key_exists('email',$input)
-            ?Validator::nullableEmail($input['email'])
-            :($current['email']!==null?(string)$current['email']:null);
-        $changed=[];
-        foreach([
-            'full_name'=>[$current['full_name'],$name],
-            'phone'=>[$current['phone_norm'],$phone],
-            'email'=>[$current['email'],$email],
-        ] as $field=>$values){
-            if((string)($values[0]??'')!==(string)($values[1]??''))$changed[]=$field;
-        }
-        $phoneChanged=in_array('phone',$changed,true);
-
-        try{
-            $update=$pdo->prepare('UPDATE residents SET full_name=?,phone_norm=?,email=?,auth_version=auth_version+?,updated_at=UTC_TIMESTAMP() WHERE id=? AND active=1');
-            $update->execute([$name,$phone,$email,$phoneChanged?1:0,$id]);
-        }catch(PDOException $error){
-            if((int)($error->errorInfo[1]??0)===1062||(string)$error->getCode()==='23000'){
-                throw new HttpException(409,'เบอร์โทรนี้ผูกกับผู้พักรายอื่นแล้ว','RESIDENT_IDENTITY_IN_USE');
+        return $this->app->database()->transaction(function(PDO $pdo)use($id,$input,$requestedPhone):array{
+            // Take the shared cross-table mutex before resident/occupancy row
+            // locks. Booking writers may already hold a room lock before this
+            // mutex, so this order avoids a resident-row <-> phone-lock cycle.
+            if($requestedPhone!==null){
+                $this->app->limiter()->lockBucket('resident-booking-phone',$requestedPhone);
             }
-            throw $error;
-        }
+            $lock=$pdo->prepare("SELECT r.full_name,r.phone_norm,r.email,r.line_user_id
+                FROM residents r
+                JOIN occupancies o ON o.resident_id=r.id AND o.status='active'
+                WHERE r.id=? AND r.active=1
+                FOR UPDATE");
+            $lock->execute([$id]);
+            $current=$lock->fetch();
+            if(!$current)throw new HttpException(404,'ไม่พบผู้พักอาศัยปัจจุบัน','RESIDENT_NOT_FOUND');
 
-        $profile=$this->profile($id);
-        $profile['changed_fields']=$changed;
-        $profile['sessions_revoked']=$phoneChanged;
-        return $profile;
+            $name=array_key_exists('full_name',$input)
+                ?Validator::string($input['full_name'],'full_name',1,150)
+                :(string)$current['full_name'];
+            $phone=$requestedPhone??(string)$current['phone_norm'];
+            $email=array_key_exists('email',$input)
+                ?Validator::nullableEmail($input['email'])
+                :($current['email']!==null?(string)$current['email']:null);
+            $changed=[];
+            foreach([
+                'full_name'=>[$current['full_name'],$name],
+                'phone'=>[$current['phone_norm'],$phone],
+                'email'=>[$current['email'],$email],
+            ] as $field=>$values){
+                if((string)($values[0]??'')!==(string)($values[1]??''))$changed[]=$field;
+            }
+            $phoneChanged=in_array('phone',$changed,true);
+
+            if($phoneChanged){
+                // Serialize against booking creation/confirmation/check-in.
+                // The generated unique columns protect each table separately;
+                // this mutex closes the missing-row race between the tables.
+                $activeBooking=$pdo->prepare('SELECT id FROM bookings WHERE active_phone_norm=? LIMIT 1 FOR UPDATE');
+                $activeBooking->execute([$phone]);
+                if($activeBooking->fetch()){
+                    throw new HttpException(409,'เบอร์โทรนี้มีคำขอจองที่ยังดำเนินการอยู่','BOOKING_PHONE_ACTIVE');
+                }
+            }
+
+            try{
+                $update=$pdo->prepare('UPDATE residents SET full_name=?,phone_norm=?,email=?,auth_version=auth_version+?,updated_at=UTC_TIMESTAMP() WHERE id=? AND active=1');
+                $update->execute([$name,$phone,$email,$phoneChanged?1:0,$id]);
+            }catch(PDOException $error){
+                if((int)($error->errorInfo[1]??0)===1062||(string)$error->getCode()==='23000'){
+                    throw new HttpException(409,'เบอร์โทรนี้ผูกกับผู้พักรายอื่นแล้ว','RESIDENT_IDENTITY_IN_USE');
+                }
+                throw $error;
+            }
+
+            $profile=$this->profile($id);
+            $profile['changed_fields']=$changed;
+            $profile['sessions_revoked']=$phoneChanged;
+            return $profile;
+        });
     }
 
     /** @return array{line_user_id_hint:string,expires_in:int} */
@@ -254,6 +271,25 @@ final class ResidentService
             }
 
             $period=substr($moveOut,0,7).'-01';
+            // Meter readings belong to the physical room and form an ordered
+            // monthly chain. Back-dating an occupancy past a later reading
+            // would leave that reading available to the next resident even
+            // though it was recorded while this occupancy was current.
+            $laterMeters=$pdo->prepare('SELECT id,meter_type,period FROM meter_readings WHERE room_id=? AND period>? ORDER BY period,id FOR UPDATE');
+            $laterMeters->execute([$occupancy['room_id'],$period]);
+            $laterMeterRows=$laterMeters->fetchAll();
+            if($laterMeterRows!==[]){
+                $laterMeterReadings=array_map(static fn(array $row):array=>[
+                    'id'=>(int)$row['id'],
+                    'meter_type'=>(string)$row['meter_type'],
+                    'period'=>substr((string)$row['period'],0,7),
+                ],$laterMeterRows);
+                throw new HttpException(409,'มีเลขมิเตอร์ของรอบเดือนหลังวันที่ย้ายออก กรุณาตรวจสอบวันที่หรือแก้ประวัติมิเตอร์ก่อน','MOVE_OUT_HAS_LATER_METERS',[
+                    'later_meter_ids'=>array_column($laterMeterReadings,'id'),
+                    'later_meter_periods'=>array_values(array_unique(array_column($laterMeterReadings,'period'))),
+                    'later_meter_readings'=>$laterMeterReadings,
+                ]);
+            }
             $laterBills=$pdo->prepare('SELECT id,bill_no,period FROM bills WHERE occupancy_id=? AND period>? ORDER BY period,id FOR UPDATE');
             $laterBills->execute([$occupancy['occupancy_id'],$period]);
             $laterRows=$laterBills->fetchAll();

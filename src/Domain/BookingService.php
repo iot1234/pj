@@ -10,6 +10,8 @@ use PDO;
 
 final class BookingService
 {
+    private const EARLIEST_MOVE_IN_DATE = '2000-01-01';
+
     public function __construct(private readonly Application $app)
     {
     }
@@ -51,7 +53,8 @@ final class BookingService
         $roomId = Validator::id($input['room_id'] ?? null, 'room_id');
         $fullName = Validator::string($input['full_name'] ?? null, 'full_name', 2, 120);
         $phone = Validator::phone($input['phone'] ?? null);
-        $idempotency = trim((string) ($input['idempotency_key'] ?? ''));
+        $rawIdempotency = $input['idempotency_key'] ?? null;
+        $idempotency = is_string($rawIdempotency) ? trim($rawIdempotency) : '';
         if (!preg_match('/^[A-Za-z0-9_-]{16,64}$/', $idempotency)) {
             throw new HttpException(422, 'idempotency_key ไม่ถูกต้อง', 'VALIDATION_ERROR', ['field'=>'idempotency_key']);
         }
@@ -94,6 +97,12 @@ final class BookingService
             if ($occupiedRow || $reservedRow) {
                 throw new HttpException(409, 'ห้องนี้ไม่ว่างแล้ว กรุณาเลือกห้องอื่น', 'ROOM_NOT_AVAILABLE');
             }
+            // bookings.active_phone_norm and residents.phone_norm are unique
+            // only inside their own tables. Use one durable per-phone mutex
+            // for every cross-table writer, then fail closed when this phone
+            // already belongs to a current occupancy.
+            $this->lockPhoneInvariant($phone);
+            $this->assertPhoneHasNoActiveOccupancy($pdo,$phone);
             // The daily counters represent successful-looking booking
             // attempts, not stable identity conflicts. This snapshot check
             // avoids falsely blocking a phone that already owns an active
@@ -234,11 +243,13 @@ final class BookingService
         $emailProvided=array_key_exists('email',$input);
         $email=$emailProvided?Validator::nullableEmail($input['email']):null;
         $moveIn=Validator::date($input['move_in_date']??null,'move_in_date');
+        self::assertMoveInDateAllowed($moveIn);
         $timezone=new \DateTimeZone((string)$this->app->config->get('APP_TIMEZONE','Asia/Bangkok'));
         if($moveIn>(new \DateTimeImmutable('today',$timezone))->format('Y-m-d')){
             throw new HttpException(422,'move_in_date cannot be in the future','VALIDATION_ERROR',['field'=>'move_in_date']);
         }
-        $idempotency=trim((string)($input['idempotency_key']??''));
+        $rawIdempotency=$input['idempotency_key']??null;
+        $idempotency=is_string($rawIdempotency)?trim($rawIdempotency):'';
         if(!preg_match('/^[A-Za-z0-9_-]{16,64}$/',$idempotency)){
             throw new HttpException(422,'idempotency_key ไม่ถูกต้อง','VALIDATION_ERROR',['field'=>'idempotency_key']);
         }
@@ -275,6 +286,7 @@ final class BookingService
                     ||!hash_equals((string)$booking['phone_norm'],$phone)){
                     throw new HttpException(409,'Idempotency key was already used for a different operation','IDEMPOTENCY_KEY_REUSED');
                 }
+                $this->lockPhoneInvariant($phone);
                 $lock=$pdo->prepare('SELECT * FROM bookings WHERE id=? FOR UPDATE');
                 $lock->execute([(int)$booking['id']]);
                 $booking=$lock->fetch();
@@ -301,6 +313,7 @@ final class BookingService
                 if($booking['status']!=='confirmed'){
                     throw new HttpException(409,'Administrative check-in is no longer active','ADMIN_CHECK_IN_INACTIVE',['status'=>$booking['status']]);
                 }
+                $this->assertPhoneHasNoActiveOccupancy($pdo,$phone);
             }else{
                 if($roomRow['deleted_at']!==null)throw new HttpException(404,'ไม่พบห้อง','ROOM_NOT_FOUND');
                 $this->expirePending($roomId);
@@ -313,6 +326,8 @@ final class BookingService
                 $reserved->execute([$roomId]);
                 if($reserved->fetch())throw new HttpException(409,'ห้องนี้ไม่ว่างแล้ว กรุณาเลือกห้องอื่น','ROOM_NOT_AVAILABLE');
 
+                $this->lockPhoneInvariant($phone);
+                $this->assertPhoneHasNoActiveOccupancy($pdo,$phone);
                 $activePhone=$pdo->prepare('SELECT id FROM bookings WHERE active_phone_norm=? LIMIT 1');
                 $activePhone->execute([$phone]);
                 if($activePhone->fetch()){
@@ -366,6 +381,7 @@ final class BookingService
         $emailProvided=array_key_exists('email',$input);
         $email=$emailProvided?Validator::nullableEmail($input['email']):null;
         $moveIn = Validator::date($input['move_in_date'] ?? null, 'move_in_date');
+        self::assertMoveInDateAllowed($moveIn);
         $timezone=new \DateTimeZone((string)$this->app->config->get('APP_TIMEZONE','Asia/Bangkok'));
         if($moveIn>(new \DateTimeImmutable('today',$timezone))->format('Y-m-d')){
             throw new HttpException(422,'move_in_date cannot be in the future','VALIDATION_ERROR',['field'=>'move_in_date']);
@@ -377,15 +393,24 @@ final class BookingService
             $lookup->execute([$id]);
             $roomId=$lookup->fetchColumn();
             if($roomId===false)throw new HttpException(404, 'ไม่พบการจอง', 'BOOKING_NOT_FOUND');
+            $roomId=(int)$roomId;
             $roomLock=$pdo->prepare('SELECT id,deleted_at FROM rooms WHERE id=? FOR UPDATE');
-            $roomLock->execute([(int)$roomId]);
+            $roomLock->execute([$roomId]);
             $roomRow=$roomLock->fetch();
             if(!$roomRow)throw new HttpException(404, 'ไม่พบห้อง', 'ROOM_NOT_FOUND');
+            $phoneLookup=$pdo->prepare('SELECT phone_norm FROM bookings WHERE id=?');
+            $phoneLookup->execute([$id]);
+            $phone=$phoneLookup->fetchColumn();
+            if($phone===false)throw new HttpException(404, 'ไม่พบการจอง', 'BOOKING_NOT_FOUND');
+            $this->lockPhoneInvariant((string)$phone);
             $lock = $pdo->prepare('SELECT * FROM bookings WHERE id=? FOR UPDATE');
             $lock->execute([$id]);
             $booking = $lock->fetch();
             if (!$booking) throw new HttpException(404, 'ไม่พบการจอง', 'BOOKING_NOT_FOUND');
-            if((int)$booking['room_id']!==(int)$roomId)throw new \RuntimeException('Booking room identity changed while acquiring locks');
+            if((int)$booking['room_id']!==$roomId
+                ||!hash_equals((string)$phone,(string)$booking['phone_norm'])){
+                throw new \RuntimeException('Booking identity changed while acquiring locks');
+            }
             if ($booking['status'] !== 'confirmed') throw new HttpException(409, 'ต้องยืนยันการจองก่อนย้ายเข้า', 'BOOKING_BAD_STATE', ['status'=>$booking['status']]);
             if ($roomRow['deleted_at'] !== null) throw new HttpException(409, 'ห้องนี้ถูกลบแล้ว', 'ROOM_DELETED');
             $bookedDate=(new \DateTimeImmutable((string)$booking['created_at'],new \DateTimeZone('UTC')))->setTimezone($timezone)->format('Y-m-d');
@@ -394,6 +419,7 @@ final class BookingService
             $occupied = $pdo->prepare("SELECT id FROM occupancies WHERE room_id=? AND status='active' LIMIT 1 FOR UPDATE");
             $occupied->execute([$booking['room_id']]);
             if ($occupied->fetch()) throw new HttpException(409, 'ห้องนี้มีผู้เช่าแล้ว', 'ROOM_OCCUPIED');
+            $this->assertPhoneHasNoActiveOccupancy($pdo,(string)$booking['phone_norm']);
 
             // Monthly meters cannot be split safely between two occupancies.
             // A room whose previous occupancy ended in this month can accept
@@ -476,6 +502,37 @@ final class BookingService
         return 'ADM-'.strtoupper(substr(hash('sha256',$idempotency."\0".$canonical),0,32));
     }
 
+    private static function assertMoveInDateAllowed(string $moveIn): void
+    {
+        if($moveIn<self::EARLIEST_MOVE_IN_DATE){
+            throw new HttpException(
+                422,
+                'move_in_date cannot be earlier than '.self::EARLIEST_MOVE_IN_DATE,
+                'VALIDATION_ERROR',
+                ['field'=>'move_in_date','minimum'=>self::EARLIEST_MOVE_IN_DATE]
+            );
+        }
+    }
+
+    private function lockPhoneInvariant(string $phone): void
+    {
+        $this->app->limiter()->lockBucket('resident-booking-phone',$phone);
+    }
+
+    private function assertPhoneHasNoActiveOccupancy(PDO $pdo,string $phone): void
+    {
+        $occupied=$pdo->prepare("SELECT o.id
+            FROM residents r
+            JOIN occupancies o ON o.resident_id=r.id AND o.status='active'
+            WHERE r.phone_norm=?
+            LIMIT 1
+            FOR UPDATE");
+        $occupied->execute([$phone]);
+        if($occupied->fetch()){
+            throw new HttpException(409,'เบอร์โทรนี้เป็นของผู้เข้าพักที่มีห้องอยู่แล้ว','RESIDENT_ALREADY_OCCUPIED');
+        }
+    }
+
     /** @param list<string> $allowed
      *  @return array<string,mixed>
      */
@@ -486,14 +543,23 @@ final class BookingService
             $lookup->execute([$id]);
             $roomId=$lookup->fetchColumn();
             if($roomId===false)throw new HttpException(404, 'ไม่พบการจอง', 'BOOKING_NOT_FOUND');
+            $roomId=(int)$roomId;
             $room = $pdo->prepare('SELECT id FROM rooms WHERE id=? FOR UPDATE');
-            $room->execute([(int)$roomId]);
+            $room->execute([$roomId]);
             if($room->fetchColumn()===false)throw new HttpException(404, 'ไม่พบห้อง', 'ROOM_NOT_FOUND');
+            $phoneLookup=$pdo->prepare('SELECT phone_norm FROM bookings WHERE id=?');
+            $phoneLookup->execute([$id]);
+            $phone=$phoneLookup->fetchColumn();
+            if($phone===false)throw new HttpException(404, 'ไม่พบการจอง', 'BOOKING_NOT_FOUND');
+            if($target==='confirmed')$this->lockPhoneInvariant((string)$phone);
             $lock = $pdo->prepare('SELECT * FROM bookings WHERE id=? FOR UPDATE');
             $lock->execute([$id]);
             $booking = $lock->fetch();
             if (!$booking) throw new HttpException(404, 'ไม่พบการจอง', 'BOOKING_NOT_FOUND');
-            if((int)$booking['room_id']!==(int)$roomId)throw new \RuntimeException('Booking room identity changed while acquiring locks');
+            if((int)$booking['room_id']!==$roomId
+                ||!hash_equals((string)$phone,(string)$booking['phone_norm'])){
+                throw new \RuntimeException('Booking identity changed while acquiring locks');
+            }
             if($target==='confirmed'&&$booking['status']==='cancelled'&&$this->wasAutomaticallyExpired($booking)){
                 return $this->errorOutcome(409,'Booking hold expired; refresh the booking list','BOOKING_EXPIRED');
             }
@@ -504,6 +570,7 @@ final class BookingService
                 $this->cancelExpiredBooking($pdo,$booking);
                 return $this->errorOutcome(409,'Booking hold expired; refresh the booking list','BOOKING_EXPIRED');
             }
+            if($target==='confirmed')$this->assertPhoneHasNoActiveOccupancy($pdo,(string)$booking['phone_norm']);
             $mutation($pdo, $booking);
             $fresh=$pdo->prepare('SELECT * FROM bookings WHERE id=?');$fresh->execute([$id]);
             return $this->map($fresh->fetch());

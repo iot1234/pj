@@ -84,7 +84,7 @@ final class SlipVerifier
         $json=$this->request(
             'https://api.slipok.com/api/line/apikey/'.rawurlencode($branch),
             ['x-authorization: '.$key],
-            ['files'=>new \CURLFile($path,$mime,'slip'),'log'=>'true','amount'=>$amount],
+            ['files'=>new \CURLFile($path,$mime,self::uploadFilenameForMime($mime)),'log'=>'true','amount'=>$amount],
         );
         $d=is_array($json['data']??null)?$json['data']:[];
         $status=(int)($json['_status']??0);
@@ -153,7 +153,7 @@ final class SlipVerifier
         $json=$this->request(
             'https://api.easyslip.com/v2/verify/bank',
             ['Authorization: Bearer '.$key],
-            ['image'=>new \CURLFile($path,$mime,'slip'),'checkDuplicate'=>'true','matchAmount'=>$amount,'matchAccount'=>'true'],
+            ['image'=>new \CURLFile($path,$mime,self::uploadFilenameForMime($mime)),'checkDuplicate'=>'true','matchAmount'=>$amount,'matchAccount'=>'true'],
         );
         $d=is_array($json['data']??null)?$json['data']:[];
         $raw=is_array($d['rawSlip']??null)?$d['rawSlip']:[];
@@ -293,7 +293,11 @@ final class SlipVerifier
         }
         if($provider==='easyslip'){
             if(in_array($normalized,['SLIP_PENDING','API_SERVER_ERROR','INTERNAL_SERVER_ERROR','NOT_FOUND'],true))return true;
-            if(in_array($normalized,['SLIP_NOT_FOUND','VALIDATION_ERROR','INVALID_IMAGE_TYPE','INVALID_IMAGE_FORMAT','IMAGE_SIZE_TOO_LARGE','DUPLICATE_SLIP'],true))return false;
+            // VALIDATION_ERROR describes an invalid provider request, not
+            // proof that the resident's bank evidence is invalid. Preserve
+            // the payment for retry after correcting a contract/config issue.
+            if($normalized==='VALIDATION_ERROR')return true;
+            if(in_array($normalized,['SLIP_NOT_FOUND','INVALID_IMAGE_TYPE','INVALID_IMAGE_FORMAT','IMAGE_SIZE_TOO_LARGE','DUPLICATE_SLIP'],true))return false;
             if(in_array($status,[401,403],true))return true;
             if($status===404)return $normalized==='SLIP_PENDING';
         }
@@ -310,6 +314,16 @@ final class SlipVerifier
     private function scalarString(mixed $value): ?string
     {
         return is_scalar($value)?(string)$value:null;
+    }
+
+    private static function uploadFilenameForMime(string $mime): string
+    {
+        return match($mime){
+            'image/jpeg'=>'slip.jpg',
+            'image/png'=>'slip.png',
+            'image/webp'=>'slip.webp',
+            default=>throw new \InvalidArgumentException('Unsupported slip MIME type'),
+        };
     }
 
     /** @param list<string> $headers @param array<string,mixed>|string $body @return array<string,mixed> */

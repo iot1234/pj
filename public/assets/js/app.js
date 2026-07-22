@@ -1524,7 +1524,7 @@
       if (webhookUrl) webhookUrl.value = text(integrations.line_webhook_url, '');
       const webhookReadiness = $('[data-line-webhook-readiness]', form);
       if (webhookReadiness) webhookReadiness.textContent = readiness.line_webhook === true
-        ? 'Webhook พร้อมใช้งาน — นำ URL นี้ไปใส่ใน LINE Developers Console และเปิด Use webhook'
+        ? 'บันทึก Token/Secret ครบแล้ว — ยังต้องตั้ง URL เปิด Use webhook และ Webhook redelivery แล้วกด Verify ใน LINE Developers Console'
         : 'Webhook ยังไม่พร้อม: ต้องบันทึก Channel access token และ Channel secret ให้ครบ';
       const statusMap = { promptpay: readiness.promptpay === true, line: readiness.line === true, slip: readiness.slip_verification === true };
       Object.entries(statusMap).forEach(([key, ready]) => {

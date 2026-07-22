@@ -123,6 +123,81 @@ $test('period canonicalization',function()use($same):void{$same('2026-07',Valida
 $test('period rejection',fn()=>$throws(fn()=>Validator::period('2026-13'),'VALIDATION_ERROR'));
 $test('scaled decimal exactness',function()use($same):void{$same(123456,Validator::scaledDecimal('1234.56','amount'));$same('1234.56',Validator::decimalString(123456));});
 $test('decimal rejects excess precision',fn()=>$throws(fn()=>Validator::scaledDecimal('1.001','amount'),'VALIDATION_ERROR'));
+$test('validators reject composite and ambiguous scalar JSON values without warnings',function()use($same):void{
+    set_error_handler(static function(int $severity,string $message,string $file,int $line):never{
+        throw new ErrorException($message,0,$severity,$file,$line);
+    });
+    try{
+        $cases=[
+            static fn()=>Validator::phone([]),
+            static fn()=>Validator::period(new stdClass()),
+            static fn()=>Validator::date([], 'move_in_date'),
+            static fn()=>Validator::id(true),
+            static fn()=>Validator::nullableEmail(false),
+            static fn()=>Validator::enum(1,'status',['1']),
+            static fn()=>Validator::scaledDecimal([], 'amount'),
+            static fn()=>Validator::scaledDecimal(true, 'amount'),
+        ];
+        foreach($cases as$case){
+            try{$case();throw new RuntimeException('ambiguous validator input was accepted');}
+            catch(HttpException $error){$same(422,$error->status);$same('VALIDATION_ERROR',$error->errorCode);}
+        }
+    }finally{
+        restore_error_handler();
+    }
+});
+$test('service string inputs reject composite JSON values before casting',function()use($same,$app):void{
+    $assertValidation=static function(callable $callback,string $field)use($same):void{
+        try{$callback();throw new RuntimeException('composite service input was accepted');}
+        catch(HttpException $error){$same(422,$error->status);$same('VALIDATION_ERROR',$error->errorCode);$same($field,$error->details['field']??null);}
+    };
+    $assertValidation(fn()=>$app->adminUsers()->create(['username'=>'safe_admin','password'=>[]],1),'password');
+    $assertValidation(fn()=>$app->adminUsers()->update(1,['password'=>[]],1),'password');
+    $assertValidation(fn()=>$app->billing()->updateSettings([
+        'water_rate'=>'1.00','electric_rate'=>'1.00','due_days'=>true,
+    ],1),'due_days');
+    $boundedInteger=new ReflectionMethod(SystemSettingsService::class,'boundedInteger');
+    foreach([true,false,[],new stdClass()]as$ambiguousInteger){
+        $assertValidation(
+            fn()=>$boundedInteger->invoke($app->settings(),$ambiguousInteger,'line_max_attempts',1,20),
+            'line_max_attempts',
+        );
+    }
+    $same(5,$boundedInteger->invoke($app->settings(),'5','line_max_attempts',1,20));
+    $today=(new DateTimeImmutable('today',new DateTimeZone((string)$app->config->get('APP_TIMEZONE','Asia/Bangkok'))))->format('Y-m-d');
+    $assertValidation(fn()=>$app->bookings()->createAdminResident(1,[
+        'room_id'=>1,'full_name'=>'Composite Input','phone'=>'0812345678','move_in_date'=>$today,'idempotency_key'=>[],
+    ]),'idempotency_key');
+    $roomValidate=new ReflectionMethod($app->rooms(),'validate');
+    $same(['description'=>null,'image_key'=>null],$roomValidate->invoke($app->rooms(),['description'=>null,'image_key'=>null],true));
+    $assertValidation(fn()=>$roomValidate->invoke($app->rooms(),['description'=>[]],true),'description');
+    $assertValidation(fn()=>$roomValidate->invoke($app->rooms(),['image_key'=>[]],true),'image_key');
+    $assertValidation(fn()=>$roomValidate->invoke($app->rooms(),['floor'=>true],true),'floor');
+    $roomSource=file_get_contents(dirname(__DIR__).'/src/Domain/RoomService.php');
+    $billingSource=file_get_contents(dirname(__DIR__).'/src/Domain/BillingService.php');
+    if(!is_string($roomSource)||!is_string($billingSource))throw new RuntimeException('cannot read service validation sources');
+    $same(true,str_contains($roomSource,"Validator::string(\$input['description'], 'description', 0, 2000)"));
+    $same(true,str_contains($roomSource,"if(\$input['image_key']!==null&&!is_string(\$input['image_key']))"));
+    $same(true,str_contains($billingSource,"&& !is_string(\$input['other_description']))"));
+    $routes=file_get_contents(dirname(__DIR__).'/src/Http/Routes.php');if(!is_string($routes))throw new RuntimeException('cannot read routes');
+    $same(true,str_contains($routes,'$queryString=static function'));
+    $same(2,substr_count($routes,"if(!is_string(\$query[\$key]))throw new HttpException"));
+    $same(false,str_contains($routes,"isset(\$r->query['status'])?(string)\$r->query['status']"));
+});
+$test('admin payment query helpers are captured and reject composite values before database access',function()use($same,$app):void{
+    $property=new ReflectionProperty(Dormitory\Http\Router::class,'routes');
+    $registered=$property->getValue(Dormitory\Http\Routes::build($app));
+    $handler=null;
+    foreach($registered as$route){
+        if($route['method']==='GET'&&$route['regex']==='#^/api/admin/payments/?$#'){$handler=$route['handler'];break;}
+    }
+    if(!is_callable($handler))throw new RuntimeException('admin payment list route not found');
+    $request=new Request('GET','/api/admin/payments',[],['status'=>[]],[],[],[],'query-helper-test');
+    try{$handler($request);throw new RuntimeException('composite payment status was accepted');}
+    catch(HttpException $error){
+        $same(422,$error->status);$same('VALIDATION_ERROR',$error->errorCode);$same('status',$error->details['field']??null);
+    }
+});
 $test('unknown fields rejected',fn()=>$throws(fn()=>Validator::only(['safe'=>1,'password'=>2],['safe']),'UNKNOWN_FIELDS'));
 $test('FR-10 resident lifecycle endpoints are explicitly allowlisted',function()use($same,$app):void{
     $property=new ReflectionProperty(Dormitory\Http\Router::class,'routes');
@@ -165,6 +240,15 @@ $test('PromptPay QR is blocked until the full payment path is ready',function()u
     $app->billing()->assertPromptPayAvailable([...$base,'payment'=>['status'=>'rejected']]);
     $routes=file_get_contents(dirname(__DIR__).'/src/Http/Routes.php');if(!is_string($routes))throw new RuntimeException('cannot read routes');
     $same(1,preg_match("#/api/resident/bills/\{id\}/promptpay'.*?residentDetail.*?assertPromptPayAvailable.*?PromptPayService::payload#s",$routes));
+    $promptPayRouteStart=strpos($routes,"/api/resident/bills/{id}/promptpay");
+    $promptPayRouteEnd=strpos($routes,"/api/resident/bills/{id}/slip",$promptPayRouteStart===false?0:$promptPayRouteStart);
+    $promptPayRoute=$promptPayRouteStart!==false&&$promptPayRouteEnd!==false?substr($routes,$promptPayRouteStart,$promptPayRouteEnd-$promptPayRouteStart):'';
+    $billLock=strpos($promptPayRoute,'SELECT id FROM bills WHERE id=? AND resident_id=? FOR SHARE');
+    $settingsLock=strpos($promptPayRoute,'SELECT id FROM integration_settings WHERE id=1 FOR SHARE');
+    $missingSettingsGuard=strpos($promptPayRoute,"if(\$settingsId===false)throw new HttpException(503");
+    $detailRead=strpos($promptPayRoute,'residentDetail');
+    $same(true,$billLock!==false&&$settingsLock!==false&&$missingSettingsGuard!==false&&$detailRead!==false
+        &&$billLock<$settingsLock&&$settingsLock<$missingSettingsGuard&&$missingSettingsGuard<$detailRead);
 });
 $test('critical usability guards remain in the web UI',function()use($same):void{
     $root=dirname(__DIR__);$js=file_get_contents($root.'/public/assets/js/app.js');$admin=file_get_contents($root.'/templates/admin/console.php');
@@ -397,7 +481,19 @@ $test('trusted proxy chain uses the right-most untrusted client',function()use($
         $same('10.0.0.5',$app->security()->clientIp($invalid));
     }finally{putenv('TRUSTED_PROXIES');}
 });
-$test('EasySlip terminal versus retryable errors',function()use($same):void{$same(false,SlipVerifier::isTransientProviderError('easyslip','SLIP_NOT_FOUND',404));$same(true,SlipVerifier::isTransientProviderError('easyslip','SLIP_PENDING',404));$same(true,SlipVerifier::isTransientProviderError('easyslip','API_SERVER_ERROR',500));});
+$test('EasySlip terminal versus retryable errors',function()use($same):void{$same(false,SlipVerifier::isTransientProviderError('easyslip','SLIP_NOT_FOUND',404));$same(true,SlipVerifier::isTransientProviderError('easyslip','SLIP_PENDING',404));$same(true,SlipVerifier::isTransientProviderError('easyslip','API_SERVER_ERROR',500));$same(true,SlipVerifier::isTransientProviderError('easyslip','VALIDATION_ERROR',400));});
+$test('provider multipart filenames are derived from verified MIME types',function()use($same):void{
+    $filename=new ReflectionMethod(SlipVerifier::class,'uploadFilenameForMime');
+    $same('slip.jpg',$filename->invoke(null,'image/jpeg'));
+    $same('slip.png',$filename->invoke(null,'image/png'));
+    $same('slip.webp',$filename->invoke(null,'image/webp'));
+    try{$filename->invoke(null,'image/gif');throw new RuntimeException('unsupported provider upload MIME was accepted');}
+    catch(InvalidArgumentException $error){$same('Unsupported slip MIME type',$error->getMessage());}
+    $source=file_get_contents(dirname(__DIR__).'/src/Integration/SlipVerifier.php');
+    if(!is_string($source))throw new RuntimeException('cannot read SlipVerifier');
+    $same(2,substr_count($source,'new \\CURLFile($path,$mime,self::uploadFilenameForMime($mime))'));
+    $same(false,str_contains($source,"new \\CURLFile(\$path,\$mime,'slip')"));
+});
 $test('SlipOK bank delay and receiver configuration remain retryable',function()use($same):void{$same(true,SlipVerifier::isTransientProviderError('slipok',1009,400));$same(true,SlipVerifier::isTransientProviderError('slipok',1010,400));$same(true,SlipVerifier::isTransientProviderError('slipok',1014,400));$same(false,SlipVerifier::isTransientProviderError('slipok',1007,400));$same(false,SlipVerifier::isTransientProviderError('slipok',1011,400));$same(false,SlipVerifier::isTransientProviderError('slipok',1013,400));});
 $test('stored slip retry verifies MIME dimensions and HMAC',function()use($same,$throws,$app):void{
     $year=$app->config->root.'/storage/private/slips/2099';$directory=$year.'/01';$yearExisted=is_dir($year);$directoryExisted=is_dir($directory);
@@ -591,7 +687,7 @@ $test('direct resident UI keeps one idempotency key, lists only available rooms,
     if(!is_string($js)||!is_string($template))throw new RuntimeException('cannot read direct resident UI sources');
     foreach([
         'data-open-resident-create','id="resident-create-dialog"','id="resident-create-form"',
-        'name="idempotency_key"','name="room_id" required','name="move_in_date" type="date" required',
+        'name="idempotency_key"','name="room_id" required','name="move_in_date" type="date" min="2000-01-01" required',
         'name="full_name"','name="phone"','name="email"','name="reuse_resident_id" type="checkbox" disabled',
         'id="resident-create-reuse-field" hidden','id="resident-create-error" role="alert" hidden',
     ]as$surface)$same(true,str_contains($template,$surface));
@@ -640,8 +736,21 @@ $test('direct admin resident check-in validates the complete request before data
     $throws(fn()=>$service->createAdminResident(1,array_replace($valid,['phone'=>'12345'])),'VALIDATION_ERROR');
     $throws(fn()=>$service->createAdminResident(1,array_replace($valid,['email'=>'not-an-email'])),'VALIDATION_ERROR');
     $throwsHttp(fn()=>$service->createAdminResident(1,array_replace($valid,['move_in_date'=>(new DateTimeImmutable($today))->modify('+1 day')->format('Y-m-d')])),'VALIDATION_ERROR',422);
+    foreach(['0001-01-01','1999-12-31']as$tooEarly){
+        $throwsHttp(fn()=>$service->createAdminResident(1,array_replace($valid,['move_in_date'=>$tooEarly])),'VALIDATION_ERROR',422);
+    }
     $throwsHttp(fn()=>$service->createAdminResident(1,array_replace($valid,['idempotency_key'=>'too-short'])),'VALIDATION_ERROR',422);
     $throws(fn()=>$service->createAdminResident(1,$valid+['reuse_resident_id'=>0]),'VALIDATION_ERROR');
+
+    $moveInDateGuard=new ReflectionMethod($service,'assertMoveInDateAllowed');
+    $moveInDateGuard->invoke(null,'2000-01-01');
+    foreach(['0001-01-01','1999-12-31']as$tooEarly){
+        try{$moveInDateGuard->invoke(null,$tooEarly);throw new RuntimeException('early move-in date was accepted');}
+        catch(HttpException $error){
+            $same(422,$error->status);$same('VALIDATION_ERROR',$error->errorCode);
+            $same('move_in_date',$error->details['field']??null);$same('2000-01-01',$error->details['minimum']??null);
+        }
+    }
 
     $reference=new ReflectionMethod($service,'administrativeReference');
     $arguments=['admin-checkin-0001',1,'Direct Resident','0812345678',null,false,$today,null];
@@ -696,6 +805,7 @@ $test('direct admin resident check-in locks room first and replays only the cano
     $reference=substr($source,$referenceStart,$referenceEnd-$referenceStart);
     foreach(["'email_provided'=>\$emailProvided","'email'=>\$email","'move_in_date'=>\$moveIn","'reuse_resident_id'=>\$reuseResidentId","hash('sha256',\$idempotency.\"\\0\".\$canonical)"]as$field)$same(true,str_contains($reference,$field));
     $same(true,str_contains($source,'return $this->moveInWithPolicy($id,$adminId,$input,false)'));
+    $same(2,substr_count($source,'self::assertMoveInDateAllowed($moveIn);'));
     $same(true,str_contains($source,'if(!$allowBeforeBookingDate&&$moveIn<$bookedDate)'));
     $same(true,str_contains($source,'if($reuseResidentId!==$residentId)'));
     $same(true,str_contains($source,"'RESIDENT_REUSE_CONFIRMATION_REQUIRED'"));
@@ -741,7 +851,7 @@ $test('booking holds use the database clock and inactive replays fail closed',fu
     $same(true,str_contains($migration,'@dormitory_final_active_phone_index_row_count = 1'));
     $bootstrap=file_get_contents(dirname(__DIR__).'/scripts/bootstrap_database.sh');if(!is_string($bootstrap))throw new RuntimeException('cannot read database bootstrap');
     $same(true,str_contains($bootstrap,"active_phone_norm|0|1|FULL"));
-    $same(true,str_contains($bootstrap,'invalid bookings.active_phone_norm generated expression'));
+    $same(true,str_contains($bootstrap,'database has invalid generated uniqueness guard definitions'));
     $requirements=file_get_contents(dirname(__DIR__).'/scripts/check_requirements.php');if(!is_string($requirements))throw new RuntimeException('cannot read requirements check');
     $same(true,str_contains($requirements,"index_name='uq_bookings_one_active_per_phone'"));
     $same(true,str_contains($requirements,'count($bookingPhoneIndexRows)===1'));
@@ -818,18 +928,59 @@ $test('booking holds use the database clock and inactive replays fail closed',fu
     $same(false,str_contains($rooms,'created_at>=DATE_SUB'));
     $same(true,str_contains($rooms,'created_at>DATE_SUB'));
 });
+$test('resident phones are serialized across active bookings and occupancies',function()use($same):void{
+    $root=dirname(__DIR__);
+    $booking=file_get_contents($root.'/src/Domain/BookingService.php');
+    $resident=file_get_contents($root.'/src/Domain/ResidentService.php');
+    if(!is_string($booking)||!is_string($resident))throw new RuntimeException('cannot read resident phone invariant sources');
+    $same(true,str_contains($booking,"lockBucket('resident-booking-phone',\$phone)"));
+    $same(true,substr_count($booking,'$this->lockPhoneInvariant(')>=5);
+    $same(true,substr_count($booking,'$this->assertPhoneHasNoActiveOccupancy(')>=5);
+    $same(true,str_contains($booking,"WHERE r.phone_norm=?"));
+    $same(true,str_contains($booking,"'RESIDENT_ALREADY_OCCUPIED'"));
+
+    $createStart=strpos($booking,'public function createPublicOutcome');
+    $createEnd=strpos($booking,'public function all',$createStart===false?0:$createStart);
+    $create=$createStart!==false&&$createEnd!==false?substr($booking,$createStart,$createEnd-$createStart):'';
+    $phoneLock=strpos($create,'$this->lockPhoneInvariant($phone)');
+    $occupancyGuard=strpos($create,'$this->assertPhoneHasNoActiveOccupancy($pdo,$phone)');
+    $bookingGuard=strpos($create,'SELECT id FROM bookings WHERE active_phone_norm=? LIMIT 1');
+    $same(true,$phoneLock!==false&&$occupancyGuard!==false&&$bookingGuard!==false&&$phoneLock<$occupancyGuard&&$occupancyGuard<$bookingGuard);
+
+    $requestedLock=strpos($resident,"lockBucket('resident-booking-phone',\$requestedPhone)");
+    $residentRowLock=strpos($resident,'SELECT r.full_name,r.phone_norm,r.email,r.line_user_id');
+    $activeBooking=strpos($resident,'SELECT id FROM bookings WHERE active_phone_norm=? LIMIT 1 FOR UPDATE');
+    $same(true,$requestedLock!==false&&$residentRowLock!==false&&$activeBooking!==false&&$requestedLock<$residentRowLock&&$residentRowLock<$activeBooking);
+    $same(true,str_contains($resident,"'BOOKING_PHONE_ACTIVE'"));
+});
 $test('booking quota CI checks isolate the denied request',function()use($same):void{
     $script=file_get_contents(dirname(__DIR__).'/scripts/ci-booking-edge-tests.sh');
-    if(!is_string($script))throw new RuntimeException('cannot read booking edge-test script');
+    $initial=file_get_contents(dirname(__DIR__).'/scripts/ci-initial-quota-check.sh');
+    $workflow=file_get_contents(dirname(__DIR__).'/.github/workflows/ci.yml');
+    if(!is_string($script)||!is_string($initial)||!is_string($workflow))throw new RuntimeException('cannot read booking CI checks');
     $same(true,str_contains($script,"WHERE idempotency_key='ci-phone-rate-000003'"));
     $same(false,str_contains($script,"WHERE r.room_code='CI-RATE-8'"));
     $same(true,str_contains($script,'Unexpected phone quota state:'));
+    $same(true,str_contains($script,'ci-active-resident-public-000001'));
+    $same(true,str_contains($script,'RESIDENT_ALREADY_OCCUPIED'));
+    $same(true,str_contains($script,'ci-admin-phone-held-000001'));
+    $same(true,str_contains($script,'BOOKING_PHONE_ACTIVE'));
+    $same(true,str_contains($initial,"'13|6|5|2'"));
+    $same(true,str_contains($script,"'4|1|1|1'"));
+    $same(true,str_contains($workflow,"'4|2|1'"));
 });
 $test('resident lifecycle blocks unbilled months and same-period re-entry',function()use($same):void{
     $resident=file_get_contents(dirname(__DIR__).'/src/Domain/ResidentService.php');
     $booking=file_get_contents(dirname(__DIR__).'/src/Domain/BookingService.php');
     if(!is_string($resident)||!is_string($booking))throw new RuntimeException('cannot read resident lifecycle sources');
     $same(true,str_contains($resident,"'MOVE_OUT_MISSING_BILLS'"));
+    $same(true,str_contains($resident,"'MOVE_OUT_HAS_LATER_METERS'"));
+    $same(true,str_contains($resident,'SELECT id,meter_type,period FROM meter_readings WHERE room_id=? AND period>? ORDER BY period,id FOR UPDATE'));
+    $same(true,str_contains($resident,"'later_meter_ids'=>array_column(\$laterMeterReadings,'id')"));
+    $same(true,str_contains($resident,"'later_meter_periods'=>array_values(array_unique(array_column(\$laterMeterReadings,'period')))"));
+    $meterHistoryGuard=strpos($resident,'SELECT id,meter_type,period FROM meter_readings WHERE room_id=? AND period>?');
+    $laterBillGuard=strpos($resident,'SELECT id,bill_no,period FROM bills WHERE occupancy_id=? AND period>?');
+    $same(true,$meterHistoryGuard!==false&&$laterBillGuard!==false&&$meterHistoryGuard<$laterBillGuard);
     $same(true,str_contains($resident,'self::billingPeriods($firstPeriod,$period)'));
     $same(true,str_contains($resident,'active=0,line_user_id=NULL,auth_version=auth_version+1'));
     $same(true,str_contains($resident,"'_line_unlinked_audit'"));
@@ -853,12 +1004,48 @@ $test('resident lifecycle blocks unbilled months and same-period re-entry',funct
     $same(false,str_contains($booking,"resident_id=? AND status='ended' AND move_out_date>=? AND move_out_date<?"));
     $same(true,str_contains($booking,"room_id=? AND status='ended' AND move_out_date>=? ORDER BY"));
     $same(true,str_contains($booking,"substr((string)\$priorResidentOccupancy['move_out_date'],0,7).'-01'"));
+    $template=file_get_contents(dirname(__DIR__).'/templates/admin/console.php');if(!is_string($template))throw new RuntimeException('cannot read admin template');
+    $same(2,substr_count($template,'name="move_in_date" type="date" min="2000-01-01"'));
 });
 $test('room optional fields and overdue display status are deterministic',function()use($same):void{
     $rooms=file_get_contents(dirname(__DIR__).'/src/Domain/RoomService.php');if(!is_string($rooms))throw new RuntimeException('cannot read RoomService');
     $same(true,str_contains($rooms,"\$data['description'] ??= null"));$same(true,str_contains($rooms,"\$data['image_key'] ??= null"));
     $display=new ReflectionMethod(BillingService::class,'displayStatus');$now=new DateTimeImmutable('2026-07-18T12:00:00Z');
     $same('overdue',$display->invoke(null,'pending','2026-07-17',$now));$same('pending',$display->invoke(null,'pending','2026-07-18',$now));$same('paid',$display->invoke(null,'paid','2026-07-01',$now));
+});
+$test('meter and billing dates cannot create irreversible future records',function()use($same,$app):void{
+    $timezone=new DateTimeZone((string)$app->config->get('APP_TIMEZONE','Asia/Bangkok'));$today=new DateTimeImmutable('today',$timezone);
+    $currentPeriod=$today->format('Y-m');$todayDate=$today->format('Y-m-d');
+    $meterGuard=new ReflectionMethod(Dormitory\Domain\MeterService::class,'assertPeriodIsNotFuture');
+    $meterGuard->invoke($app->meters(),$currentPeriod);
+    try{$meterGuard->invoke($app->meters(),'2100-12');throw new RuntimeException('future meter period was accepted');}
+    catch(HttpException $error){$same(422,$error->status);$same('VALIDATION_ERROR',$error->errorCode);$same('period',$error->details['field']??null);$same($currentPeriod,$error->details['maximum']??null);}
+
+    $billingGuard=new ReflectionMethod(BillingService::class,'validatedBillingDates');
+    $same([$currentPeriod,$currentPeriod.'-01',$todayDate],$billingGuard->invoke($app->billing(),$currentPeriod,$todayDate));
+    try{$billingGuard->invoke($app->billing(),'2100-12','2100-12-31');throw new RuntimeException('future bill period was accepted');}
+    catch(HttpException $error){$same(422,$error->status);$same('period',$error->details['field']??null);$same($currentPeriod,$error->details['maximum']??null);}
+    $maximumDueDate=$today->modify('+60 days')->format('Y-m-d');
+    try{$billingGuard->invoke($app->billing(),$currentPeriod,$today->modify('+61 days')->format('Y-m-d'));throw new RuntimeException('excessive bill due date was accepted');}
+    catch(HttpException $error){$same(422,$error->status);$same('due_date',$error->details['field']??null);$same($maximumDueDate,$error->details['maximum']??null);}
+
+    $previousTimezone=getenv('APP_TIMEZONE');
+    try{
+        putenv('APP_TIMEZONE=Pacific/Kiritimati');
+        $boundary=new DateTimeImmutable('2026-01-31T12:00:00Z');
+        $meterGuard->invoke($app->meters(),'2026-02',$boundary);
+        $same(['2026-02','2026-02-01','2026-02-01'],$billingGuard->invoke($app->billing(),'2026-02','2026-02-01',$boundary));
+    }finally{
+        if($previousTimezone===false)putenv('APP_TIMEZONE');else putenv('APP_TIMEZONE='.$previousTimezone);
+    }
+
+    $template=file_get_contents(dirname(__DIR__).'/templates/admin/console.php');if(!is_string($template))throw new RuntimeException('cannot read admin template');
+    $same(true,str_contains($template,'id="meter-period" max="<?= e($maximumBillingPeriod) ?>"'));
+    $same(true,str_contains($template,'id="bill-period" max="<?= e($maximumBillingPeriod) ?>"'));
+    $same(true,str_contains($template,'id="bill-due-date" max="<?= e($maximumBillingDueDate) ?>"'));
+    $same(true,str_contains($template,'new DateTimeZone((string) $appTimezone)'));
+    $routes=file_get_contents(dirname(__DIR__).'/src/Http/Routes.php');if(!is_string($routes))throw new RuntimeException('cannot read routes');
+    $same(true,str_contains($routes,"'appTimezone'=>(string)\$app->config->get('APP_TIMEZONE','Asia/Bangkok')"));
 });
 $test('LINE bill delivery requires an authenticated one-time-code link flow',function()use($same,$app):void{
     $routes=new ReflectionProperty(Dormitory\Http\Router::class,'routes');$registered=$routes->getValue(Dormitory\Http\Routes::build($app));$paths=[];
@@ -1065,6 +1252,8 @@ $test('LINE and slip safety states are wired through UI, routes, and schema',fun
     $same(true,str_contains($js,"sent: 'LINE รับคำขอแล้ว'"));
     $same(true,str_contains($js,"? 'โควตาไม่จำกัด'"));
     $same(true,str_contains($js,"integrations.line_webhook_url"));
+    $same(true,str_contains($js,'เปิด Use webhook และ Webhook redelivery แล้วกด Verify'));
+    $same(false,str_contains($js,'Webhook พร้อมใช้งาน'));
     $same(true,str_contains($admin,'name="line_channel_secret" type="password"'));
     $same(true,str_contains($admin,'data-line-webhook-url readonly'));
 
@@ -1082,6 +1271,71 @@ $test('LINE and slip safety states are wired through UI, routes, and schema',fun
     $same(true,str_contains($application,"\$request->method === 'POST' && \$request->path === '/api/webhooks/line'"));
     $health=file_get_contents($root.'/public/healthz.php');if(!is_string($health))throw new RuntimeException('cannot read health check');
     foreach(['line_channel_secret_enc','line_request_id','line_accepted_request_id']as$column)$same(true,str_contains($health,$column));
+});
+$test('runtime readiness rejects legacy PIN schemas and incomplete unique guards',function()use($same):void{
+    $root=dirname(__DIR__);
+    $health=file_get_contents($root.'/public/healthz.php');
+    $bootstrap=file_get_contents($root.'/scripts/bootstrap_database.sh');
+    if(!is_string($health)||!is_string($bootstrap))throw new RuntimeException('cannot read schema readiness sources');
+    foreach([
+        'booked_monthly_rent','active_phone_norm','resident_name_snapshot','room_code_snapshot',
+        'verification_lease_until','verification_token','verification_attempts','active_bill_id',
+        'line_user_id','recipient',
+    ]as$column)$same(true,str_contains($health,"'{$column}'"));
+    $same(true,str_contains($health,"table_name='residents' AND column_name='pin_hash'"));
+    $same(true,str_contains($health,"fetchColumn() !== 0"));
+    $same(true,str_contains($bootstrap,"column_name = 'pin_hash'"));
+    $same(true,str_contains($bootstrap,'database still contains retired residents.pin_hash'));
+    foreach([
+        'uq_bookings_one_active_per_phone','uq_bookings_one_active_per_room',
+        'uq_occupancies_one_active_per_room','uq_occupancies_one_active_per_resident',
+        'uq_bills_occupancy_period','uq_bill_items_bill_type',
+        'uq_payments_slip_hmac','uq_payments_transaction_ref','uq_payments_one_active_per_bill',
+    ]as$index){$same(true,str_contains($health,$index));$same(true,str_contains($bootstrap,$index));}
+    $same(true,str_contains($health,"\$indexRow['NON_UNIQUE']"));
+    $same(true,str_contains($health,"\$indexRow['SUB_PART']"));
+    $same(true,str_contains($health,"\$indexRow['SEQ_IN_INDEX']"));
+    $same(true,str_contains($bootstrap,"index_name <> 'PRIMARY' AND non_unique = 0"));
+});
+$test('runtime readiness validates complete generated uniqueness definitions',function()use($same):void{
+    $root=dirname(__DIR__);
+    $health=file_get_contents($root.'/public/healthz.php');
+    $bootstrap=file_get_contents($root.'/scripts/bootstrap_database.sh');
+    $requirements=file_get_contents($root.'/scripts/check_requirements.php');
+    if(!is_string($health)||!is_string($bootstrap)||!is_string($requirements))throw new RuntimeException('cannot read generated-column readiness sources');
+    foreach(['column_type','is_nullable','extra','generation_expression']as$metadata){
+        $same(true,str_contains($health,$metadata));
+        $same(true,str_contains($bootstrap,$metadata));
+        $same(true,str_contains($requirements,$metadata));
+    }
+    $definitions=[
+        'bookings.active_room_id'=>["'type' => 'bigint unsigned'","casewhenstatusin'pending','confirmed'thenroom_idelsenullend"],
+        'bookings.active_phone_norm'=>["'type' => 'char(10)'","casewhenstatusin'pending','confirmed'thenphone_normelsenullend"],
+        'occupancies.active_room_id'=>["'type' => 'bigint unsigned'","casewhenstatus='active'thenroom_idelsenullend"],
+        'occupancies.active_resident_id'=>["'type' => 'bigint unsigned'","casewhenstatus='active'thenresident_idelsenullend"],
+        'payments.active_bill_id'=>["'type' => 'bigint unsigned'","casewhenstatusin'pending','verified'thenbill_idelsenullend"],
+    ];
+    foreach($definitions as$qualified=>$needles){
+        $same(true,str_contains($health,"'{$qualified}'"));
+        $same(true,str_contains($bootstrap,$qualified.'|'));
+        $same(true,str_contains($requirements,"'{$qualified}'"));
+        foreach($needles as$needle){
+            $same(true,str_contains($health,$needle));
+            $same(true,str_contains($requirements,$needle));
+            $bootstrapNeedle=str_replace("'type' => '",'',$needle);
+            $bootstrapNeedle=str_replace("'",'', $bootstrapNeedle);
+            if(str_starts_with($needle,"'type'"))$same(true,str_contains($bootstrap,'|'.$bootstrapNeedle.'|YES|STORED GENERATED|'));
+            else $same(true,str_contains($bootstrap,$needle));
+        }
+    }
+    $same(true,str_contains($health,"\$extra !== 'STORED GENERATED'"));
+    $same(true,str_contains($health,"!in_array(\$normalizedExpression, \$expected['expressions'], true)"));
+    $same(true,str_contains($bootstrap,'actual_generated_column_definitions'));
+    $same(true,str_contains($bootstrap,'database has invalid generated uniqueness guard definitions'));
+    $same(true,str_contains($requirements,"\$extra !== 'STORED GENERATED'"));
+    $same(true,str_contains($requirements,"!in_array(\$normalizedExpression, \$expected['expressions'], true)"));
+    $same(true,str_contains($requirements,'array_diff('));
+    $same(true,str_contains($requirements,'schema ขาดหรือมีนิยาม generated uniqueness guards ไม่ถูกต้อง'));
 });
 $test('container runtime command dispatches by fail-closed role',function()use($same):void{
     $script=file_get_contents(dirname(__DIR__).'/scripts/start-runtime.sh');$docker=file_get_contents(dirname(__DIR__).'/Dockerfile');

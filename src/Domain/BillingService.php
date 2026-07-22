@@ -12,6 +12,7 @@ final class BillingService
 {
     private const MAX_DECIMAL_14_2_CENTS = 99_999_999_999_999;
     private const PREVIEW_TTL_SECONDS = 300;
+    private const MAX_DUE_DAYS = 60;
 
     public function __construct(private readonly Application $app)
     {
@@ -39,8 +40,12 @@ final class BillingService
         $water = Validator::scaledDecimal($input['water_rate'] ?? null, 'water_rate', 2, 7);
         $electric = Validator::scaledDecimal($input['electric_rate'] ?? null, 'electric_rate', 2, 7);
         if($water>100_000_000||$electric>100_000_000)throw new HttpException(422,'Billing rates must not exceed 1,000,000.00','VALIDATION_ERROR');
-        $dueDays = filter_var($input['due_days'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 60]]);
-        if ($dueDays === false) {
+        try {
+            $dueDays = Validator::id($input['due_days'] ?? null, 'due_days');
+        } catch (HttpException) {
+            throw new HttpException(422, 'due_days must be between 1 and 60', 'VALIDATION_ERROR', ['field' => 'due_days']);
+        }
+        if ($dueDays > self::MAX_DUE_DAYS) {
             throw new HttpException(422, 'due_days must be between 1 and 60', 'VALIDATION_ERROR', ['field' => 'due_days']);
         }
         $pdo = $this->app->database()->pdo();
@@ -50,7 +55,7 @@ final class BillingService
              ON DUPLICATE KEY UPDATE water_rate=VALUES(water_rate),electric_rate=VALUES(electric_rate),due_days=VALUES(due_days),updated_by=VALUES(updated_by),updated_at=UTC_TIMESTAMP()'
         );
         $statement->execute([
-            Validator::decimalString($water), Validator::decimalString($electric), (int) $dueDays, $adminId,
+            Validator::decimalString($water), Validator::decimalString($electric), $dueDays, $adminId,
         ]);
         return $this->settings();
     }
@@ -212,11 +217,14 @@ final class BillingService
     private function buildPreview(array $input, PDO $pdo, bool $lock): array
     {
         Validator::only($input, ['period','room_ids','water_rate','electric_rate','other_description','other_amount','due_date']);
-        $period = Validator::period($input['period'] ?? null);
-        $periodDate = $period . '-01';
-        $dueDate = Validator::date($input['due_date'] ?? null, 'due_date');
-        if ($dueDate < $periodDate) {
-            throw new HttpException(422, 'due_date cannot precede the billing period', 'VALIDATION_ERROR', ['field' => 'due_date']);
+        [$period, $periodDate, $dueDate] = $this->validatedBillingDates(
+            $input['period'] ?? null,
+            $input['due_date'] ?? null,
+        );
+        if (array_key_exists('other_description', $input)
+            && $input['other_description'] !== null
+            && !is_string($input['other_description'])) {
+            throw new HttpException(422, 'other_description is invalid', 'VALIDATION_ERROR', ['field' => 'other_description']);
         }
         $settings = $this->settings();
         if(($settings['configured']??false)!==true){
@@ -229,8 +237,10 @@ final class BillingService
         $otherDescription = null;
         if ($otherAmount > 0) {
             $otherDescription = Validator::string($input['other_description'] ?? null, 'other_description', 1, 255);
-        } elseif (isset($input['other_description']) && trim((string) $input['other_description']) !== '') {
-            throw new HttpException(422, 'other_description requires a positive other_amount', 'VALIDATION_ERROR', ['field' => 'other_amount']);
+        } elseif (array_key_exists('other_description', $input) && $input['other_description'] !== null) {
+            if (trim($input['other_description']) !== '') {
+                throw new HttpException(422, 'other_description requires a positive other_amount', 'VALIDATION_ERROR', ['field' => 'other_amount']);
+            }
         }
         $roomIds = [];
         if (!array_key_exists('room_ids', $input))throw new HttpException(422,'room_ids is required','VALIDATION_ERROR',['field'=>'room_ids']);
@@ -292,6 +302,38 @@ final class BillingService
             ];
         }
         return ['period'=>$period,'due_date'=>$dueDate,'bills'=>$bills,'issues'=>$issues];
+    }
+
+    /** @return array{0:string,1:string,2:string} */
+    private function validatedBillingDates(
+        mixed $rawPeriod,
+        mixed $rawDueDate,
+        ?\DateTimeImmutable $now = null,
+    ): array
+    {
+        $period = Validator::period($rawPeriod);
+        $periodDate = $period . '-01';
+        $timezone = new \DateTimeZone((string) $this->app->config->get('APP_TIMEZONE', 'Asia/Bangkok'));
+        $today = $now === null
+            ? new \DateTimeImmutable('today', $timezone)
+            : $now->setTimezone($timezone)->setTime(0, 0);
+        $maximumPeriod = $today->format('Y-m');
+        if ($period > $maximumPeriod) {
+            throw new HttpException(422, 'period cannot be later than the current month', 'VALIDATION_ERROR', [
+                'field' => 'period', 'maximum' => $maximumPeriod,
+            ]);
+        }
+        $dueDate = Validator::date($rawDueDate, 'due_date');
+        if ($dueDate < $periodDate) {
+            throw new HttpException(422, 'due_date cannot precede the billing period', 'VALIDATION_ERROR', ['field' => 'due_date']);
+        }
+        $maximumDueDate = $today->modify('+' . self::MAX_DUE_DAYS . ' days')->format('Y-m-d');
+        if ($dueDate > $maximumDueDate) {
+            throw new HttpException(422, 'due_date cannot be more than ' . self::MAX_DUE_DAYS . ' days from today', 'VALIDATION_ERROR', [
+                'field' => 'due_date', 'maximum' => $maximumDueDate,
+            ]);
+        }
+        return [$period, $periodDate, $dueDate];
     }
 
     /**

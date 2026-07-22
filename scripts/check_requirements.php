@@ -627,14 +627,95 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
         if($checkCount>=73)addResult($successes,'พบ CHECK constraints ครบอย่างน้อย 73 รายการ');
         else addResult($errors,'schema มี CHECK constraints ไม่ครบ; พบ '.$checkCount.' จากอย่างน้อย 73');
 
-        $generatedStatement=$pdo->prepare("SELECT table_name,column_name FROM information_schema.columns WHERE table_schema=? AND extra LIKE '%STORED GENERATED%'");
-        $generatedStatement->execute([$database]);
-        $generated=[];
-        foreach($generatedStatement->fetchAll()as$row)$generated[]=(string)($row['TABLE_NAME']??$row['table_name']).'.'.(string)($row['COLUMN_NAME']??$row['column_name']);
-        $requiredGenerated=['bookings.active_room_id','bookings.active_phone_norm','occupancies.active_room_id','occupancies.active_resident_id','payments.active_bill_id'];
-        $missingGenerated=array_values(array_diff($requiredGenerated,$generated));
-        if($missingGenerated===[])addResult($successes,'พบ generated uniqueness guards ครบ 5 คอลัมน์');
-        else addResult($errors,'schema ขาด generated uniqueness guards: '.implode(', ',$missingGenerated));
+        // A generated UNIQUE guard is ineffective when its expression has been
+        // changed to always return NULL. Verify the complete definition of all
+        // five write-critical generated columns, not only their names.
+        $requiredGeneratedColumns = [
+            'bookings.active_room_id' => [
+                'type' => 'bigint unsigned',
+                'expressions' => [
+                    "casewhenstatusin'pending','confirmed'thenroom_idelsenullend",
+                    "casewhenstatusin'confirmed','pending'thenroom_idelsenullend",
+                ],
+            ],
+            'bookings.active_phone_norm' => [
+                'type' => 'char(10)',
+                'expressions' => [
+                    "casewhenstatusin'pending','confirmed'thenphone_normelsenullend",
+                    "casewhenstatusin'confirmed','pending'thenphone_normelsenullend",
+                ],
+            ],
+            'occupancies.active_room_id' => [
+                'type' => 'bigint unsigned',
+                'expressions' => ["casewhenstatus='active'thenroom_idelsenullend"],
+            ],
+            'occupancies.active_resident_id' => [
+                'type' => 'bigint unsigned',
+                'expressions' => ["casewhenstatus='active'thenresident_idelsenullend"],
+            ],
+            'payments.active_bill_id' => [
+                'type' => 'bigint unsigned',
+                'expressions' => [
+                    "casewhenstatusin'pending','verified'thenbill_idelsenullend",
+                    "casewhenstatusin'verified','pending'thenbill_idelsenullend",
+                ],
+            ],
+        ];
+        $generatedPredicates = [];
+        $generatedParameters = [$database];
+        foreach (array_keys($requiredGeneratedColumns) as $qualifiedColumn) {
+            [$table, $column] = explode('.', $qualifiedColumn, 2);
+            $generatedPredicates[] = '(table_name=? AND column_name=?)';
+            $generatedParameters[] = $table;
+            $generatedParameters[] = $column;
+        }
+        $generatedStatement = $pdo->prepare(
+            'SELECT table_name,column_name,column_type,is_nullable,extra,generation_expression'
+            . ' FROM information_schema.columns WHERE table_schema=? AND ('
+            . implode(' OR ', $generatedPredicates) . ') ORDER BY table_name,column_name'
+        );
+        $generatedStatement->execute($generatedParameters);
+        $foundGeneratedColumns = [];
+        $invalidGeneratedColumns = [];
+        foreach ($generatedStatement->fetchAll() as $row) {
+            $table = (string) ($row['TABLE_NAME'] ?? $row['table_name'] ?? '');
+            $column = (string) ($row['COLUMN_NAME'] ?? $row['column_name'] ?? '');
+            $qualifiedColumn = $table . '.' . $column;
+            $expected = $requiredGeneratedColumns[$qualifiedColumn] ?? null;
+            $expression = $row['GENERATION_EXPRESSION'] ?? $row['generation_expression'] ?? null;
+            if (!is_array($expected) || isset($foundGeneratedColumns[$qualifiedColumn])
+                || !is_string($expression)) {
+                $invalidGeneratedColumns[] = $qualifiedColumn;
+                continue;
+            }
+            $foundGeneratedColumns[$qualifiedColumn] = true;
+            $normalizedExpression = strtolower(str_replace("\\'", "'", $expression));
+            $normalizedExpression = preg_replace("/_[a-z0-9_]+'/", "'", $normalizedExpression);
+            $normalizedExpression = str_replace(['`', '(', ')'], '', (string) $normalizedExpression);
+            $normalizedExpression = preg_replace('/\s+/', '', $normalizedExpression);
+            $columnType = strtolower((string) ($row['COLUMN_TYPE'] ?? $row['column_type'] ?? ''));
+            $nullable = strtoupper((string) ($row['IS_NULLABLE'] ?? $row['is_nullable'] ?? ''));
+            $extra = strtoupper(trim((string) ($row['EXTRA'] ?? $row['extra'] ?? '')));
+            if ($columnType !== $expected['type'] || $nullable !== 'YES'
+                || $extra !== 'STORED GENERATED' || !is_string($normalizedExpression)
+                || !in_array($normalizedExpression, $expected['expressions'], true)) {
+                $invalidGeneratedColumns[] = $qualifiedColumn;
+            }
+        }
+        $missingGeneratedColumns = array_values(array_diff(
+            array_keys($requiredGeneratedColumns),
+            array_keys($foundGeneratedColumns),
+        ));
+        $invalidGeneratedColumns = array_values(array_unique(array_merge(
+            $invalidGeneratedColumns,
+            $missingGeneratedColumns,
+        )));
+        if ($invalidGeneratedColumns === []) {
+            addResult($successes, 'พบ generated uniqueness guards ที่มีนิยามถูกต้องครบ 5 คอลัมน์');
+        } else {
+            addResult($errors, 'schema ขาดหรือมีนิยาม generated uniqueness guards ไม่ถูกต้อง: '
+                . implode(', ', $invalidGeneratedColumns));
+        }
 
         $bookingPhoneColumnStatement=$pdo->prepare("SELECT column_type,is_nullable,extra,generation_expression
             FROM information_schema.columns

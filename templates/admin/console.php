@@ -7,6 +7,9 @@ $adminRole = (string) ($user['role'] ?? 'admin');
 $adminInitial = strtoupper(substr($adminName, 0, 1));
 $canManageIntegrations = $adminRole === 'owner';
 $integrationDisabled = ' disabled';
+$businessToday = new DateTimeImmutable('today', new DateTimeZone((string) $appTimezone));
+$maximumBillingPeriod = $businessToday->format('Y-m');
+$maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
 ?>
 <div class="admin-shell" data-admin-app>
     <aside class="admin-sidebar" id="admin-sidebar" aria-label="เมนูจัดการ">
@@ -106,7 +109,7 @@ $integrationDisabled = ' disabled';
 
             <section class="admin-view" data-admin-view="meters" aria-labelledby="meters-title" hidden>
                 <div class="section-heading"><div><p class="eyebrow">บันทึกการใช้น้ำและไฟ</p><h2 id="meters-title">จดมิเตอร์รายเดือน</h2></div></div>
-                <div class="toolbar toolbar-period"><label><span>รอบเดือน</span><input type="month" id="meter-period" required></label><p class="toolbar-note">ค่าที่กรอกต้องไม่น้อยกว่าครั้งก่อน</p></div>
+                <div class="toolbar toolbar-period"><label><span>รอบเดือน</span><input type="month" id="meter-period" max="<?= e($maximumBillingPeriod) ?>" required></label><p class="toolbar-note">ค่าที่กรอกต้องไม่น้อยกว่าครั้งก่อน</p></div>
                 <div class="security-note meter-baseline-note" role="note"><strong>มิเตอร์ช่องที่ขึ้น “เดือนแรก · หน่วย 0”</strong><span>เลขที่กรอกครั้งแรกจะเป็นค่าตั้งต้น (baseline) และหน่วยของรอบนี้จะเป็น 0 เฉพาะมิเตอร์ช่องนั้น มิเตอร์อีกประเภทที่มีค่าก่อนหน้าแล้วจะคิดส่วนต่างตามปกติ</span></div>
                 <div class="panel table-panel"><div class="table-scroll meter-table"><table><thead><tr><th rowspan="2">ห้อง</th><th colspan="3">มิเตอร์น้ำ</th><th colspan="3">มิเตอร์ไฟ</th><th rowspan="2" class="align-right">จัดการ</th></tr><tr><th>ก่อน</th><th>ปัจจุบัน</th><th>ใช้</th><th>ก่อน</th><th>ปัจจุบัน</th><th>ใช้</th></tr></thead><tbody id="meter-rows"></tbody></table></div><div class="table-state" id="meter-state" data-state="loading"><span class="spinner" aria-hidden="true"></span><p>กำลังโหลดมิเตอร์…</p></div></div>
             </section>
@@ -116,10 +119,10 @@ $integrationDisabled = ' disabled';
                 <form class="panel billing-builder" id="bill-builder-form">
                     <div class="security-note" id="billing-readiness-note"><strong>ตรวจสอบค่ารายเดือนก่อนออกบิล</strong><span>ระบบกำลังโหลดสถานะจากหน้า “ตั้งค่า”</span></div>
                     <div class="form-grid form-grid-four">
-                        <label class="field"><span>รอบเดือน</span><input type="month" name="period" id="bill-period" required></label>
+                        <label class="field"><span>รอบเดือน</span><input type="month" name="period" id="bill-period" max="<?= e($maximumBillingPeriod) ?>" required></label>
                         <label class="field"><span>ค่าน้ำ / หน่วย</span><input type="number" name="water_rate" id="bill-water-rate" min="0" step="0.01" required></label>
                         <label class="field"><span>ค่าไฟ / หน่วย</span><input type="number" name="electric_rate" id="bill-electric-rate" min="0" step="0.01" required></label>
-                        <label class="field"><span>กำหนดชำระ</span><input type="date" name="due_date" id="bill-due-date" required></label>
+                        <label class="field"><span>กำหนดชำระ</span><input type="date" name="due_date" id="bill-due-date" max="<?= e($maximumBillingDueDate) ?>" required></label>
                         <label class="field form-span-two"><span>รายการอื่น (ไม่บังคับ)</span><input type="text" name="other_description" maxlength="120" placeholder="เช่น ค่าทำความสะอาด"></label>
                         <label class="field"><span>จำนวนเงินอื่น / ห้อง</span><input type="number" name="other_amount" min="0" step="0.01" value="0"><small>จำนวนนี้จะเพิ่มให้ทุกห้องที่เลือก ไม่ใช่ยอดรวมของทุกห้อง</small></label>
                     </div>
@@ -165,7 +168,7 @@ $integrationDisabled = ' disabled';
                                 <label class="check-field danger-check"><input name="line_channel_access_token_clear" type="checkbox" value="1"<?= $integrationDisabled ?>><span>ล้าง Channel access token ที่บันทึกไว้</span></label>
                                 <label class="field"><span>Channel secret</span><input name="line_channel_secret" type="password" maxlength="4096" autocomplete="new-password" placeholder="เว้นว่างเพื่อเก็บค่าเดิม"<?= $integrationDisabled ?>><small data-secret-status="line_channel_secret">ยังไม่ได้โหลดสถานะ</small></label>
                                 <label class="check-field danger-check"><input name="line_channel_secret_clear" type="checkbox" value="1"<?= $integrationDisabled ?>><span>ล้าง Channel secret ที่บันทึกไว้</span></label>
-                                <label class="field"><span>Webhook URL</span><input type="url" data-line-webhook-url readonly value=""><small data-line-webhook-readiness>ต้องตั้ง Token และ Channel secret ให้ครบ แล้วนำ URL นี้ไปใส่ใน LINE Developers Console</small></label>
+                                <label class="field"><span>Webhook URL</span><input type="url" data-line-webhook-url readonly value=""><small data-line-webhook-readiness>ต้องตั้ง Token และ Channel secret ให้ครบ แล้วเปิด Use webhook และ Webhook redelivery ใน LINE Developers Console</small></label>
                                 <div class="form-grid form-grid-two"><label class="field"><span>ลองส่งสูงสุด (ครั้ง)</span><input name="line_max_attempts" type="number" min="1" max="20" step="1" required<?= $integrationDisabled ?>></label><label class="field"><span>จำนวนงานต่อรอบ</span><input name="notification_batch_size" type="number" min="1" max="100" step="1" required<?= $integrationDisabled ?>></label></div>
                                 <div class="integration-status-row"><div class="integration-status-copy"><span>ความพร้อมของค่าที่บันทึก</span><small class="integration-test-result" data-integration-test-result="line">ยังไม่ได้ทดสอบค่าที่บันทึกนี้</small></div><div class="integration-status-actions"><span class="status-pill status-neutral" data-integration-status="line">กำลังโหลด</span><button class="button button-small button-secondary" type="button" data-test-integration="line" disabled>ทดสอบ Token ที่บันทึก</button></div></div>
                             </fieldset>
@@ -219,7 +222,7 @@ $integrationDisabled = ' disabled';
 </dialog>
 
 <dialog class="modal" id="move-in-dialog" aria-labelledby="move-in-title">
-    <form class="modal-card" id="move-in-form"><input type="hidden" name="booking_id"><div class="modal-header"><div><p class="eyebrow">เปิดบัญชีผู้พัก</p><h2 id="move-in-title">รับเข้าพัก</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div><p class="modal-lead" id="move-in-summary"></p><div class="form-grid"><label class="field"><span>อีเมล (ไม่บังคับ)</span><input name="email" type="email" maxlength="254" autocomplete="email"></label><label class="field"><span>วันที่เข้าพัก</span><input name="move_in_date" type="date" required></label></div><p class="field-hint">ผู้พักเข้าสู่ระบบด้วยเบอร์ที่ยืนยันในใบจองนี้ และสามารถผูก LINE ได้เองโดยยืนยันรหัสที่ส่งไปยังบัญชี LINE</p><label class="check-field" id="move-in-reuse-field" hidden><input name="reuse_resident_id" type="checkbox" disabled><span id="move-in-reuse-label">ยืนยันการเชื่อมบัญชีผู้พักเดิม</span></label><p class="field-hint" id="move-in-reuse-help" hidden>เลือกเฉพาะเมื่อยืนยันแล้วว่าเป็นบุคคลเดิม ประวัติบิลเก่าจะถูกเชื่อมกับบัญชีนี้ หากเป็นคนละคนต้องใช้เบอร์โทรอื่นเพื่อปกป้องข้อมูลส่วนบุคคล</p><p class="form-error" id="move-in-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-primary" type="submit">ยืนยันเข้าพัก</button></div></form>
+    <form class="modal-card" id="move-in-form"><input type="hidden" name="booking_id"><div class="modal-header"><div><p class="eyebrow">เปิดบัญชีผู้พัก</p><h2 id="move-in-title">รับเข้าพัก</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div><p class="modal-lead" id="move-in-summary"></p><div class="form-grid"><label class="field"><span>อีเมล (ไม่บังคับ)</span><input name="email" type="email" maxlength="254" autocomplete="email"></label><label class="field"><span>วันที่เข้าพัก</span><input name="move_in_date" type="date" min="2000-01-01" required></label></div><p class="field-hint">ผู้พักเข้าสู่ระบบด้วยเบอร์ที่ยืนยันในใบจองนี้ และสามารถผูก LINE ได้เองโดยยืนยันรหัสที่ส่งไปยังบัญชี LINE</p><label class="check-field" id="move-in-reuse-field" hidden><input name="reuse_resident_id" type="checkbox" disabled><span id="move-in-reuse-label">ยืนยันการเชื่อมบัญชีผู้พักเดิม</span></label><p class="field-hint" id="move-in-reuse-help" hidden>เลือกเฉพาะเมื่อยืนยันแล้วว่าเป็นบุคคลเดิม ประวัติบิลเก่าจะถูกเชื่อมกับบัญชีนี้ หากเป็นคนละคนต้องใช้เบอร์โทรอื่นเพื่อปกป้องข้อมูลส่วนบุคคล</p><p class="form-error" id="move-in-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-primary" type="submit">ยืนยันเข้าพัก</button></div></form>
 </dialog>
 
 <dialog class="modal" id="booking-cancel-dialog" aria-labelledby="booking-cancel-title">
@@ -233,7 +236,7 @@ $integrationDisabled = ' disabled';
         <div class="security-note"><strong>หนึ่งห้องมีผู้พักหลักได้ครั้งละ 1 คน</strong><span>ระบบจะสร้างหลักฐานรับเข้าพักและผูกประวัติบิลกับบุคคลนี้ทันที ผู้พักเข้าสู่ระบบด้วยเบอร์โทร จึงต้องตรวจตัวตนและเบอร์ให้ถูกต้องก่อนบันทึก</span></div>
         <div class="form-grid form-grid-two">
             <label class="field"><span>ห้องว่าง</span><select name="room_id" required></select><small id="resident-create-room-help">แสดงเฉพาะห้องที่ระบบตรวจว่าไม่มีผู้จองหรือผู้พัก</small></label>
-            <label class="field"><span>วันที่เข้าพัก</span><input name="move_in_date" type="date" required></label>
+            <label class="field"><span>วันที่เข้าพัก</span><input name="move_in_date" type="date" min="2000-01-01" required></label>
             <label class="field"><span>ชื่อ–นามสกุล</span><input name="full_name" type="text" minlength="1" maxlength="150" required autocomplete="name"></label>
             <label class="field"><span>เบอร์โทรศัพท์สำหรับเข้าสู่ระบบ</span><input name="phone" type="tel" minlength="10" maxlength="20" required autocomplete="tel" placeholder="0812345678"></label>
             <label class="field form-span-two"><span>อีเมล (ไม่บังคับ)</span><input name="email" type="email" maxlength="190" autocomplete="email"></label>

@@ -147,7 +147,7 @@ deploy พร้อมใช้งานจนกว่าคำสั่งน�
 
 ใน LINE Developers Console ให้ตั้ง Webhook URL เป็น
 `https://<web-domain>/api/webhooks/line` (URL เดียวกับที่หน้า Settings แสดง) แล้วเปิด
-**Use webhook** ต้องใช้ domain ของ `web` และ `APP_URL` ต้องตรง HTTPS origin นี้พอดี
+**Use webhook** และ **Webhook redelivery** จากนั้นกด **Verify** ต้องใช้ domain ของ `web` และ `APP_URL` ต้องตรง HTTPS origin นี้พอดี
 route นี้รับ request จาก LINE โดยตรวจ `X-Line-Signature` ด้วย Channel secret จึงไม่ต้อง
 และไม่ควรตั้ง public domain ให้ worker
 

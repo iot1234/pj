@@ -712,6 +712,9 @@ final class SystemSettingsService
 
     private function boundedInteger(mixed $value, string $field, int $minimum, int $maximum): int
     {
+        if (!is_int($value) && !is_string($value)) {
+            throw $this->validation($field, "{$field} must be an integer between {$minimum} and {$maximum}");
+        }
         $validated = filter_var($value, FILTER_VALIDATE_INT, [
             'options' => ['min_range' => $minimum, 'max_range' => $maximum],
         ]);

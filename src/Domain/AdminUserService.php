@@ -28,7 +28,9 @@ final class AdminUserService
         Validator::only($input, ['username','password','role','active','is_active']);
         $username = strtolower(Validator::string($input['username'] ?? null, 'username', 3, 64));
         if (!preg_match('/^[a-z0-9_.-]+$/', $username)) throw new HttpException(422, 'Invalid username', 'VALIDATION_ERROR', ['field'=>'username']);
-        $password=(string)($input['password']??''); Password::assertAdmin($password,$username);
+        $password=$input['password']??null;
+        if(!is_string($password))throw new HttpException(422,'Invalid password','VALIDATION_ERROR',['field'=>'password']);
+        Password::assertAdmin($password,$username);
         $role=Validator::enum($input['role']??'admin','role',['owner','admin']);
         $active = self::requestedActive($input) ?? true;
         try {
@@ -47,7 +49,11 @@ final class AdminUserService
         Validator::only($input,['username','password','role','active','is_active']);
         if($input===[])throw new HttpException(422,'No fields to update','NOTHING_TO_UPDATE');
         $requestedActive=self::requestedActive($input);
-        return $this->app->database()->transaction(function(PDO $pdo) use($id,$input,$ownerId,$requestedActive): array {
+        $requestedPassword=$input['password']??null;
+        if(array_key_exists('password',$input)&&$requestedPassword!==null&&!is_string($requestedPassword)){
+            throw new HttpException(422,'Invalid password','VALIDATION_ERROR',['field'=>'password']);
+        }
+        return $this->app->database()->transaction(function(PDO $pdo) use($id,$input,$ownerId,$requestedActive,$requestedPassword): array {
             $lock=$pdo->query("SELECT id,username,role,active FROM admin_users ORDER BY id FOR UPDATE");
             $all=$lock->fetchAll(); $current=null;
             foreach($all as $row) if((int)$row['id']===$id) $current=$row;
@@ -62,7 +68,12 @@ final class AdminUserService
                 if($count<=1) throw new HttpException(409,'At least one active owner is required','LAST_OWNER');
             }
             $passwordHash=null;
-            if(array_key_exists('password',$input) && (string)$input['password']!=='') { Password::assertAdmin((string)$input['password'],$username); $passwordHash=Password::hash((string)$input['password']); }
+            if(array_key_exists('password',$input)){
+                if(is_string($requestedPassword)&&$requestedPassword!==''){
+                    Password::assertAdmin($requestedPassword,$username);
+                    $passwordHash=Password::hash($requestedPassword);
+                }
+            }
             try {
                 $sql='UPDATE admin_users SET username=?,role=?,active=?,auth_version=auth_version+1,updated_at=UTC_TIMESTAMP()';
                 $params=[$username,$role,$active?1:0];

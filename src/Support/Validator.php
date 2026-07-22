@@ -9,7 +9,10 @@ final class Validator
 {
     public static function phone(mixed $value): string
     {
-        $raw = trim((string) $value);
+        if (!is_string($value)) {
+            throw new HttpException(422, 'เบอร์โทรศัพท์ไม่ถูกต้อง', 'VALIDATION_ERROR', ['field' => 'phone']);
+        }
+        $raw = trim($value);
         $compact = preg_replace('/[\s().-]+/', '', $raw) ?? '';
         if (str_starts_with($compact, '+66')) {
             $compact = '0' . substr($compact, 3);
@@ -24,7 +27,10 @@ final class Validator
 
     public static function period(mixed $value): string
     {
-        $period = trim((string) $value);
+        if (!is_string($value)) {
+            throw new HttpException(422, 'รอบบิลต้องเป็น YYYY-MM', 'VALIDATION_ERROR', ['field' => 'period']);
+        }
+        $period = trim($value);
         if (!preg_match('/^(20\d{2}|2100)-(0[1-9]|1[0-2])$/', $period)) {
             throw new HttpException(422, 'รอบบิลต้องเป็น YYYY-MM', 'VALIDATION_ERROR', ['field' => 'period']);
         }
@@ -38,7 +44,10 @@ final class Validator
 
     public static function date(mixed $value, string $field): string
     {
-        $date = trim((string) $value);
+        if (!is_string($value)) {
+            throw new HttpException(422, "{$field} ต้องเป็น YYYY-MM-DD", 'VALIDATION_ERROR', ['field' => $field]);
+        }
+        $date = trim($value);
         $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $date);
         $errors = \DateTimeImmutable::getLastErrors();
         if (!$parsed || ($errors !== false && ($errors['warning_count'] > 0 || $errors['error_count'] > 0)) || $parsed->format('Y-m-d') !== $date) {
@@ -49,6 +58,9 @@ final class Validator
 
     public static function id(mixed $value, string $field = 'id'): int
     {
+        if (!is_int($value) && !is_string($value)) {
+            throw new HttpException(422, "{$field} ไม่ถูกต้อง", 'VALIDATION_ERROR', ['field' => $field]);
+        }
         $id = filter_var($value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
         if ($id === false) {
             throw new HttpException(422, "{$field} ไม่ถูกต้อง", 'VALIDATION_ERROR', ['field' => $field]);
@@ -82,10 +94,16 @@ final class Validator
 
     public static function nullableEmail(mixed $value): ?string
     {
-        if ($value === null || trim((string) $value) === '') {
+        if ($value === null) {
             return null;
         }
-        $email = trim((string) $value);
+        if (!is_string($value)) {
+            throw new HttpException(422, 'อีเมลไม่ถูกต้อง', 'VALIDATION_ERROR', ['field' => 'email']);
+        }
+        $email = trim($value);
+        if ($email === '') {
+            return null;
+        }
         if (strlen($email) > 190 || filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
             throw new HttpException(422, 'อีเมลไม่ถูกต้อง', 'VALIDATION_ERROR', ['field' => 'email']);
         }
@@ -95,7 +113,10 @@ final class Validator
     /** @param list<string> $allowed */
     public static function enum(mixed $value, string $field, array $allowed): string
     {
-        $text = (string) $value;
+        if (!is_string($value)) {
+            throw new HttpException(422, "{$field} ไม่ถูกต้อง", 'VALIDATION_ERROR', ['field' => $field, 'allowed' => $allowed]);
+        }
+        $text = $value;
         if (!in_array($text, $allowed, true)) {
             throw new HttpException(422, "{$field} ไม่ถูกต้อง", 'VALIDATION_ERROR', ['field' => $field, 'allowed' => $allowed]);
         }
@@ -114,6 +135,9 @@ final class Validator
     /** Convert an unsigned decimal string to a fixed-scale integer. */
     public static function scaledDecimal(mixed $value, string $field, int $scale = 2, int $maxWholeDigits = 10): int
     {
+        if (!is_string($value) && !is_int($value) && !is_float($value)) {
+            throw new HttpException(422, "{$field} ต้องเป็นจำนวนไม่ติดลบ", 'VALIDATION_ERROR', ['field' => $field]);
+        }
         $raw = trim((string) $value);
         if (!preg_match('/^(\d{1,' . $maxWholeDigits . '})(?:\.(\d{1,' . $scale . '}))?$/', $raw, $match)) {
             throw new HttpException(422, "{$field} ต้องเป็นจำนวนไม่ติดลบ", 'VALIDATION_ERROR', ['field' => $field]);

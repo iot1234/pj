@@ -139,6 +139,6 @@ php scripts/check_requirements.php --db
 1. สร้างบัญชี Owner คนแรกตาม README
 2. เข้าหน้า Admin → ตั้งค่า แล้วบันทึกอัตราค่าน้ำ ค่าไฟ และวันครบกำหนดจริง
 3. กรอก PromptPay, LINE Channel access token/Channel secret และผู้ให้บริการตรวจสลิปจากหน้าเดียวกัน ค่าลับจะถูกเข้ารหัสใน MySQL โดยใช้ key ที่ derive จาก `APP_KEY`; `APP_KEY` เองยังต้องอยู่ใน `.env`/secret manager และต้องตรงกันทุก web/worker instance
-4. คัดลอก Webhook URL ที่หน้า Settings แสดง (`<APP_URL>/api/webhooks/line`) ไปใส่ใน LINE Developers Console แล้วเปิด **Use webhook** โดย `APP_URL` ต้องเป็น HTTPS origin สาธารณะที่ตรงกับโดเมนจริง
+4. คัดลอก Webhook URL ที่หน้า Settings แสดง (`<APP_URL>/api/webhooks/line`) ไปใส่ใน LINE Developers Console เปิด **Use webhook** และ **Webhook redelivery** แล้วกด **Verify** โดย `APP_URL` ต้องเป็น HTTPS origin สาธารณะที่ตรงกับโดเมนจริง
 5. เพิ่มห้องจริงจากหลังบ้าน; production ไม่มีห้องตัวอย่างอัตโนมัติ
 6. รัน requirement checker อีกครั้งก่อนเปิดให้ผู้ใช้จริง ค่า LINE webhook จะพร้อมเมื่อถอดรหัสได้ทั้ง Channel access token และ Channel secret

@@ -142,9 +142,9 @@ final class RoomService
             $out['room_code'] = $code;
         }
         if (array_key_exists('floor', $input)) {
-            $floor = filter_var($input['floor'], FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 200]]);
-            if ($floor === false) throw new HttpException(422, 'ชั้นไม่ถูกต้อง', 'VALIDATION_ERROR', ['field' => 'floor']);
-            $out['floor'] = (int) $floor;
+            $floor = Validator::id($input['floor'], 'floor');
+            if ($floor > 200) throw new HttpException(422, 'ชั้นไม่ถูกต้อง', 'VALIDATION_ERROR', ['field' => 'floor']);
+            $out['floor'] = $floor;
         }
         if (array_key_exists('room_type', $input)) $out['room_type'] = Validator::string($input['room_type'], 'room_type', 1, 50);
         if (array_key_exists('monthly_rent', $input)) {
@@ -152,7 +152,13 @@ final class RoomService
             if($rent<=0||$rent>100_000_000) throw new HttpException(422,'ค่าเช่าต้องมากกว่า 0 และไม่เกิน 1,000,000.00 บาท','VALIDATION_ERROR',['field'=>'monthly_rent']);
             $out['monthly_rent'] = Validator::decimalString($rent);
         }
-        if (array_key_exists('description', $input)) $out['description'] = trim((string) $input['description']) === '' ? null : Validator::string($input['description'], 'description', 0, 2000);
+        if (array_key_exists('description', $input)) {
+            if($input['description']===null)$out['description']=null;
+            else{
+                $description=Validator::string($input['description'], 'description', 0, 2000);
+                $out['description']=$description===''?null:$description;
+            }
+        }
         if (array_key_exists('amenities', $input)) {
             if (!is_array($input['amenities']) || count($input['amenities']) > 30) throw new HttpException(422, 'amenities ไม่ถูกต้อง', 'VALIDATION_ERROR', ['field' => 'amenities']);
             $amenities = [];
@@ -160,7 +166,8 @@ final class RoomService
             $out['amenities'] = json_encode(array_values(array_unique($amenities)), JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
         }
         if (array_key_exists('image_key', $input)) {
-            $key = trim((string) $input['image_key']);
+            if($input['image_key']!==null&&!is_string($input['image_key']))throw new HttpException(422, 'image_key ไม่ถูกต้อง', 'VALIDATION_ERROR', ['field' => 'image_key']);
+            $key = is_string($input['image_key'])?trim($input['image_key']):'';
             if ($key !== '' && !in_array($key, self::IMAGE_KEYS, true)) {
                 throw new HttpException(422, 'image_key ไม่ถูกต้อง', 'VALIDATION_ERROR', ['field' => 'image_key']);
             }

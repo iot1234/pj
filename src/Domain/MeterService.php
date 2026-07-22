@@ -21,6 +21,7 @@ final class MeterService
     public function list(string $period): array
     {
         $periodDate = Validator::periodDate($period);
+        $this->assertPeriodIsNotFuture(substr($periodDate, 0, 7));
         $statement = $this->app->database()->pdo()->prepare(
             "SELECT r.id AS room_id,r.room_code,mt.meter_type,
                     m.previous_reading,m.current_reading,m.units_used,m.updated_at,
@@ -69,6 +70,7 @@ final class MeterService
         Validator::only($input, ['room_id','period','water_current','electric_current','confirm_large_usage']);
         $roomId = Validator::id($input['room_id'] ?? null, 'room_id');
         $period = Validator::period($input['period'] ?? null);
+        $this->assertPeriodIsNotFuture($period);
         $periodDate = $period . '-01';
         $confirmLarge=array_key_exists('confirm_large_usage',$input)?Validator::boolean($input['confirm_large_usage'],'confirm_large_usage'):false;
         if (!array_key_exists('water_current', $input) && !array_key_exists('electric_current', $input)) {
@@ -169,5 +171,19 @@ final class MeterService
             $result['large_usage_anomalies']=$confirmLarge?$anomalies:[];
             return $result;
         });
+    }
+
+    private function assertPeriodIsNotFuture(string $period, ?\DateTimeImmutable $now = null): void
+    {
+        $timezone = new \DateTimeZone((string) $this->app->config->get('APP_TIMEZONE', 'Asia/Bangkok'));
+        $maximum = ($now ?? new \DateTimeImmutable('now', $timezone))->setTimezone($timezone)->format('Y-m');
+        if ($period > $maximum) {
+            throw new HttpException(
+                422,
+                'period cannot be later than the current month',
+                'VALIDATION_ERROR',
+                ['field' => 'period', 'maximum' => $maximum]
+            );
+        }
     }
 }

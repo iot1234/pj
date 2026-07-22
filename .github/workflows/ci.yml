@@ -405,7 +405,7 @@ jobs:
             --execute="SELECT CONCAT(COUNT(*),'|',SUM(hits=1),'|',SUM(hits=2))
               FROM rate_limits")"
           [ "$concurrent_booking_count" = 1 ]
-          if [ "$concurrent_bucket_shape" != '3|2|1' ]; then
+          if [ "$concurrent_bucket_shape" != '4|2|1' ]; then
             echo "Unexpected concurrent quota bucket shape: $concurrent_bucket_shape"
             docker exec \
               --env MYSQL_PWD="$CI_DBA_PASSWORD" \

@@ -134,7 +134,7 @@ case "$mode" in
     if [[ "$phone_booking_count" != 2 \
         || "$denied_phone_booking_count" != 0 \
         || "$committed_phone_block" != 1 \
-        || "$phone_quota_bucket_shape" != '3|1|1|1' ]]; then
+        || "$phone_quota_bucket_shape" != '4|1|1|1' ]]; then
       echo "Unexpected phone quota state: bookings=$phone_booking_count denied=$denied_phone_booking_count block=$committed_phone_block buckets=$phone_quota_bucket_shape" >&2
       exit 1
     fi
@@ -203,6 +203,81 @@ case "$mode" in
         SET status='cancelled',cancelled_at=UTC_TIMESTAMP(),
             cancel_reason='CI active-phone cleanup',updated_at=UTC_TIMESTAMP()
         WHERE idempotency_key='ci-active-phone-000002' AND status='pending';"
+
+    # A phone already attached to an active occupancy must not create a
+    # second-room booking. The per-table UNIQUE guards alone cannot enforce
+    # this cross-table identity invariant.
+    docker exec \
+      --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+      "$database" mysql --host=127.0.0.1 --user=root \
+      --database="$CI_DB_DATABASE" --execute="
+        INSERT INTO residents (full_name,phone_norm,email,active,auth_version)
+        VALUES ('CI Active Resident','0833333333',NULL,1,1);
+        SET @ci_active_resident_id=LAST_INSERT_ID();
+        INSERT INTO bookings
+          (reference_no,room_id,full_name,phone_norm,booked_monthly_rent,
+           status,idempotency_key,confirmed_at,resident_id,moved_in_at)
+        SELECT 'BK-CI-ACTIVE-RESIDENT',id,'CI Active Resident','0833333333',
+               monthly_rent,'moved_in','ci-active-resident-ledger-000001',
+               UTC_TIMESTAMP(),@ci_active_resident_id,UTC_TIMESTAMP()
+        FROM rooms WHERE id=${rate_room_ids[5]};
+        SET @ci_active_resident_booking_id=LAST_INSERT_ID();
+        INSERT INTO occupancies
+          (resident_id,room_id,booking_id,monthly_rent,status,move_in_date)
+        SELECT @ci_active_resident_id,id,@ci_active_resident_booking_id,
+               monthly_rent,'active',CURRENT_DATE()
+        FROM rooms WHERE id=${rate_room_ids[5]};"
+    occupied_phone_body="$(printf '{\"room_id\":%s,\"full_name\":\"CI Duplicate Resident\",\"phone\":\"0833333333\",\"idempotency_key\":\"ci-active-resident-public-000001\"}' \
+      "${rate_room_ids[6]}")"
+    occupied_phone_status="$(curl --silent --show-error \
+      --output /tmp/ci-active-resident-public.json --write-out '%{http_code}' \
+      --header 'X-Forwarded-Proto: https' \
+      --header 'Content-Type: application/json' \
+      --header 'Origin: https://ci-dormitory.example.co.th' \
+      --header "X-CSRF-Token: ${csrf}" --data "$occupied_phone_body" \
+      http://127.0.0.1:18080/api/public/bookings)"
+    occupied_phone_booking_count="$(docker exec \
+      --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+      "$database" mysql --batch --skip-column-names \
+      --host=127.0.0.1 --user=root --database="$CI_DB_DATABASE" \
+      --execute="SELECT COUNT(*) FROM bookings
+        WHERE idempotency_key='ci-active-resident-public-000001'")"
+    [ "$occupied_phone_status" = 409 ]
+    grep --quiet '"code":"RESIDENT_ALREADY_OCCUPIED"' /tmp/ci-active-resident-public.json
+    [ "$occupied_phone_booking_count" = 0 ]
+
+    # The inverse transition is guarded by the same mutex: an admin cannot
+    # change an active resident to a phone held by a pending booking.
+    docker exec \
+      --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+      "$database" mysql --host=127.0.0.1 --user=root \
+      --database="$CI_DB_DATABASE" --execute="
+        INSERT INTO bookings
+          (reference_no,room_id,full_name,phone_norm,booked_monthly_rent,
+           status,idempotency_key)
+        SELECT 'BK-CI-ADMIN-PHONE',id,'CI Pending Phone','0822222222',
+               monthly_rent,'pending','ci-admin-phone-held-000001'
+        FROM rooms WHERE id=${rate_room_ids[6]};"
+    admin_phone_guard="$(docker exec "$web" php -r '
+      $app=require "/var/www/html/bootstrap.php";
+      $id=(int)$app->database()->pdo()->query(
+        "SELECT id FROM residents WHERE phone_norm=\"0833333333\""
+      )->fetchColumn();
+      try{$app->residents()->updateByAdmin($id,["phone"=>"0822222222"]);}
+      catch(\Dormitory\Http\HttpException $error){
+        if($error->status===409&&$error->errorCode==="BOOKING_PHONE_ACTIVE"){
+          echo "guarded";exit(0);
+        }
+      }
+      exit(1);')"
+    [ "$admin_phone_guard" = guarded ]
+    unchanged_resident_phone="$(docker exec \
+      --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+      "$database" mysql --batch --skip-column-names \
+      --host=127.0.0.1 --user=root --database="$CI_DB_DATABASE" \
+      --execute="SELECT phone_norm FROM residents
+        WHERE full_name='CI Active Resident'")"
+    [ "$unchanged_resident_phone" = 0833333333 ]
 
     # Same-room duplicate delivery must serialize on the physical room,
     # create exactly one row, and return one idempotent replay without

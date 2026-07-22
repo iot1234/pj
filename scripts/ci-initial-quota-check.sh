@@ -15,4 +15,4 @@ initial_quota_bucket_shape="$(docker exec \
   --execute="SELECT CONCAT(COUNT(*),'|',SUM(hits=0),'|',
       SUM(hits=1),'|',SUM(hits=6)) FROM rate_limits")"
 [ "$committed_daily_block" = 1 ]
-[ "$initial_quota_bucket_shape" = '7|0|5|2' ]
+[ "$initial_quota_bucket_shape" = '13|6|5|2' ]
