@@ -5,12 +5,15 @@ namespace Dormitory\Domain;
 
 use Dormitory\Application;
 use Dormitory\Http\HttpException;
+use Dormitory\Security\ResidentAccessCredential;
 use Dormitory\Support\Validator;
 use PDO;
 
 final class BookingService
 {
     private const EARLIEST_MOVE_IN_DATE = '2000-01-01';
+    private const MAX_ADMIN_MOVE_IN_LOOKBACK_DAYS = 31;
+    private const MAX_METER_READING_SCALED = 999_999_900;
 
     public function __construct(private readonly Application $app)
     {
@@ -236,7 +239,10 @@ final class BookingService
      */
     public function createAdminResident(int $adminId,array $input): array
     {
-        Validator::only($input,['room_id','full_name','phone','email','move_in_date','idempotency_key','reuse_resident_id']);
+        Validator::only($input,[
+            'room_id','full_name','phone','email','move_in_date','idempotency_key',
+            'reuse_resident_id','opening_water_reading','opening_electric_reading',
+        ]);
         $roomId=Validator::id($input['room_id']??null,'room_id');
         $fullName=Validator::string($input['full_name']??null,'full_name',1,150);
         $phone=Validator::phone($input['phone']??null);
@@ -244,17 +250,33 @@ final class BookingService
         $email=$emailProvided?Validator::nullableEmail($input['email']):null;
         $moveIn=Validator::date($input['move_in_date']??null,'move_in_date');
         self::assertMoveInDateAllowed($moveIn);
+        $openingWater=$this->openingReading($input['opening_water_reading']??null,'opening_water_reading');
+        $openingElectric=$this->openingReading($input['opening_electric_reading']??null,'opening_electric_reading');
         $timezone=new \DateTimeZone((string)$this->app->config->get('APP_TIMEZONE','Asia/Bangkok'));
-        if($moveIn>(new \DateTimeImmutable('today',$timezone))->format('Y-m-d')){
+        $today=new \DateTimeImmutable('today',$timezone);
+        if($moveIn>$today->format('Y-m-d')){
             throw new HttpException(422,'move_in_date cannot be in the future','VALIDATION_ERROR',['field'=>'move_in_date']);
+        }
+        $minimumMoveIn=$today->modify('-'.self::MAX_ADMIN_MOVE_IN_LOOKBACK_DAYS.' days')->format('Y-m-d');
+        if($moveIn<$minimumMoveIn){
+            throw new HttpException(
+                422,
+                'Administrative move-in date is too far in the past',
+                'MOVE_IN_DATE_TOO_OLD',
+                ['field'=>'move_in_date','minimum'=>$minimumMoveIn]
+            );
         }
         $rawIdempotency=$input['idempotency_key']??null;
         $idempotency=is_string($rawIdempotency)?trim($rawIdempotency):'';
         if(!preg_match('/^[A-Za-z0-9_-]{16,64}$/',$idempotency)){
             throw new HttpException(422,'idempotency_key ไม่ถูกต้อง','VALIDATION_ERROR',['field'=>'idempotency_key']);
         }
-        $reuseResidentId=array_key_exists('reuse_resident_id',$input)?Validator::id($input['reuse_resident_id'],'reuse_resident_id'):null;
-        $reference=$this->administrativeReference($idempotency,$roomId,$fullName,$phone,$email,$emailProvided,$moveIn,$reuseResidentId);
+        $reuseResidentIdProvided=array_key_exists('reuse_resident_id',$input);
+        $reuseResidentId=$reuseResidentIdProvided?Validator::id($input['reuse_resident_id'],'reuse_resident_id'):null;
+        $reference=$this->administrativeReference(
+            $idempotency,$roomId,$fullName,$phone,$email,$emailProvided,$moveIn,
+            $reuseResidentId,$openingWater,$openingElectric
+        );
 
         // A direct service invocation should not be blocked by an expired
         // reservation on this phone. The HTTP route performs this before its
@@ -263,7 +285,10 @@ final class BookingService
             $this->expirePublicPhoneHolds($phone);
         }
 
-        return $this->app->database()->transaction(function(PDO $pdo)use($adminId,$roomId,$fullName,$phone,$email,$emailProvided,$moveIn,$idempotency,$reuseResidentId,$reference):array{
+        return $this->app->database()->transaction(function(PDO $pdo)use(
+            $adminId,$roomId,$fullName,$phone,$email,$emailProvided,$moveIn,
+            $idempotency,$reuseResidentId,$reuseResidentIdProvided,$reference,$openingWater,$openingElectric
+        ):array{
             $room=$pdo->prepare('SELECT id,monthly_rent,deleted_at FROM rooms WHERE id=? FOR UPDATE');
             $room->execute([$roomId]);
             $roomRow=$room->fetch();
@@ -298,17 +323,49 @@ final class BookingService
                     throw new HttpException(409,'Idempotency key was already used for a different operation','IDEMPOTENCY_KEY_REUSED');
                 }
                 if($booking['status']==='moved_in'){
-                    $occupancy=$pdo->prepare('SELECT id,resident_id,room_id,move_in_date FROM occupancies WHERE booking_id=? LIMIT 1');
+                    $moveInRequestHash=$this->moveInRequestHash(
+                        (int)$booking['id'],
+                        (string)$booking['reference_no'],
+                        $emailProvided,
+                        $email,
+                        $reuseResidentIdProvided,
+                        $reuseResidentId,
+                        $moveIn,
+                        $openingWater,
+                        $openingElectric,
+                    );
+                    $occupancy=$pdo->prepare('SELECT id,resident_id,room_id,move_in_date,
+                            opening_water_reading,opening_electric_reading
+                        FROM occupancies WHERE booking_id=? LIMIT 1');
                     $occupancy->execute([(int)$booking['id']]);
                     $occupancyRow=$occupancy->fetch();
-                    if(!$occupancyRow||(int)$occupancyRow['resident_id']!==(int)$booking['resident_id']||(int)$occupancyRow['room_id']!==$roomId){
+                    if(!$occupancyRow
+                        ||(int)$occupancyRow['resident_id']!==(int)$booking['resident_id']
+                        ||(int)$occupancyRow['room_id']!==$roomId
+                        ||!hash_equals((string)$occupancyRow['move_in_date'],$moveIn)
+                        ||!hash_equals((string)$occupancyRow['opening_water_reading'],$openingWater)
+                        ||!hash_equals((string)$occupancyRow['opening_electric_reading'],$openingElectric)){
                         throw new \RuntimeException('Administrative check-in ledger is inconsistent with its occupancy');
+                    }
+                    $storedRequestHash=$booking['move_in_request_hash']??null;
+                    $requestMismatch=$storedRequestHash===null
+                        ?($emailProvided||$reuseResidentIdProvided)
+                        :(!is_string($storedRequestHash)
+                            ||preg_match('/^[0-9a-f]{64}$/D',$storedRequestHash)!==1
+                            ||!hash_equals($storedRequestHash,$moveInRequestHash));
+                    if($requestMismatch){
+                        throw new HttpException(
+                            409,
+                            'Move-in was already completed with different immutable values',
+                            'MOVE_IN_ALREADY_COMPLETED',
+                            ['occupancy_id'=>(int)$occupancyRow['id']]
+                        );
                     }
                     return [
                         'booking_id'=>(int)$booking['id'],'status'=>'moved_in','resident_id'=>(int)$occupancyRow['resident_id'],
                         'occupancy_id'=>(int)$occupancyRow['id'],'room_id'=>$roomId,'move_in_date'=>(string)$occupancyRow['move_in_date'],
                         'idempotent_replay'=>true,
-                    ];
+                    ]+$this->pendingResidentAccess($pdo,(int)$occupancyRow['resident_id']);
                 }
                 if($booking['status']!=='confirmed'){
                     throw new HttpException(409,'Administrative check-in is no longer active','ADMIN_CHECK_IN_INACTIVE',['status'=>$booking['status']]);
@@ -335,8 +392,14 @@ final class BookingService
                 }
 
                 try{
-                    $insert=$pdo->prepare("INSERT INTO bookings (reference_no,room_id,full_name,phone_norm,booked_monthly_rent,status,idempotency_key,confirmed_by,confirmed_at,created_at,updated_at) VALUES (?,?,?,?,?,'confirmed',?,?,UTC_TIMESTAMP(),UTC_TIMESTAMP(),UTC_TIMESTAMP())");
-                    $insert->execute([$reference,$roomId,$fullName,$phone,$roomRow['monthly_rent'],$idempotency,$adminId]);
+                    $insert=$pdo->prepare("INSERT INTO bookings
+                        (reference_no,room_id,full_name,phone_norm,booked_monthly_rent,
+                         status,idempotency_key,created_at,updated_at)
+                        VALUES (?,?,?,?,?,'pending',?,UTC_TIMESTAMP(),UTC_TIMESTAMP())");
+                    $insert->execute([
+                        $reference,$roomId,$fullName,$phone,
+                        $roomRow['monthly_rent'],$idempotency,
+                    ]);
                 }catch(\PDOException $error){
                     if(($error->errorInfo[1]??null)===1062){
                         $driverMessage=(string)($error->errorInfo[2]??$error->getMessage());
@@ -353,7 +416,16 @@ final class BookingService
                     }
                     throw $error;
                 }
-                $booking=['id'=>(int)$pdo->lastInsertId()];
+                $bookingId=(int)$pdo->lastInsertId();
+                $confirm=$pdo->prepare("UPDATE bookings
+                    SET status='confirmed',confirmed_by=?,confirmed_at=UTC_TIMESTAMP(),
+                        updated_at=UTC_TIMESTAMP()
+                    WHERE id=? AND status='pending'");
+                $confirm->execute([$adminId,$bookingId]);
+                if($confirm->rowCount()!==1){
+                    throw new \RuntimeException('Administrative booking could not be confirmed');
+                }
+                $booking=['id'=>$bookingId];
             }
 
             // This flag only permits a back-dated administrative occupancy;
@@ -361,6 +433,8 @@ final class BookingService
             $result=$this->moveInWithPolicy((int)$booking['id'],$adminId,[
                 ...($emailProvided?['email'=>$email]:[]),
                 'move_in_date'=>$moveIn,
+                'opening_water_reading'=>$openingWater,
+                'opening_electric_reading'=>$openingElectric,
                 ...($reuseResidentId!==null?['reuse_resident_id'=>$reuseResidentId]:[]),
             ],true);
             $result['idempotent_replay']=false;
@@ -377,18 +451,30 @@ final class BookingService
     /** @return array<string,mixed> */
     private function moveInWithPolicy(int $id,int $adminId,array $input,bool $allowBeforeBookingDate): array
     {
-        Validator::only($input, ['email','move_in_date','reuse_resident_id']);
+        Validator::only($input,[
+            'email','move_in_date','reuse_resident_id',
+            'opening_water_reading','opening_electric_reading',
+        ]);
         $emailProvided=array_key_exists('email',$input);
         $email=$emailProvided?Validator::nullableEmail($input['email']):null;
         $moveIn = Validator::date($input['move_in_date'] ?? null, 'move_in_date');
         self::assertMoveInDateAllowed($moveIn);
+        $openingWater=$this->openingReading($input['opening_water_reading']??null,'opening_water_reading');
+        $openingElectric=$this->openingReading($input['opening_electric_reading']??null,'opening_electric_reading');
         $timezone=new \DateTimeZone((string)$this->app->config->get('APP_TIMEZONE','Asia/Bangkok'));
         if($moveIn>(new \DateTimeImmutable('today',$timezone))->format('Y-m-d')){
             throw new HttpException(422,'move_in_date cannot be in the future','VALIDATION_ERROR',['field'=>'move_in_date']);
         }
-        $reuseResidentId=array_key_exists('reuse_resident_id',$input)?Validator::id($input['reuse_resident_id'],'reuse_resident_id'):null;
+        $reuseResidentIdProvided=array_key_exists('reuse_resident_id',$input);
+        $reuseResidentId=$reuseResidentIdProvided
+            ?Validator::id($input['reuse_resident_id'],'reuse_resident_id')
+            :null;
 
-        return $this->app->database()->transaction(function (PDO $pdo) use ($id,$adminId,$email,$emailProvided,$moveIn,$reuseResidentId,$timezone,$allowBeforeBookingDate): array {
+        return $this->app->database()->transaction(function (PDO $pdo) use (
+            $id,$adminId,$email,$emailProvided,$moveIn,$reuseResidentId,
+            $reuseResidentIdProvided,$timezone,
+            $allowBeforeBookingDate,$openingWater,$openingElectric
+        ): array {
             $lookup=$pdo->prepare('SELECT room_id FROM bookings WHERE id=?');
             $lookup->execute([$id]);
             $roomId=$lookup->fetchColumn();
@@ -411,6 +497,59 @@ final class BookingService
                 ||!hash_equals((string)$phone,(string)$booking['phone_norm'])){
                 throw new \RuntimeException('Booking identity changed while acquiring locks');
             }
+            $moveInRequestHash=$this->moveInRequestHash(
+                $id,
+                (string)$booking['reference_no'],
+                $emailProvided,
+                $email,
+                $reuseResidentIdProvided,
+                $reuseResidentId,
+                $moveIn,
+                $openingWater,
+                $openingElectric,
+            );
+            if($booking['status']==='moved_in'){
+                $replay=$pdo->prepare('SELECT o.id,o.resident_id,o.room_id,o.move_in_date,
+                        o.opening_water_reading,o.opening_electric_reading
+                    FROM occupancies o
+                    WHERE o.booking_id=? LIMIT 1 FOR UPDATE');
+                $replay->execute([$id]);
+                $occupancy=$replay->fetch();
+                if(!$occupancy
+                    ||(int)$occupancy['resident_id']!==(int)$booking['resident_id']
+                    ||(int)$occupancy['room_id']!==$roomId){
+                    throw new \RuntimeException('Moved-in booking is inconsistent with its occupancy');
+                }
+                $storedRequestHash=$booking['move_in_request_hash']??null;
+                $requestMismatch=$storedRequestHash===null
+                    // Legacy rows have no immutable copy of optional input.
+                    // Permit only the subset that can be proved from the
+                    // occupancy ledger; never compare mutable resident.email.
+                    ?($emailProvided||$reuseResidentIdProvided)
+                    :(!is_string($storedRequestHash)
+                        ||preg_match('/^[0-9a-f]{64}$/D',$storedRequestHash)!==1
+                        ||!hash_equals($storedRequestHash,$moveInRequestHash));
+                if(!hash_equals((string)$occupancy['move_in_date'],$moveIn)
+                    ||!hash_equals((string)$occupancy['opening_water_reading'],$openingWater)
+                    ||!hash_equals((string)$occupancy['opening_electric_reading'],$openingElectric)
+                    ||$requestMismatch){
+                    throw new HttpException(
+                        409,
+                        'Move-in was already completed with different immutable values',
+                        'MOVE_IN_ALREADY_COMPLETED',
+                        ['occupancy_id'=>(int)$occupancy['id']]
+                    );
+                }
+                return [
+                    'booking_id'=>$id,
+                    'status'=>'moved_in',
+                    'resident_id'=>(int)$occupancy['resident_id'],
+                    'occupancy_id'=>(int)$occupancy['id'],
+                    'room_id'=>(int)$occupancy['room_id'],
+                    'move_in_date'=>(string)$occupancy['move_in_date'],
+                    'idempotent_replay'=>true,
+                ]+$this->pendingResidentAccess($pdo,(int)$occupancy['resident_id']);
+            }
             if ($booking['status'] !== 'confirmed') throw new HttpException(409, 'ต้องยืนยันการจองก่อนย้ายเข้า', 'BOOKING_BAD_STATE', ['status'=>$booking['status']]);
             if ($roomRow['deleted_at'] !== null) throw new HttpException(409, 'ห้องนี้ถูกลบแล้ว', 'ROOM_DELETED');
             $bookedDate=(new \DateTimeImmutable((string)$booking['created_at'],new \DateTimeZone('UTC')))->setTimezone($timezone)->format('Y-m-d');
@@ -425,6 +564,31 @@ final class BookingService
             // A room whose previous occupancy ended in this month can accept
             // the next resident from the first day of the following month.
             $periodStart=substr($moveIn,0,7).'-01';
+            // MeterService uses the same room row as its first lock, so this
+            // check closes the race with a concurrent vacant-room meter write.
+            // A pre-existing row belongs to a month that already started under
+            // another baseline and cannot safely be reassigned.
+            $meterConflict=$pdo->prepare("SELECT id,meter_type,occupancy_id
+                FROM meter_readings
+                WHERE room_id=? AND period=?
+                ORDER BY meter_type
+                FOR UPDATE");
+            $meterConflict->execute([$booking['room_id'],$periodStart]);
+            $meterConflictRows=$meterConflict->fetchAll();
+            if($meterConflictRows!==[]){
+                throw new HttpException(
+                    409,
+                    'This room already has meter data for the move-in month; choose a later month or reconcile the ledger during maintenance',
+                    'MOVE_IN_METER_PERIOD_CONFLICT',
+                    [
+                        'period'=>substr($periodStart,0,7),
+                        'meter_types'=>array_values(array_unique(array_map(
+                            static fn(array $row):string=>(string)$row['meter_type'],
+                            $meterConflictRows
+                        ))),
+                    ]
+                );
+            }
             $turnover=$pdo->prepare("SELECT id,move_out_date FROM occupancies WHERE room_id=? AND status='ended' AND move_out_date>=? ORDER BY move_out_date DESC,id DESC LIMIT 1 FOR UPDATE");
             $turnover->execute([$booking['room_id'],$periodStart]);
             if($prior=$turnover->fetch()){
@@ -467,39 +631,133 @@ final class BookingService
                 // again instead of inheriting a potentially stale binding.
                 $update = $pdo->prepare('UPDATE residents SET full_name=?,email=?,line_user_id=?,active=1,auth_version=auth_version+1,updated_at=UTC_TIMESTAMP() WHERE id=?');
                 $update->execute([$booking['full_name'],$residentEmail,null,$residentId]);
+                $residentAuthVersion=(int)$resident['auth_version']+1;
             } else {
                 $insertResident = $pdo->prepare('INSERT INTO residents (full_name,phone_norm,email,line_user_id,auth_version,active,created_at,updated_at) VALUES (?,?,?,?,1,1,UTC_TIMESTAMP(),UTC_TIMESTAMP())');
                 $insertResident->execute([$booking['full_name'],$booking['phone_norm'],$email,null]);
                 $residentId = (int) $pdo->lastInsertId();
+                $residentAuthVersion=1;
             }} catch (\PDOException $error) {
                 if (($error->errorInfo[1] ?? null) === 1062) throw new HttpException(409,'Phone or LINE account is already assigned to another resident','RESIDENT_IDENTITY_CONFLICT');
                 throw $error;
             }
+            $activation=ResidentAccessCredential::issue($this->app->config,$residentId,$residentAuthVersion);
+            $activationTtl=ResidentAccessCredential::ttlSeconds($this->app->config);
+            $credentialUpdate=$pdo->prepare("UPDATE residents
+                SET access_password_hash=NULL,activation_code_hash=?,
+                    activation_expires_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL {$activationTtl} SECOND),
+                    activation_consumed_at=NULL,updated_at=UTC_TIMESTAMP()
+                WHERE id=? AND auth_version=?");
+            $credentialUpdate->execute([$activation['hash'],$residentId,$residentAuthVersion]);
+            if($credentialUpdate->rowCount()!==1)throw new \RuntimeException('Resident activation credential could not be issued');
+            $expiry=$pdo->prepare('SELECT activation_expires_at FROM residents WHERE id=?');
+            $expiry->execute([$residentId]);
+            $activationExpiresAt=$expiry->fetchColumn();
+            $updateBooking = $pdo->prepare("UPDATE bookings
+                SET status='moved_in',resident_id=?,moved_in_at=UTC_TIMESTAMP(),
+                    move_in_request_hash=?,updated_at=UTC_TIMESTAMP()
+                WHERE id=? AND status='confirmed'");
+            $updateBooking->execute([$residentId,$moveInRequestHash,$id]);
+            if($updateBooking->rowCount()!==1){
+                throw new \RuntimeException('Confirmed booking could not transition to moved-in');
+            }
             try {
-                $occupancy = $pdo->prepare("INSERT INTO occupancies (resident_id,room_id,booking_id,monthly_rent,status,move_in_date,created_at,updated_at) VALUES (?,?,?,?,'active',?,UTC_TIMESTAMP(),UTC_TIMESTAMP())");
-                $occupancy->execute([$residentId,$booking['room_id'],$id,$booking['booked_monthly_rent'],$moveIn]);
+                $occupancy = $pdo->prepare("INSERT INTO occupancies
+                    (resident_id,room_id,booking_id,monthly_rent,status,move_in_date,
+                     opening_water_reading,opening_electric_reading,created_at,updated_at)
+                    VALUES (?,?,?,?,'active',?,?,?,UTC_TIMESTAMP(),UTC_TIMESTAMP())");
+                $occupancy->execute([
+                    $residentId,
+                    $booking['room_id'],
+                    $id,
+                    $booking['booked_monthly_rent'],
+                    $moveIn,
+                    $openingWater,
+                    $openingElectric,
+                ]);
             } catch (\PDOException $error) {
                 if (($error->errorInfo[1] ?? null) === 1062) throw new HttpException(409, 'ห้องหรือผู้เช่าถูกผูกใช้งานแล้ว', 'OCCUPANCY_CONFLICT');
                 throw $error;
             }
             $occupancyId = (int) $pdo->lastInsertId();
-            $updateBooking = $pdo->prepare("UPDATE bookings SET status='moved_in',resident_id=?,moved_in_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP() WHERE id=?");
-            $updateBooking->execute([$residentId,$id]);
             return [
                 'booking_id'=>$id,'status'=>'moved_in','resident_id'=>$residentId,
                 'occupancy_id'=>$occupancyId,'room_id'=>(int)$booking['room_id'],'move_in_date'=>$moveIn,
+                'resident_access'=>[
+                    'activation_required'=>true,'activation_code'=>$activation['code'],
+                    'expires_at'=>(string)$activationExpiresAt,'single_use'=>true,
+                ],
             ];
         });
     }
 
-    private function administrativeReference(string $idempotency,int $roomId,string $fullName,string $phone,?string $email,bool $emailProvided,string $moveIn,?int $reuseResidentId): string
+    /** @return array{resident_access:array<string,mixed>} */
+    private function pendingResidentAccess(PDO $pdo,int $residentId): array
+    {
+        $statement=$pdo->prepare('SELECT auth_version,activation_code_hash,activation_expires_at,
+                activation_consumed_at,activation_expires_at>UTC_TIMESTAMP(6) AS activation_valid
+            FROM residents WHERE id=? LIMIT 1');
+        $statement->execute([$residentId]);
+        $row=$statement->fetch();
+        $code=$row&&$row['activation_consumed_at']===null&&(int)$row['activation_valid']===1
+            ?ResidentAccessCredential::restore(
+                $this->app->config,$residentId,(int)$row['auth_version'],
+                is_string($row['activation_code_hash']??null)?$row['activation_code_hash']:null
+            ):null;
+        return ['resident_access'=>[
+            'activation_required'=>$code!==null,'activation_code'=>$code,
+            'expires_at'=>$code!==null?(string)$row['activation_expires_at']:null,'single_use'=>true,
+        ]];
+    }
+
+    private function administrativeReference(
+        string $idempotency,
+        int $roomId,
+        string $fullName,
+        string $phone,
+        ?string $email,
+        bool $emailProvided,
+        string $moveIn,
+        ?int $reuseResidentId,
+        string $openingWater,
+        string $openingElectric,
+    ): string
     {
         $canonical=json_encode([
             'room_id'=>$roomId,'full_name'=>$fullName,'phone'=>$phone,
             'email_provided'=>$emailProvided,'email'=>$email,'move_in_date'=>$moveIn,
             'reuse_resident_id'=>$reuseResidentId,
+            'opening_water_reading'=>$openingWater,
+            'opening_electric_reading'=>$openingElectric,
         ],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR);
         return 'ADM-'.strtoupper(substr(hash('sha256',$idempotency."\0".$canonical),0,32));
+    }
+
+    private function moveInRequestHash(
+        int $bookingId,
+        string $bookingReference,
+        bool $emailProvided,
+        ?string $email,
+        bool $reuseResidentIdProvided,
+        ?int $reuseResidentId,
+        string $moveIn,
+        string $openingWater,
+        string $openingElectric,
+    ): string
+    {
+        $canonical=json_encode([
+            'version'=>1,
+            'booking_id'=>$bookingId,
+            'booking_reference'=>$bookingReference,
+            'email_provided'=>$emailProvided,
+            'email'=>$email,
+            'reuse_resident_id_provided'=>$reuseResidentIdProvided,
+            'reuse_resident_id'=>$reuseResidentId,
+            'move_in_date'=>$moveIn,
+            'opening_water_reading'=>$openingWater,
+            'opening_electric_reading'=>$openingElectric,
+        ],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR);
+        return hash('sha256',"dormflow:move-in:v1\0".$canonical);
     }
 
     private static function assertMoveInDateAllowed(string $moveIn): void
@@ -512,6 +770,20 @@ final class BookingService
                 ['field'=>'move_in_date','minimum'=>self::EARLIEST_MOVE_IN_DATE]
             );
         }
+    }
+
+    private function openingReading(mixed $value,string $field): string
+    {
+        $scaled=Validator::scaledDecimal($value,$field,2,12);
+        if($scaled>self::MAX_METER_READING_SCALED){
+            throw new HttpException(
+                422,
+                'Opening meter reading must not exceed 9,999,999.00',
+                'METER_TOO_HIGH',
+                ['field'=>$field,'maximum'=>'9999999.00']
+            );
+        }
+        return Validator::decimalString($scaled,2);
     }
 
     private function lockPhoneInvariant(string $phone): void

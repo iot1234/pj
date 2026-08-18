@@ -58,12 +58,13 @@ Docker จะติดตั้งฐานข้อมูลและเปิ�
    Remove-Variable plain,password
    ```
 
-6. เปิด `/admin` → **ตั้งค่า** แล้วกรอกค่าดำเนินงานทั้งหมดจากหน้าเว็บ รวม LINE Channel access token/Channel secret จากนั้นนำ `<APP_URL>/api/webhooks/line` ไปตั้งใน LINE Developers Console และเปิด **Use webhook**
+6. เปิด `/admin` → **ตั้งค่า** แล้วกรอกค่าดำเนินงานทั้งหมดจากหน้าเว็บ รวม LINE Basic ID, Channel access token และ Channel secret จากนั้นนำ `<APP_URL>/api/webhooks/line` ไปตั้งใน LINE Developers Console และเปิด **Use webhook**
 7. ตั้ง worker ส่ง LINE: บน Linux ให้ supervisor รัน `sh scripts/start-worker.sh` เป็น process เบื้องหลัง; บน Windows ให้ Task Scheduler รัน `php scripts/process_notifications.php` แบบ one-shot อย่างน้อยทุกนาที (ไม่ใช้ `--loop` ใน scheduled task)
 
 ## ตรวจว่าพร้อมใช้
 
 - หน้า Guest เห็นเฉพาะห้องว่างและส่งจองได้
+- Owner login ได้ และหน้าแรกหลังเข้าสู่ระบบคือ **ภาพรวม** ซึ่งบอกจำนวนการจองรอยืนยัน สลิปรอตรวจ ความคืบหน้าการจดมิเตอร์/ออกบิลของเดือนนี้ และสถานะตัวส่งบิลผ่าน LINE
 - Owner login ได้และหน้า **ตั้งค่า** แสดงสถานะ PromptPay/LINE/ตรวจสลิป
 - LINE Developers Verify webhook ผ่าน, request ลายเซ็นผิดถูกปฏิเสธ และส่งข้อความหา Bot แล้วได้รับ LINE User ID/วิธีผูกบัญชี
 - เพิ่มห้อง → ยืนยันจอง → รับเข้าพัก → จดมิเตอร์ → ตรวจยอด → ออกบิลได้

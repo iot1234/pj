@@ -2,6 +2,8 @@
 
 เอกสารนี้บันทึกผลวิเคราะห์และเหตุผลของ PHP/MySQL rewrite โดยใช้ `1.txt` เป็นขอบเขตสูงสุด รอบการตรวจนี้อ่าน `newap/` เป็นข้อมูลอ้างอิงเพิ่มเติมแบบ read-only โดยไม่แก้ไฟล์ในนั้น และไม่ได้แตะโฟลเดอร์ `ap/`
 
+> การกล่าวถึง PostgreSQL ในเอกสารนี้หมายถึงแหล่งข้อมูลของระบบเดิมที่อาจต้อง export/reconcile เท่านั้น ระบบปัจจุบันไม่เชื่อมต่อ PostgreSQL และรองรับฐานข้อมูลเฉพาะ Oracle MySQL 8.0.16 ขึ้นไป (ไม่ใช่ MariaDB)
+
 ## สิ่งที่พบในโครงการเดิม
 
 - `ap-main/` เป็น source หลัก ส่วน `ap-main-current-snapshot-*` และ `ap-push-worktree-*` เป็น snapshot/worktree จึงไม่ควรนำมารวมกันเป็น source เดียว
@@ -27,13 +29,13 @@
 
 - ใช้ PHP 8.2+ แบบ front controller และ MySQL 8/InnoDB
 - ย้ายเฉพาะ FR-01 ถึง FR-16 จาก `1.txt`; รายการอื่นไม่สร้าง route, table หรือหน้าจอตามมา
-- เลิกใช้ JSONB/localStorage เป็นแหล่งข้อมูลหลัก แล้วแยกเป็น 14 ตาราง relational พร้อม FK, CHECK, unique/generated keys และ transaction
+- เลิกใช้ JSONB/localStorage เป็นแหล่งข้อมูลหลัก แล้วแยกเป็น 16 ตาราง relational พร้อม FK, CHECK, unique/generated keys, ตารางรหัสผูก LINE, notification worker heartbeat และ transaction
 - สถานะห้องคำนวณจาก booking/occupancy จริง ไม่เปิดให้ client แก้ status โดยตรง
 - บิลเก็บ snapshot ค่าเช่า มิเตอร์ อัตรา และยอด ณ วันที่ออกบิล พร้อม trigger ห้ามแก้ข้อมูลการเงินย้อนหลัง
 - สลิปถูก decode/re-encode และเก็บใต้ private storage; การเปิดหลักฐานผ่าน route ที่ยืนยันสิทธิ์ ตรวจ canonical path/MIME/ขนาด/dimensions/HMAC ซ้ำ และบันทึก audit เท่านั้น
 - ค่าใช้งาน PromptPay, LINE, SlipOK และ EasySlip จัดการจาก Admin → ตั้งค่า โดย Owner และเก็บใน singleton `integration_settings`; LINE Channel access token/Channel secret และ API key เข้ารหัส AES-256-GCM ด้วย `APP_KEY` และ AAD แยก field ส่วน `APP_KEY`, `APP_URL` และค่าเชื่อมต่อ DB ยังคงเป็น infrastructure environment
-- Resident login ใช้เบอร์โทรที่ผูกกับ resident/occupancy active เพียงอย่างเดียว ไม่มี PIN หรือ trusted-device bypass, session idle 15 นาที/absolute 1 ชั่วโมง; Admin/Owner ยังคงใช้ username/password การตัดสินใจนี้มี assurance ต่ำและผู้ที่รู้เบอร์ active สามารถสวมบัญชีได้ โดย rate limit ป้องกัน takeover ครั้งแรกไม่ได้
-- Resident ยังแก้ชื่อ/email ของตนได้ การย้ายเข้าไม่รับ PIN และไม่มี route เปลี่ยน/รีเซ็ต PIN ส่วนการผูก LINE ใช้ OTP ไปยังบัญชี LINE ปลายทางโดยไม่ใช้ PIN ซึ่งพิสูจน์เพียงการควบคุม LINE นั้น ไม่ได้พิสูจน์ตัวผู้พัก
+- Resident login ใช้เบอร์โทรที่ผูกกับ resident/occupancy active ร่วมกับ password ไม่มี PIN หรือ trusted-device bypass, session idle 15 นาที/absolute 1 ชั่วโมง; ครั้งแรกใช้ activation code แบบครั้งเดียวที่หมดอายุเพื่อตั้ง password และการ reissue จะ revoke password/session เดิม ส่วน Admin/Owner ใช้ username/password แยกกัน
+- Resident ยังแก้ชื่อ/email ของตนได้ การย้ายเข้าไม่รับ PIN และไม่มี route เปลี่ยน/รีเซ็ต PIN ส่วนการผูก LINE ให้ Resident ที่ login สร้างรหัส `BIND-` แบบสุ่ม 128 บิตอายุ 10 นาทีแล้วส่งในแชตส่วนตัวกับ OA; MySQL เก็บเฉพาะ HMAC ของรหัส และ webhook ที่ลายเซ็นถูกต้องผูก LINE User ID จาก event ภายใต้ transaction
 
 รายละเอียดการจับคู่ทุก requirement อยู่ใน `FEATURE_MATRIX.md` ส่วน API contract อยู่ใน `ARCHITECTURE.md`
 
@@ -41,7 +43,7 @@
 
 `database/defaults.sql` เป็นค่าเริ่มต้นที่ปลอดภัยสำหรับทุกสภาพแวดล้อม มีเฉพาะ singleton settings ที่ไม่มี credential และไม่มีห้อง/ผู้เช่า/บัญชีผู้ดูแล ส่วน `database/demo.sql` เป็นข้อมูลห้องทดสอบแบบเห็นชัดที่ต้อง import เองเฉพาะฐาน local ไม่ใช่ตัวนำเข้าข้อมูล production การนำข้อมูลใช้งานจริงจาก PostgreSQL เดิมเข้ามาต้อง reconcile ก่อน เพราะห้อง/ผู้เช่า/บิลอาจปรากฏทั้ง JSONB และตาราง relational
 
-การติดตั้งใหม่ที่ต้องการฐานชื่อ `dormitory` และมีสิทธิ์สร้างฐานใช้ `database/install.sql` ไฟล์เดียวได้ ส่วนฐานชื่ออื่นหรือฐานที่สร้างไว้แล้วให้ใช้วิธีขั้นสูงโดยเลือกฐานเป้าหมายแล้ว import `database/schema.sql` ตามด้วย `database/defaults.sql`; fresh schema ไม่มี `residents.pin_hash` และ defaults สร้าง singleton `billing_settings`/`integration_settings` โดยไม่มี credential จึงไม่ต้องรัน migration ซ้ำ ส่วนระบบ PHP/MySQL ที่ติดตั้งจาก schema รุ่นก่อนต้องสำรองและทดสอบ restore แล้วใช้บัญชี schema/migration ที่มีสิทธิ์ DDL รัน `001` เมื่อจำเป็น → `002` หนึ่งครั้ง → `003` → `004` หลังแก้ LINE ID legacy → `005_booking_active_phone.sql` หลังปิด active booking ซ้ำต่อเบอร์ → deploy transitional commit `a52bc33` → `006_remove_resident_pin.sql` → ตรวจ schema → deploy source ปัจจุบัน ห้ามรัน `006` ขณะยังมีแอปรุ่น PIN และหลังรันจะ rollback ไปแอปรุ่น PIN เดิมไม่ได้โดยไม่ restore schema/backup Source ปัจจุบันไม่มี runtime compatibility สำหรับ `pin_hash` หลัง migration ต้องตรวจด้วย `--schema-audit` โดยบัญชี DBA/schema owner ชั่วคราว
+การติดตั้งใหม่ที่ต้องการฐานชื่อ `dormitory` และมีสิทธิ์สร้างฐานใช้ `database/install.sql` ไฟล์เดียวได้ ส่วนฐานชื่ออื่นหรือฐานที่สร้างไว้แล้วให้ใช้วิธีขั้นสูงโดยเลือกฐานเป้าหมายแล้ว import `database/schema.sql` ตามด้วย `database/defaults.sql`; fresh schema ไม่มี `residents.pin_hash` และ defaults สร้าง singleton `billing_settings`/`integration_settings` โดยไม่มี credential จึงไม่ต้องรัน migration ซ้ำ ส่วนระบบ PHP/MySQL ที่ติดตั้งจาก schema รุ่นก่อนต้องสำรองและทดสอบ restore แล้วใช้บัญชี schema/migration ที่มีสิทธิ์ DDL รัน `001` เมื่อจำเป็น → `002` หนึ่งครั้ง → `003` → `004` หลังแก้ LINE ID legacy → `005_booking_active_phone.sql` หลังปิด active booking ซ้ำต่อเบอร์ → deploy transitional commit `a52bc33` → `006_remove_resident_pin.sql` → ปิด traffic/หยุด worker และ monthly cron → `007_notification_worker_fencing.sql` → `008_resident_access_credentials.sql` → maintenance window ที่หยุด web/worker/job writes แล้วรัน `009_occupancy_meter_baselines.sql` → `010_line_self_service_binding.sql` → `011_line_add_friend_identity.sql` → `012_move_in_request_hash.sql` → deploy source ปัจจุบันโดยยังปิด traffic → reissue access ให้ผู้พักเดิมและผ่าน strict gate → เปิด traffic ห้ามรัน `006` ขณะยังมีแอปรุ่น PIN และห้ามรัน `007` ขณะ worker ยังทำงาน; `009` จะหยุดหาก lifecycle/ค่าเช่า snapshot/ความสัมพันธ์ bill-items-payment-notification/ค่าเปิด/การผูก occupancy/chain มิเตอร์ legacy ไม่สอดคล้อง จึงต้องซ่อมจากหลักฐานจริงโดย DBA ตาม controlled recovery ใน `docs/SQL_SETUP.md` ก่อนรันซ้ำ ส่วน `010` สร้าง `line_link_codes` แบบ rerunnable, `011` เพิ่ม LINE Basic ID พร้อม CHECK สำหรับลิงก์เพิ่มเพื่อน และ `012` เพิ่ม immutable digest สำหรับ replay การย้ายเข้าโดยไม่ backfill จากอีเมลผู้พักซึ่งแก้ไขได้ หลัง migration ต้องตรวจด้วย `--db --strict --production` และ `--schema-audit` โดยบัญชี DBA/schema owner ชั่วคราว
 
 หลังอัปเกรด Owner ต้องกรอก PromptPay/LINE/SlipOK/EasySlip ใหม่ผ่านหน้าหลังบ้าน ค่าดำเนินงานจาก `.env` รุ่นเดิมไม่ถูกอ่านเป็น fallback เพื่อป้องกัน configuration สองแหล่ง ข้อมูล secret ที่ API คืนมีเพียงสถานะ configured และ hint แบบปิดบัง ช่อง secret ว่างเก็บค่าเดิมและต้องใช้คำสั่ง clear โดยชัดแจ้งเมื่อต้องการลบ Web กับ worker อ่านแถวฐานข้อมูลในรอบใช้งานถัดไป จึงไม่ต้อง restart หลังบันทึก
 

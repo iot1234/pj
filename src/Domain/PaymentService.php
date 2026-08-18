@@ -6,6 +6,7 @@ namespace Dormitory\Domain;
 use Dormitory\Application;
 use Dormitory\Http\HttpException;
 use Dormitory\Integration\SlipVerifier;
+use Dormitory\Support\MySqlError;
 use Dormitory\Support\Validator;
 use PDO;
 use PDOException;
@@ -61,7 +62,7 @@ final class PaymentService
         }
     }
 
-    /** @return array{items:list<array<string,mixed>>,has_more:bool,next_offset:int} */
+    /** @return array{items:list<array<string,mixed>>,has_more:bool,next_offset:int,pending_count:int} */
     public function list(?string $status=null,int $offset=0,int $limit=100): array
     {
         if($offset<0||$offset>1000000||$limit<1||$limit>200)throw new HttpException(422,'Invalid payment pagination','VALIDATION_ERROR');
@@ -69,7 +70,8 @@ final class PaymentService
         $pageSize=$limit+1;
         $statement=$this->app->database()->pdo()->prepare("SELECT p.id,p.bill_id,p.resident_id,p.amount,p.status,p.provider,p.transaction_ref,p.receiver_ref,p.rejection_reason,p.verification_lease_until,p.verification_attempts,(p.status='pending' AND p.verification_lease_until IS NOT NULL AND p.verification_lease_until>UTC_TIMESTAMP()) AS verifying,p.created_at,p.updated_at,p.verified_at,b.bill_no,b.room_code_snapshot AS room_code,b.resident_name_snapshot AS full_name FROM payments p JOIN bills b ON b.id=p.bill_id".$where." ORDER BY (p.status='pending') DESC,p.created_at DESC,p.id DESC LIMIT {$pageSize} OFFSET {$offset}");
         $statement->execute($params);$rows=$statement->fetchAll();$hasMore=count($rows)>$limit;if($hasMore)array_pop($rows);foreach($rows as &$row){foreach(['id','bill_id','resident_id','verification_attempts']as$key)$row[$key]=(int)$row[$key];$row['resident_name']=$row['full_name'];$row['verifying']=(bool)$row['verifying'];}
-        return ['items'=>$rows,'has_more'=>$hasMore,'next_offset'=>$offset+count($rows)];
+        $pendingCount=(int)$this->app->database()->pdo()->query("SELECT COUNT(*) FROM payments WHERE status='pending'")->fetchColumn();
+        return ['items'=>$rows,'has_more'=>$hasMore,'next_offset'=>$offset+count($rows),'pending_count'=>$pendingCount];
     }
 
     /**
@@ -219,7 +221,7 @@ final class PaymentService
             $insert->execute([$bill['id'],$residentId,$current['total_amount'],$relative,$mime,$hmac,$provider,'กำลังตรวจสอบกับผู้ให้บริการ',$token]);
             return $this->get($pdo,(int)$pdo->lastInsertId());
         });}catch(PDOException $e){
-            if((int)($e->errorInfo[1]??0)===1062||(string)$e->getCode()==='23000'){
+            if(MySqlError::isDuplicateKey($e,'uq_payments_slip_hmac','uq_payments_one_active_per_bill')){
                 $duplicate=$this->app->database()->pdo()->prepare('SELECT id,bill_id,resident_id FROM payments WHERE slip_hmac=? LIMIT 1');
                 $duplicate->execute([$hmac]);$row=$duplicate->fetch();
                 if($row&&(int)$row['bill_id']===(int)$bill['id']&&(int)$row['resident_id']===$residentId){
@@ -258,7 +260,7 @@ final class PaymentService
             $statement->execute([$status,$v['provider']??null,$v['transaction_ref']??null,$v['receiver_ref']??null,$payload,$reason,$paymentId]);
             if($statement->rowCount()!==1)throw new HttpException(409,'สถานะรายการชำระเปลี่ยนแปลงแล้ว','PAYMENT_CHANGED');
         }catch(PDOException $e){
-            if((int)($e->errorInfo[1]??0)===1062||(string)$e->getCode()==='23000'){
+            if(MySqlError::isDuplicateKey($e,'uq_payments_transaction_ref')){
                 $duplicate=$pdo->prepare("UPDATE payments SET status='rejected',provider=?,transaction_ref=NULL,receiver_ref=?,provider_payload=?,rejection_reason='เลขอ้างอิงธุรกรรมนี้ถูกใช้กับบิลอื่นแล้ว',verified_at=NULL,verification_lease_until=NULL,verification_token=NULL,updated_at=UTC_TIMESTAMP() WHERE id=? AND status='pending'");
                 $duplicate->execute([$v['provider']??null,$v['receiver_ref']??null,$payload,$paymentId]);
                 if($duplicate->rowCount()!==1)throw new HttpException(409,'สถานะรายการชำระเปลี่ยนแปลงแล้ว','PAYMENT_CHANGED');

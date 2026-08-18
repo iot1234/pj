@@ -12,15 +12,16 @@
 ## Authentication และ authorization
 
 - Admin/Owner ใช้ username/password ความยาว 12-200 ตัวตามเดิมและ password เก็บด้วย `password_hash()` โดยเลือก Argon2id เมื่อ runtime รองรับและ fallback เป็น bcrypt ไม่มี default password หรือ plaintext credential ใน SQL
-- Resident ใช้เพียงเบอร์โทรไทยที่ normalize แล้ว ซึ่งต้องตรงกับ resident และ occupancy ที่ active ไม่มี PIN/password/OTP login และไม่มี resident trusted-device bypass; API รับเฉพาะ `{phone}` และปฏิเสธ field เกินรวมถึง `pin`
-- login error เป็นข้อความรวมพร้อม delay เพื่อลด phone enumeration; ฝั่ง Admin ยังใช้ fixed dummy hash และจำนวนงาน KDF ที่ใกล้เคียงกันสำหรับ username ที่พบ/ไม่พบ
+- Resident ใช้เบอร์โทรไทยที่ normalize แล้วซึ่งต้องตรงกับ resident/occupancy active ร่วมกับ password ไม่มี PIN และไม่มี resident trusted-device bypass; ครั้งแรก API รับ activation code ที่ยังไม่หมดอายุพร้อม `new_password`, consume code แบบ transaction เดียว แล้วเก็บ password hash/เพิ่ม `auth_version`
+- activation code ยาว 20 ตัวแบบสุ่มเชิงกำหนดจาก HMAC context เก็บในฐานเฉพาะ HMAC และใช้ได้ครั้งเดียว อายุเริ่มต้น 7 วันและจำกัด 15 นาที–30 วัน การ reissue ล้าง password/เพิกถอน session เดิม ผู้ดูแลต้องส่ง code ผ่านช่องทางส่วนตัวและออกใหม่เมื่อสงสัยว่ารั่ว
+- login error เป็นข้อความรวมพร้อม delay เพื่อลด phone/username enumeration; ทั้ง Admin และ Resident ใช้ fixed dummy hash และจำนวนงาน KDF ที่ใกล้เคียงกันเมื่อ principal/credential ไม่ถูกต้อง
 - rate limit เก็บใน MySQL และ lock ด้วย transactionทั้งต่อ IP และคู่บัญชี+source โดย bucket key เป็น HMAC จึงไม่เก็บ phone/username ตรง ๆ ค่า malformed/ไม่พบถูกจัดการแบบ fail-closed และไม่บอกว่าบัญชีใดมีจริง Signed HttpOnly trusted-device cookie ใช้ได้เฉพาะ Admin ที่เคยยืนยัน password สำเร็จ ไม่ใช้กับ Resident
 - session ID ถูก rotate เมื่อ login และล้างเมื่อ logout ใช้ strict mode, cookie only, HttpOnly, SameSite=Lax และ Secure เมื่อเปิด HTTPS; Resident session หมดอายุเมื่อ idle 15 นาทีหรืออายุรวม 1 ชั่วโมง ส่วน Admin ใช้นโยบาย session ที่ตั้งไว้ ระบบเริ่ม file session แบบ lazy เฉพาะเมื่อมี session ที่บันทึกอยู่หรือ login สำเร็จ Anonymous GET จึงไม่สร้างไฟล์ใหม่
 - ทุก request ที่มี session จะตรวจ `active` และ `auth_version` กับฐานข้อมูล การปิดบัญชี, เปลี่ยน password Admin, เปลี่ยนเบอร์ Resident หรือเพิ่ม auth version จึง revoke session เก่าได้
 - Route guard แยก Guest, Resident, Admin และ owner; เฉพาะ owner จัดการบัญชี admin และเปลี่ยนค่า PromptPay/LINE/slip integrations ส่วน service ต้องกันการปิด/ลบ owner คนสุดท้าย
 - Query ของผู้เช่าต้อง bind `resident_id` จาก session เสมอ ห้ามเชื่อ bill/resident/room ID จาก URL เพียงอย่างเดียว
 
-ข้อจำกัดสำคัญ: เบอร์โทรอย่างเดียวไม่ใช่หลักฐานว่าผู้ใช้เป็นเจ้าของเบอร์หรือเป็นผู้พัก ผู้ที่รู้เบอร์ของ resident active สามารถสวมบัญชี อ่านบิล แก้ชื่อ/email ผูก LINE ของตน และส่งสลิปในนามผู้พักได้ทันที Rate limit ช่วยลดการไล่ยิงจำนวนมากแต่ป้องกัน takeover ครั้งแรกที่ใช้เบอร์ถูกต้องไม่ได้ หากความเสี่ยงนี้ยอมรับไม่ได้ ต้องเพิ่ม OTP/MFA หรือ credential อื่นก่อนเปิด production
+ข้อจำกัดสำคัญ: ความปลอดภัยครั้งแรกขึ้นกับช่องทางที่ผู้ดูแลใช้ส่ง activation code หากส่ง code พร้อมเบอร์ผ่านช่องทางเดียวที่ผู้โจมตีควบคุมได้ ผู้โจมตีอาจตั้ง password ก่อนผู้พักจริง จึงต้องยืนยันตัวผู้รับนอกระบบและไม่บันทึก code ใน ticket/log สาธารณะ ระบบยังไม่มี MFA สำหรับ Resident; หากข้อมูลหรือธุรกรรมต้องการ assurance สูงกว่ารหัสผ่าน ให้เพิ่ม OTP/MFA ก่อนเปิด production
 
 ## CSRF, origin และ input
 
@@ -47,14 +48,15 @@ MySQL ต้องเป็น 8.0.16+ เพื่อให้ `CHECK` ทำ�
 - booking/move-in/bill/payment/admin-owner flows ใช้ transaction และ `SELECT ... FOR UPDATE`; duplicate-key เป็น conflict ไม่ใช่ retry แบบ blind
 - meter กำหนดหนึ่งแถวต่อห้อง/ประเภท/เดือน, current ≥ previous และ units เท่ากับผลต่างที่ปัด 2 ตำแหน่ง
 - booking เก็บ snapshot ค่าเช่าขณะจอง และ bill เก็บ snapshot ชื่อผู้พัก รหัสห้อง ค่าเช่า มิเตอร์ rate และ amount เพื่อไม่ให้การแก้ข้อมูลปัจจุบันเปลี่ยนประวัติย้อนหลัง; total คำนวณฝั่ง server และ unique ต่อ occupancy/period
-- integrity triggers 15 รายการป้องกัน snapshot/หลักฐานเปลี่ยนสถานะ/ความสัมพันธ์ข้ามตาราง, payment ที่สรุปแล้วและการลบ payment, bill/bill items, notification outbox กับ audit logs; ผู้ใช้ฐานข้อมูล runtime ไม่ควรมีสิทธิ์ `DELETE`, `DROP`, `ALTER`, `TRIGGER` หรือปิด constraint
+- integrity triggers 19 รายการป้องกันสถานะเริ่มต้นของ booking/occupancy, snapshot/หลักฐานเปลี่ยนสถานะ/ความสัมพันธ์ข้ามตาราง, occupancy-meter binding, payment ที่สรุปแล้วและการลบ payment, bill/bill items, notification outbox กับ audit logs; schema audit ตรวจทั้ง event/timing/table และ body ตรง canonical ผู้ใช้ฐานข้อมูล runtime ไม่ควรมีสิทธิ์ `DELETE`, `DROP`, `ALTER`, `TRIGGER` หรือปิด constraint
 - payment transaction reference และ slip HMAC เป็น global unique; generated unique key กัน payment pending/verified หลายรายการต่อ bill และ verification lease/token กัน worker/request หลายตัวสรุปรายการเดียวกันพร้อมกัน
-- outbox unique ต่อ `(bill_id,purpose)` และ `retry_key`; key เป็น UUID v4 lowercase ที่เก็บเดิมตลอด retry
-- `integration_settings` ใช้ singleton `id=1`, FK `updated_by` และ CHECK จำกัดรูปแบบ/range; runtime web/worker มีเฉพาะ `SELECT`, `INSERT`, `UPDATE` ไม่ต้องมี `DELETE` หรือสิทธิ์ DDL
+- outbox unique ต่อ `(bill_id,purpose)` และ `retry_key`; key เป็น UUID v4 lowercase ที่เก็บเดิมตลอด retry ส่วน claim token/lease และ compare-and-set fencing ป้องกัน stale worker สรุปงานของ worker อื่น และ heartbeat เก็บเพียง worker ID ที่ HMAC แล้ว
+- `line_link_codes` เก็บเฉพาะ HMAC-SHA256 ของรหัส `BIND-` ไม่เก็บ bearer code; unique `code_hash` กันรหัสซ้ำ และ generated `pending_resident_id` + unique index บังคับให้ผู้พักหนึ่งคนมีรหัส pending ได้ไม่เกินหนึ่งรายการ โดย FK/CHECK บังคับ resident, รูปแบบ LINE ID, state และ timestamp
+- `integration_settings` ใช้ singleton `id=1`, FK `updated_by` และ CHECK จำกัดรูปแบบ/range รวม LINE Basic ID สาธารณะ; runtime web/worker มีเฉพาะ `SELECT`, `INSERT`, `UPDATE` ไม่ต้องมี `DELETE` หรือสิทธิ์ DDL
 
 constraint ไม่สามารถกัน active booking กับ active occupancy ที่อยู่คนละตารางพร้อมกันได้ด้วย unique index ตัวเดียว service จึงต้อง lock ห้องและตรวจทั้งสองตารางใน transaction การแก้ business flow ต้องรักษา invariant นี้
 
-Fresh schema ไม่มี `residents.pin_hash` และ source ปัจจุบันไม่อ่านหรือเขียนคอลัมน์นี้ ฐานรุ่นเก่าต้อง deploy transitional commit `a52bc33`, รอทุก replica healthy, สำรอง/ทดสอบ restore, รัน `006_remove_resident_pin.sql`, ตรวจว่าคอลัมน์หาย แล้วจึง deploy source ปัจจุบัน หลังลบแล้วแอปรุ่น PIN เดิม rollback กลับมาใช้ schema นี้ไม่ได้โดยไม่ restore schema/backup
+Fresh schema ไม่มี `residents.pin_hash` และ source ปัจจุบันไม่อ่านหรือเขียนคอลัมน์นี้ ฐานรุ่นเก่าต้อง deploy transitional commit `a52bc33`, รอทุก replica healthy, สำรอง/ทดสอบ restore, รัน `006_remove_resident_pin.sql`, ตรวจว่าคอลัมน์หาย แล้วปิด public write, หยุด worker และ pause monthly-billing cron ก่อนรัน `007` → `008` → `009` → `010` → `011` → `012` โดยคง maintenance window ไว้จน deploy source ปัจจุบัน, reissue activation code ให้ผู้พัก active เดิมที่ยังไม่มี credential และผ่าน strict/schema gate แล้วจึงเปิด traffic/worker/cron หลังลบ `pin_hash` แล้วแอปรุ่น PIN เดิม rollback กลับมาใช้ schema นี้ไม่ได้โดยไม่ restore schema/backup
 
 ## Slip upload และการเปลี่ยนสถานะ paid
 
@@ -75,10 +77,12 @@ Fresh schema ไม่มี `residents.pin_hash` และ source ปัจจ�
 - cURL จำกัด protocol เป็น HTTPS, ปิด redirect, connect timeout 5 วินาที, total timeout จำกัด, จำกัดขนาด/depth response และ reject malformed JSON
 - secret ส่งใน header ไป host ที่กำหนดเท่านั้นและต้องไม่อยู่ใน error/audit/browser response
 - LINE webhook จำกัดขนาด raw body/event, ตรวจ `X-Line-Signature` แบบ constant-time ก่อน parse JSON, รับเฉพาะ event active แบบ `follow` หรือข้อความตัวอักษรจาก source `user` โดยตรง และ deduplicate ด้วย `webhookEventId` ภายใต้ advisory lock; event กลุ่ม/ห้องและชนิดอื่นถูกข้าม
-- Bot ใช้ reply token ตอบ LINE User ID และวิธีผูกบัญชีเท่านั้น ไม่บันทึกข้อความที่ผู้ใช้ส่งหรือ LINE User ID ดิบลง audit; audit เก็บ event ID, ชนิด event และ HMAC ของ user ID เพื่อ reconcile โดยไม่เปิดเผย identifier
-- LINE ใช้ UUID v4 ที่บันทึกใน outbox เป็น `X-Line-Retry-Key` เดิมทุก retry; HTTP 409 หมายถึง request เดิมได้รับแล้วและต้อง finalize เป็น sent ไม่ส่งใหม่ด้วย key ใหม่
-- LINE User ID ต้องผูกโดย Resident ที่ login อยู่ จากนั้นกรอก OTP 6 หลักภายใน 10 นาที โดยไม่ใช้ PIN; OTP พิสูจน์เฉพาะการควบคุมบัญชี LINE ปลายทาง ไม่พิสูจน์ตัวผู้พักหรือความเป็นเจ้าของเบอร์โทร audit แบบ append-only เก็บ HMAC ของ resident+LINE ID และการ unlink โดยไม่เก็บ OTP worker ตรวจ audit ล่าสุดกับ ID ปัจจุบันก่อนส่งทุกครั้ง ค่า legacy ที่ไม่มีหลักฐานนี้จึง fail-closed
-- outbox ใช้ `FOR UPDATE SKIP LOCKED`, processing timeout recovery, exponential backoff และ maximum attempts เพื่อลดทั้ง duplicate และ retry storm; worker กับขั้นตอน confirm/unlink ใช้ MySQL advisory lock แยกตาม resident เพื่อไม่ให้การส่งไป LINE ID เดิมแข่งกับการเปลี่ยนหรือยกเลิกการผูก
+- LINE webhook ใช้ `rate_limits` ใน MySQL แยก quota ของคำแนะนำกับรหัส `BIND-`: คำแนะนำตอบได้ 1 ครั้งต่อ LINE user ต่อ 5 นาทีและรวม 120 ครั้งต่อนาที ส่วนรหัส `BIND-` ที่มีรูปแบบครบรับได้ 5 ครั้งต่อ user ต่อนาทีและรวม 60 ครั้งต่อนาที bucket ของ user ใช้ HMAC เท่านั้น ไม่เก็บ LINE User ID ดิบ คำแนะนำที่เกิน quota ถูกบันทึก audit เป็น handled โดยไม่ตอบซ้ำ ส่วนรหัส `BIND-` ที่เกิน quota ตอบ HTTP 503 เพื่อให้ LINE redeliver หลัง quota ระยะสั้นเปิดใหม่
+- แต่ละ webhook มี deadline จาก monotonic clock 8 วินาทีและเริ่ม outbound reply ได้ไม่เกิน 2 ครั้ง โดย cURL แต่ละครั้งใช้เวลาสูงสุด 3 วินาทีหรือน้อยกว่าตามเวลาที่เหลือ และจะไม่เริ่ม request ใหม่เมื่อเหลือเวลาต่ำกว่า 1.25 วินาที event ที่ยังไม่ handled เมื่อหมดเวลา/งบตอบกลับจะคืน HTTP 503; event ที่สำเร็จหรือถูก suppress แล้วถูก deduplicate จาก audit เมื่อ LINE redeliver
+- Bot ใช้ reply token ตอบผลการใช้รหัส `BIND-` หรือวิธีผูกบัญชีเท่านั้น ไม่ตอบ LINE User ID ดิบ และไม่บันทึกข้อความ/รหัส/LINE User ID ดิบลง audit; audit เก็บ event ID, ชนิด event และ HMAC ของ user ID เพื่อ reconcile โดยไม่เปิดเผย identifier
+- LINE ใช้ UUID v4 ที่บันทึกใน outbox เป็น `X-Line-Retry-Key` เดิมทุก retry; HTTP 409 ถือว่าส่งสำเร็จได้เฉพาะเมื่อ response มี `x-line-accepted-request-id` ที่มีรูปแบบถูกต้อง มิฉะนั้นต้อง retry/fail-closed และห้ามสร้าง retry key ใหม่
+- LINE User ID ต้องผูกโดย Resident ที่ login อยู่สร้างรหัส `BIND-` จากข้อมูลสุ่ม 128 บิตแล้วส่งในแชตส่วนตัวกับ OA ภายใน 10 นาที โดยไม่ใช้ PIN; server เก็บเฉพาะ keyed HMAC และ webhook ใช้ `source.userId` หลังตรวจลายเซ็น รหัสหมดอายุ/ใช้แล้ว/ถูกเพิกถอนใช้ซ้ำไม่ได้ audit แบบ append-only เก็บ HMAC ของ resident+LINE ID และการ unlink โดยไม่เก็บรหัส worker ตรวจ audit ล่าสุดกับ ID ปัจจุบันก่อนส่งทุกครั้ง ค่า legacy ที่ไม่มีหลักฐานนี้จึง fail-closed
+- outbox ใช้ `FOR UPDATE SKIP LOCKED`, processing timeout recovery, exponential backoff และ maximum attempts เพื่อลดทั้ง duplicate และ retry storm; การ consume รหัส lock resident → code → occupancy ด้วย `SELECT ... FOR UPDATE` และ worker/audit/unlink ใช้ MySQL advisory lock แยกตาม resident เพื่อไม่ให้การส่งไป LINE ID เดิมแข่งกับการเปลี่ยนหรือยกเลิกการผูก
 
 ## การปกป้อง integration settings
 
@@ -124,14 +128,14 @@ Fresh schema ไม่มี `residents.pin_hash` และ source ปัจจ�
 ## Checklist ก่อนเปิด production
 
 - [ ] `php scripts/check_requirements.php --production` ผ่าน; Docker ต้องผ่านทั้ง service `app` และ `worker` ตาม README
-- [ ] ฐานข้อมูลใหม่ชื่อ `dormitory` import `install.sql` ไฟล์เดียว หรือฐานชื่ออื่นใช้วิธีขั้นสูงโดยเลือกฐานเป้าหมายแล้ว import `schema.sql` + `defaults.sql` ครบและยืนยันว่าไม่มี `residents.pin_hash`; ฐานเดิมต้องสำรอง/ทดสอบ restore แล้วรัน `001` เมื่อจำเป็น → `002` หนึ่งครั้ง → `003` → `004` หลังแก้ LINE ID legacy → `005` หลังปิด active booking ซ้ำต่อเบอร์ → transitional commit `a52bc33` → `006_remove_resident_pin.sql` → ตรวจ schema → deploy source ปัจจุบัน พร้อมรัน `--db --strict` และ `--schema-audit`; ห้ามลบ trigger `DEFINER` หลังติดตั้ง
+- [ ] ฐานข้อมูลใหม่ชื่อ `dormitory` import `install.sql` ไฟล์เดียว หรือฐานชื่ออื่นใช้วิธีขั้นสูงโดยเลือกฐานเป้าหมายแล้ว import `schema.sql` + `defaults.sql` ครบและยืนยันว่าไม่มี `residents.pin_hash`; ฐานเดิมต้องสำรอง/ทดสอบ restore แล้วรัน `001` เมื่อจำเป็น → `002` หนึ่งครั้ง → `003` → `004` หลังแก้ LINE ID legacy → `005` หลังปิด active booking ซ้ำต่อเบอร์ → transitional commit `a52bc33` → `006` → ปิด public write/หยุด worker/pause monthly-billing cron → `007` → `008` → `009` → `010` → `011` → `012` → deploy source ปัจจุบันโดยยังไม่เปิด traffic → reissue activation code ให้ผู้พัก active เดิม → ผ่าน `--db --strict --production` และ `--schema-audit` → เปิด traffic/worker/cron; ต้องพบ 16 ตาราง, 19 triggers พร้อม body ตรง canonical, CHECK อย่างน้อย 86 รายการ และห้ามลบ trigger `DEFINER` หลังติดตั้ง
 - [ ] HTTPS/HSTS/CSP/security headers ตรวจจากภายนอกแล้ว
 - [ ] `.env`, source และ `storage/private` เปิดผ่าน URL ไม่ได้
 - [ ] ไม่มี default credential, สร้าง Owner ผ่าน `--password-stdin`/secret store และลบตัวแปรรหัสผ่านชั่วคราวหลัง bootstrap
 - [ ] owner คนแรก login ได้ และ role/IDOR/CSRF/rate-limit negative tests ผ่าน
 - [ ] Owner ตั้ง integration ได้, Admin ทั่วไปแก้ไม่ได้, API ไม่คืน secret, ช่องว่างเก็บค่าเดิม, explicit clear ลบจริง และ web/worker เห็นค่ารอบถัดไปโดยไม่ restart
-- [ ] ตั้ง LINE Channel access token/Channel secret แล้วนำ `<APP_URL>/api/webhooks/line` ไปตั้งใน LINE Developers Console เปิด Use webhook และ Webhook redelivery แล้วกด Verify; request ที่ไม่มี/ปลอม `X-Line-Signature` ถูกปฏิเสธ, event ซ้ำไม่ตอบซ้ำ และ audit ไม่มีเนื้อหาข้อความหรือ LINE User ID ดิบ
+- [ ] ตั้ง LINE Channel access token/Channel secret แล้วนำ `<APP_URL>/api/webhooks/line` ไปตั้งใน LINE Developers Console เปิด Use webhook และ Webhook redelivery แล้วกด Verify; ใช้ credential จริงบน staging ทดสอบรหัส `BIND-` แบบสำเร็จ/หมดอายุ/ใช้ซ้ำ, unlink/rebind และ push บิล; request ที่ไม่มี/ปลอม `X-Line-Signature` ถูกปฏิเสธ, event ซ้ำไม่ตอบซ้ำ และ audit ไม่มีเนื้อหาข้อความ รหัส หรือ LINE User ID ดิบ
 - [ ] ทดลอง booking race, move-in race, duplicate bill และ duplicate slip/transaction
-- [ ] ทดสอบ LINE retry ด้วย key เดิม รวมกรณี HTTP 409
+- [ ] ทดสอบ LINE retry ด้วย payload/key เดิม: 409 พร้อม `x-line-accepted-request-id` ที่ valid ต้อง finalize เป็น sent ส่วน bare/invalid 409 ต้อง retry หรือ fail-closed และห้ามถูกนับว่าส่งสำเร็จ
 - [ ] ทดสอบ SlipOK/EasySlip ด้วย amount mismatch, receiver mismatch, duplicate และ timeout รวมเปิดดูหลักฐาน, แก้ค่า receiver แล้ว retry รายการ pending และปิดรายการหลัง verification lease หมด
 - [ ] backup + restore drill ผ่าน และมีผู้รับผิดชอบ alert/incident ชัดเจน

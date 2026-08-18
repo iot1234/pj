@@ -73,16 +73,25 @@ final class Router
 
             return str_starts_with($request->path, '/api/')
                 ? Response::error('Not found', 404, 'NOT_FOUND')
-                : Response::html('<h1>404</h1>', 404);
+                : Response::htmlError(404);
         } catch (HttpException $error) {
+            if (!str_starts_with($request->path, '/api/') && $error->status === 401) {
+                $page = rtrim($request->path, '/') ?: '/';
+                if ($page === '/resident') {
+                    return Response::redirect('/resident/login');
+                }
+                if ($page === '/admin') {
+                    return Response::redirect('/admin/login');
+                }
+            }
             return str_starts_with($request->path, '/api/')
                 ? Response::error($error->getMessage(), $error->status, $error->errorCode, $error->details)
-                : Response::html('<h1>' . e($error->status) . '</h1><p>' . e($error->getMessage()) . '</p>', $error->status);
+                : Response::htmlError($error->status, $error->status >= 500 ? $request->requestId : null);
         } catch (Throwable $error) {
             error_log(sprintf('[%s] %s: %s', $request->requestId, $error::class, $error->getMessage()));
             return str_starts_with($request->path, '/api/')
                 ? Response::error('Internal server error', 500, 'INTERNAL_ERROR', ['request_id' => $request->requestId])
-                : Response::html('<h1>500</h1><p>Internal server error</p>', 500);
+                : Response::htmlError(500, $request->requestId);
         }
     }
 }

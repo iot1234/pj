@@ -5,6 +5,8 @@ namespace Dormitory\Domain;
 
 use Dormitory\Application;
 use Dormitory\Http\HttpException;
+use Dormitory\Security\ResidentAccessCredential;
+use Dormitory\Support\MySqlError;
 use Dormitory\Support\Validator;
 use PDO;
 use PDOException;
@@ -16,7 +18,12 @@ final class ResidentService
     /** @return list<array<string,mixed>> */
     public function list(): array
     {
-        $rows=$this->app->database()->pdo()->query("SELECT r.id,r.full_name,r.phone_norm AS phone,r.email,r.line_user_id,r.active,o.id AS occupancy_id,o.move_in_date,rm.id AS room_id,rm.room_code
+        $rows=$this->app->database()->pdo()->query("SELECT r.id,r.full_name,r.phone_norm AS phone,r.email,r.line_user_id,r.active,
+                    r.access_password_hash IS NOT NULL AS access_active,
+                    (r.activation_code_hash IS NOT NULL
+                        AND r.activation_consumed_at IS NULL
+                        AND r.activation_expires_at>UTC_TIMESTAMP(6)) AS activation_pending,
+                    o.id AS occupancy_id,o.move_in_date,rm.id AS room_id,rm.room_code
             FROM occupancies o
             JOIN residents r ON r.id=o.resident_id AND r.active=1
             JOIN rooms rm ON rm.id=o.room_id AND rm.deleted_at IS NULL
@@ -24,7 +31,7 @@ final class ResidentService
             ORDER BY rm.floor,rm.room_code")->fetchAll();
         $bindings=[];foreach($rows as $row)$bindings[]=['resident_id'=>(int)$row['id'],'line_user_id'=>$row['line_user_id']??null];
         $verified=$this->app->notifications()->verifiedLineBindings($bindings);
-        foreach($rows as &$row){$row['id']=(int)$row['id'];$row['occupancy_id']=(int)$row['occupancy_id'];$row['room_id']=$row['room_id']!==null?(int)$row['room_id']:null;$row['active']=(bool)$row['active'];$row['line_verified']=$verified[$row['id']]??false;$row['line_user_id_hint']=is_string($row['line_user_id'])&&$row['line_user_id']!==''?'•••'.substr($row['line_user_id'],-6):null;unset($row['line_user_id']);}
+        foreach($rows as &$row){$row['id']=(int)$row['id'];$row['occupancy_id']=(int)$row['occupancy_id'];$row['room_id']=$row['room_id']!==null?(int)$row['room_id']:null;$row['active']=(bool)$row['active'];$row['access_active']=(bool)$row['access_active'];$row['activation_pending']=(bool)$row['activation_pending'];$row['line_verified']=$verified[$row['id']]??false;$row['line_user_id_hint']=is_string($row['line_user_id'])&&$row['line_user_id']!==''?'•••'.substr($row['line_user_id'],-6):null;unset($row['line_user_id']);}
         return $rows;
     }
 
@@ -33,17 +40,11 @@ final class ResidentService
     {
         $statement=$this->app->database()->pdo()->prepare("SELECT r.id,r.full_name,r.phone_norm AS phone,r.email,r.line_user_id,r.auth_version,rm.id AS room_id,rm.room_code FROM residents r JOIN occupancies o ON o.resident_id=r.id AND o.status='active' JOIN rooms rm ON rm.id=o.room_id AND rm.deleted_at IS NULL WHERE r.id=? AND r.active=1 ORDER BY o.id DESC LIMIT 2");
         $statement->execute([$id]);$rows=$statement->fetchAll();$row=count($rows)===1?$rows[0]:false;if(!$row)throw new HttpException(404,'Resident not found','RESIDENT_NOT_FOUND');$row['id']=(int)$row['id'];$row['room_id']=(int)$row['room_id'];$row['line_verified']=$this->app->notifications()->isLineBindingVerified($row['id'],$row['line_user_id']??null);
-        $challenge=$this->app->session()->lineLinkChallenge();$now=time();
-        if(is_array($challenge)&&(int)($challenge['resident_id']??0)===$row['id']
-            &&(int)($challenge['auth_version']??-1)===(int)$row['auth_version']
-            &&(int)($challenge['expires_at']??0)>$now&&(int)($challenge['attempts']??0)<5
-            &&is_string($challenge['line_user_id']??null)){
-            $alreadyVerified=$row['line_verified']===true&&is_string($row['line_user_id'])&&hash_equals($row['line_user_id'],$challenge['line_user_id']);
-            if(!$alreadyVerified)$row['line_link_pending']=['line_user_id_hint'=>'•••'.substr($challenge['line_user_id'],-6),'expires_at'=>gmdate('Y-m-d\TH:i:s\Z',(int)$challenge['expires_at'])];
-        }elseif(is_array($challenge)&&(int)($challenge['resident_id']??0)===$row['id']){
-            $this->app->session()->clearLineLinkChallenge();
-        }
-        unset($row['auth_version']);return $row;
+        $row['line_user_id_hint']=is_string($row['line_user_id']??null)&&$row['line_user_id']!==''?'•••'.substr($row['line_user_id'],-6):null;
+        $lineBasicId=$this->app->settings()->value('LINE_BASIC_ID');
+        $row['line_add_friend_url']=is_string($lineBasicId)&&preg_match('/^@[A-Za-z0-9._-]{1,32}$/D',$lineBasicId)
+            ?'https://line.me/R/ti/p/'.$lineBasicId:null;
+        unset($row['line_user_id'],$row['auth_version']);return $row;
     }
 
     /** @return array<string,mixed> */
@@ -74,7 +75,7 @@ final class ResidentService
             if($requestedPhone!==null){
                 $this->app->limiter()->lockBucket('resident-booking-phone',$requestedPhone);
             }
-            $lock=$pdo->prepare("SELECT r.full_name,r.phone_norm,r.email,r.line_user_id
+            $lock=$pdo->prepare("SELECT r.full_name,r.phone_norm,r.email,r.line_user_id,r.auth_version
                 FROM residents r
                 JOIN occupancies o ON o.resident_id=r.id AND o.status='active'
                 WHERE r.id=? AND r.active=1
@@ -111,11 +112,30 @@ final class ResidentService
                 }
             }
 
+            $residentAccess=null;
             try{
-                $update=$pdo->prepare('UPDATE residents SET full_name=?,phone_norm=?,email=?,auth_version=auth_version+?,updated_at=UTC_TIMESTAMP() WHERE id=? AND active=1');
-                $update->execute([$name,$phone,$email,$phoneChanged?1:0,$id]);
+                if($phoneChanged){
+                    $nextAuthVersion=(int)$current['auth_version']+1;
+                    $residentAccess=$this->newResidentAccess($id,$nextAuthVersion);
+                    $update=$pdo->prepare("UPDATE residents
+                        SET full_name=?,phone_norm=?,email=?,line_user_id=NULL,
+                            access_password_hash=NULL,activation_code_hash=?,
+                            activation_expires_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL {$residentAccess['ttl_seconds']} SECOND),
+                            activation_consumed_at=NULL,auth_version=?,updated_at=UTC_TIMESTAMP(6)
+                        WHERE id=? AND active=1 AND auth_version=?");
+                    $update->execute([
+                        $name,$phone,$email,$residentAccess['hash'],$nextAuthVersion,$id,
+                        (int)$current['auth_version'],
+                    ]);
+                    if($update->rowCount()!==1){
+                        throw new HttpException(409,'Resident changed; refresh and retry','RESIDENT_CHANGED');
+                    }
+                }else{
+                    $update=$pdo->prepare('UPDATE residents SET full_name=?,phone_norm=?,email=?,updated_at=UTC_TIMESTAMP() WHERE id=? AND active=1');
+                    $update->execute([$name,$phone,$email,$id]);
+                }
             }catch(PDOException $error){
-                if((int)($error->errorInfo[1]??0)===1062||(string)$error->getCode()==='23000'){
+                if(MySqlError::isDuplicateKey($error,'uq_residents_phone_norm')){
                     throw new HttpException(409,'เบอร์โทรนี้ผูกกับผู้พักรายอื่นแล้ว','RESIDENT_IDENTITY_IN_USE');
                 }
                 throw $error;
@@ -124,88 +144,85 @@ final class ResidentService
             $profile=$this->profile($id);
             $profile['changed_fields']=$changed;
             $profile['sessions_revoked']=$phoneChanged;
+            if($phoneChanged&&is_string($current['line_user_id'])&&$current['line_user_id']!==''){
+                $profile['_line_unlinked_audit']=[
+                    'line_user_id_hint'=>'•••'.substr($current['line_user_id'],-6),
+                    'line_user_id_hash'=>$this->app->notifications()->lineBindingHash(
+                        $id,
+                        $current['line_user_id']
+                    ),
+                    'reason'=>'admin_phone_change',
+                ];
+            }
+            if($residentAccess!==null){
+                $expiry=$pdo->prepare('SELECT activation_expires_at FROM residents WHERE id=?');
+                $expiry->execute([$id]);
+                $profile['resident_access']=[
+                    'activation_required'=>true,
+                    'activation_code'=>$residentAccess['code'],
+                    'expires_at'=>(string)$expiry->fetchColumn(),
+                    'single_use'=>true,
+                ];
+            }
             return $profile;
         });
     }
 
-    /** @return array{line_user_id_hint:string,expires_in:int} */
-    public function startLineLink(int $id,array $input): array
+    /** @return array<string,mixed> */
+    public function reissueAccess(int $id): array
     {
-        Validator::only($input,['line_user_id']);
-        $lineUserId=trim(is_string($input['line_user_id']??null)?$input['line_user_id']:'');
-        if(!preg_match('/^U[0-9a-f]{32}$/D',$lineUserId)){
-            throw new HttpException(422,'LINE User ID ไม่ถูกต้อง','VALIDATION_ERROR',['field'=>'line_user_id']);
-        }
-        $authVersion=$this->activeAuthVersion($id);
-        $code=(string)random_int(100000,999999);
-        $nonce=bin2hex(random_bytes(16));
-        $expiresAt=time()+600;
-        $challenge=[
-            'resident_id'=>$id,
-            'auth_version'=>$authVersion,
-            'line_user_id'=>$lineUserId,
-            'nonce'=>$nonce,
-            'digest'=>$this->lineLinkDigest($id,$lineUserId,$code,$nonce),
-            'expires_at'=>$expiresAt,
-            'attempts'=>0,
-        ];
-        $this->app->session()->storeLineLinkChallenge($challenge);
-        $this->app->session()->release();
-        try{
-            $this->app->notifications()->sendLineLinkCode($lineUserId,$code);
-        }catch(HttpException $error){
-            if(in_array($error->errorCode,['LINE_NOT_CONFIGURED','LINE_DELIVERY_REJECTED'],true)){
-                $this->app->session()->clearLineLinkChallenge();
+        return $this->app->database()->transaction(function(PDO $pdo)use($id):array{
+            $lock=$pdo->prepare("SELECT r.auth_version
+                FROM residents r
+                JOIN occupancies o ON o.resident_id=r.id AND o.status='active'
+                WHERE r.id=? AND r.active=1
+                LIMIT 1 FOR UPDATE");
+            $lock->execute([$id]);
+            $row=$lock->fetch();
+            if(!$row)throw new HttpException(404,'Resident not found','RESIDENT_NOT_FOUND');
+            $nextAuthVersion=(int)$row['auth_version']+1;
+            $credential=$this->newResidentAccess($id,$nextAuthVersion);
+            $update=$pdo->prepare("UPDATE residents
+                SET access_password_hash=NULL,activation_code_hash=?,
+                    activation_expires_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL {$credential['ttl_seconds']} SECOND),
+                    activation_consumed_at=NULL,auth_version=?,updated_at=UTC_TIMESTAMP(6)
+                WHERE id=? AND active=1 AND auth_version=?");
+            $update->execute([
+                $credential['hash'],$nextAuthVersion,$id,(int)$row['auth_version'],
+            ]);
+            if($update->rowCount()!==1){
+                throw new HttpException(409,'Resident changed; refresh and retry','RESIDENT_CHANGED');
             }
-            throw $error;
-        }
-        return ['line_user_id_hint'=>'•••'.substr($lineUserId,-6),'expires_in'=>600];
+            // A credential rotation invalidates every one-time action issued by
+            // the previous resident session. The HTTP route also holds the
+            // resident LINE advisory lock so this cannot race webhook consume.
+            $this->app->lineBindings()->revokePending($id);
+            $expiry=$pdo->prepare('SELECT activation_expires_at FROM residents WHERE id=?');
+            $expiry->execute([$id]);
+            return [
+                'resident_id'=>$id,
+                'sessions_revoked'=>true,
+                'resident_access'=>[
+                    'activation_required'=>true,
+                    'activation_code'=>$credential['code'],
+                    'expires_at'=>(string)$expiry->fetchColumn(),
+                    'single_use'=>true,
+                ],
+            ];
+        });
     }
 
-    /** @return array<string,mixed> */
-    public function confirmLineLink(int $id,array $input): array
+    /** @return array{code:string,hash:string,ttl_seconds:int} */
+    private function newResidentAccess(int $residentId,int $authVersion): array
     {
-        Validator::only($input,['code']);
-        $code=trim(is_string($input['code']??null)?$input['code']:'');
-        if(preg_match('/^\d{6}$/D',$code)!==1){
-            throw new HttpException(422,'กรุณากรอกรหัสยืนยัน 6 หลัก','VALIDATION_ERROR',['field'=>'code']);
-        }
-        $challenge=$this->app->session()->lineLinkChallenge();
-        if(!is_array($challenge)||(int)($challenge['resident_id']??0)!==$id
-            ||(int)($challenge['expires_at']??0)<=time()
-            ||!is_string($challenge['line_user_id']??null)
-            ||!is_string($challenge['nonce']??null)
-            ||!is_string($challenge['digest']??null)
-            ||!is_int($challenge['auth_version']??null)){
-            $this->app->session()->clearLineLinkChallenge();
-            throw new HttpException(410,'รหัสยืนยันหมดอายุ กรุณาขอรหัสใหม่','LINE_LINK_EXPIRED');
-        }
-        $attempts=(int)($challenge['attempts']??0);
-        $actual=$this->lineLinkDigest($id,$challenge['line_user_id'],$code,$challenge['nonce']);
-        if($attempts>=5||!hash_equals($challenge['digest'],$actual)){
-            $challenge['attempts']=$attempts+1;
-            if($challenge['attempts']>=5)$this->app->session()->clearLineLinkChallenge();
-            else $this->app->session()->storeLineLinkChallenge($challenge);
-            throw new HttpException(422,'รหัสยืนยันไม่ถูกต้องหรือหมดอายุ','LINE_LINK_INVALID');
-        }
-
-        $pdo=$this->app->database()->pdo();
-        if(!$pdo->inTransaction())throw new \RuntimeException('LINE confirmation requires a database transaction');
-        $currentVersion=$this->activeAuthVersion($id,true);
-        if((int)$currentVersion!==(int)$challenge['auth_version']){
-            $this->app->session()->clearLineLinkChallenge();
-            throw new HttpException(409,'ข้อมูลยืนยันหมดอายุหลังข้อมูลบัญชีเปลี่ยนแปลง กรุณาขอรหัสใหม่','LINE_LINK_STALE');
-        }
-        try{
-            $update=$pdo->prepare('UPDATE residents SET line_user_id=?,updated_at=UTC_TIMESTAMP() WHERE id=? AND active=1');
-            $update->execute([$challenge['line_user_id'],$id]);
-        }catch(PDOException $error){
-            if((int)($error->errorInfo[1]??0)===1062||(string)$error->getCode()==='23000'){
-                throw new HttpException(409,'LINE User ID นี้ผูกกับผู้พักรายอื่นแล้ว','LINE_ID_IN_USE',['field'=>'line_user_id']);
-            }
-            throw $error;
-        }
-        return $this->profile($id);
+        $credential=ResidentAccessCredential::issue(
+            $this->app->config,
+            $residentId,
+            $authVersion
+        );
+        return $credential+[
+            'ttl_seconds'=>ResidentAccessCredential::ttlSeconds($this->app->config),
+        ];
     }
 
     /** @return array<string,mixed> */
@@ -217,11 +234,6 @@ final class ResidentService
         $statement->execute([$id]);
         if($statement->rowCount()===0)$this->profile($id);
         return $this->profile($id);
-    }
-
-    private function lineLinkDigest(int $residentId,string $lineUserId,string $code,string $nonce): string
-    {
-        return hash_hmac('sha256',"line-link\0{$residentId}\0{$lineUserId}\0{$code}\0{$nonce}",$this->app->config->appKey());
     }
 
     private function activeAuthVersion(int $residentId,bool $forUpdate=false): int
@@ -325,7 +337,12 @@ final class ResidentService
             if($end->rowCount()!==1)throw new HttpException(409,'สถานะการเข้าพักเปลี่ยนแปลงแล้ว กรุณารีเฟรช','OCCUPANCY_CHANGED');
             // A returning resident must verify LINE again. Clearing the old ID
             // here also avoids reserving it indefinitely on an inactive row.
-            $deactivate=$pdo->prepare('UPDATE residents SET active=0,line_user_id=NULL,auth_version=auth_version+1,updated_at=UTC_TIMESTAMP() WHERE id=? AND active=1');
+            $deactivate=$pdo->prepare('UPDATE residents
+                SET active=0,line_user_id=NULL,access_password_hash=NULL,
+                    activation_code_hash=NULL,activation_expires_at=NULL,
+                    activation_consumed_at=NULL,auth_version=auth_version+1,
+                    updated_at=UTC_TIMESTAMP()
+                WHERE id=? AND active=1');
             $deactivate->execute([$id]);
             if($deactivate->rowCount()!==1)throw new HttpException(409,'สถานะผู้พักเปลี่ยนแปลงแล้ว กรุณารีเฟรช','RESIDENT_CHANGED');
 

@@ -76,8 +76,8 @@
     </div>
     <div class="empty-state" id="public-rooms-empty" hidden>
       <span class="empty-icon" aria-hidden="true">⌂</span>
-      <h3>ไม่พบห้องว่างที่ตรงกับตัวกรอง</h3>
-      <p>ลองเปลี่ยนประเภท ชั้น หรือคำค้นหา</p>
+      <h3 id="public-rooms-empty-title">ไม่พบห้องว่างที่ตรงกับตัวกรอง</h3>
+      <p id="public-rooms-empty-copy">ลองเปลี่ยนประเภท ชั้น หรือคำค้นหา</p>
     </div>
   </section>
 </main>
@@ -155,9 +155,16 @@
       <p>ห้องถูกกันไว้แล้ว ผู้ดูแลจะติดต่อกลับตามเบอร์ที่แจ้ง</p>
       <p id="booking-expiry">กรุณารอผู้ดูแลติดต่อกลับเพื่อยืนยันการจอง</p>
       <div class="reference-box">
+        <span>รายละเอียดคำขอ</span>
+        <strong id="booking-success-room">—</strong>
+        <span id="booking-success-phone">ติดต่อที่เบอร์ —</span>
+      </div>
+      <div class="reference-box">
         <span>หมายเลขอ้างอิง</span>
         <strong id="booking-reference">—</strong>
       </div>
+      <button class="button button-secondary button-full" id="booking-reference-copy" type="button">คัดลอกหมายเลขอ้างอิง</button>
+      <a class="button button-secondary button-full" href="#" data-public-support-line target="_blank" rel="noopener noreferrer" hidden>ติดต่อผู้ดูแลผ่าน LINE</a>
       <button class="button button-primary button-full" type="button" data-close-dialog>กลับไปดูห้อง</button>
     </div>
   </div>

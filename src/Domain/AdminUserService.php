@@ -6,6 +6,7 @@ namespace Dormitory\Domain;
 use Dormitory\Application;
 use Dormitory\Http\HttpException;
 use Dormitory\Security\Password;
+use Dormitory\Support\MySqlError;
 use Dormitory\Support\Validator;
 use PDO;
 use PDOException;
@@ -37,7 +38,7 @@ final class AdminUserService
             $statement=$this->app->database()->pdo()->prepare('INSERT INTO admin_users (username,password_hash,role,auth_version,active,created_by,created_at,updated_at) VALUES (?,?,?,1,?,?,UTC_TIMESTAMP(),UTC_TIMESTAMP())');
             $statement->execute([$username,Password::hash($password),$role,$active?1:0,$ownerId]);
         } catch (PDOException $e) {
-            if ((string)$e->getCode()==='23000') throw new HttpException(409,'Username already exists','USERNAME_EXISTS');
+            if (MySqlError::isDuplicateKey($e, 'uq_admin_users_username')) throw new HttpException(409,'Username already exists','USERNAME_EXISTS');
             throw $e;
         }
         return ['id'=>(int)$this->app->database()->pdo()->lastInsertId(),'username'=>$username,'role'=>$role,'active'=>$active,'is_active'=>$active];
@@ -80,7 +81,7 @@ final class AdminUserService
                 if($passwordHash!==null){$sql.=',password_hash=?';$params[]=$passwordHash;}
                 $sql.=' WHERE id=?';$params[]=$id;
                 $pdo->prepare($sql)->execute($params);
-            } catch(PDOException $e){if((string)$e->getCode()==='23000')throw new HttpException(409,'Username already exists','USERNAME_EXISTS');throw $e;}
+            } catch(PDOException $e){if(MySqlError::isDuplicateKey($e,'uq_admin_users_username'))throw new HttpException(409,'Username already exists','USERNAME_EXISTS');throw $e;}
             return ['id'=>$id,'username'=>$username,'role'=>$role,'active'=>$active,'is_active'=>$active];
         });
     }

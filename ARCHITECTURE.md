@@ -15,15 +15,16 @@ is reference material only and is not modified.
   server-to-server exception is the LINE webhook, which authenticates the raw
   body with `X-Line-Signature` and the encrypted Channel secret.
 - Admin roles are `owner` and `admin`; only `owner` manages admin accounts.
-- Resident authentication accepts only a normalized Thai phone number that
-  belongs to an active resident with an active occupancy. This is deliberately
-  low-assurance: anyone who knows that phone number can take over the resident
-  account, and rate limits cannot prevent the first successful takeover. There
-  is no resident trusted-device bypass. Resident sessions expire after 15
-  minutes idle or one hour absolute. Room and occupancy are never editable by
-  a resident; profile name and email remain resident-editable.
+- Resident authentication requires a normalized Thai phone number belonging to
+  exactly one active resident/occupancy plus either the resident password or an
+  unexpired single-use activation code. First activation atomically consumes
+  the code, installs an Argon2id password hash, increments `auth_version`, and
+  rotates the session. Reissuing access revokes the previous password and
+  sessions. There is no resident trusted-device bypass. Resident sessions
+  expire after 15 minutes idle or one hour absolute. Room and occupancy are
+  never resident-editable; profile name and email remain resident-editable.
 - Admin authentication remains username plus password and is independent from
-  the resident phone-only flow.
+  resident credentials.
 - Room status is derived: active occupancy = `occupied`; otherwise active
   pending/confirmed booking = `reserved`; otherwise `available`.
 - Periods use `YYYY-MM` at the API boundary and the first day of the month in
@@ -34,10 +35,10 @@ is reference material only and is not modified.
 
 ## Tables
 
-`admin_users`, `residents`, `rooms`, `bookings`, `occupancies`,
+`admin_users`, `residents`, `line_link_codes`, `rooms`, `bookings`, `occupancies`,
 `meter_readings`, `billing_settings`, `integration_settings`, `bills`,
-`bill_items`, `payments`, `notification_outbox`, `audit_logs`, and
-`rate_limits`.
+`bill_items`, `payments`, `notification_outbox`,
+`notification_worker_heartbeats`, `audit_logs`, and `rate_limits`.
 
 ## Page routes
 
@@ -50,8 +51,9 @@ is reference material only and is not modified.
 ### Public and authentication
 
 - `POST /api/webhooks/line` accepts signed LINE `follow`/text-message events
-  from direct users, deduplicates `webhookEventId`, and replies with the user's
-  LINE ID plus binding instructions. It stores no inbound message content.
+  from direct users, deduplicates `webhookEventId`, consumes an exact self-service
+  `BIND-` code when present, and otherwise replies with binding instructions. It
+  never replies with the raw LINE User ID or stores inbound message content.
 - `GET /api/public/rooms`
 - `POST /api/public/bookings` `{room_id, full_name, phone, idempotency_key}`
 - `POST /api/auth/admin/login` `{username,password}`
@@ -63,12 +65,14 @@ is reference material only and is not modified.
 ### Resident
 
 - `GET|PUT /api/resident/profile`
-- `POST /api/resident/profile/line/start` `{line_user_id}`;
-  `POST .../line/confirm` `{code}`; `POST .../line/unlink` `{}`.
+- `POST /api/resident/profile/line/code` `{}` returns a `BIND-` code once;
+  the logged-in resident sends that exact code to the official account in a
+  direct chat within 10 minutes. The code contains 128 random bits and MySQL
+  stores only its keyed HMAC digest. `POST .../line/unlink` `{}` removes the
+  binding. The retired `/line/start` and `/line/confirm` OTP endpoints are not
+  routed, so an older session challenge cannot overwrite a self-service bind.
   Billing delivery requires the latest append-only audit proof to match the
-  current LINE ID; legacy IDs without this OTP proof are treated as unverified.
-  The OTP proves control of the destination LINE account only; without a
-  resident credential it does not prove the resident's identity.
+  current LINE ID; legacy IDs without this proof are treated as unverified.
 - `GET /api/resident/bills`
 - `GET /api/resident/bills/{id}`
 - `GET /api/resident/bills/{id}/promptpay`
@@ -178,7 +182,14 @@ Fresh schema no longer contains `residents.pin_hash`, and the current runtime
 never probes or writes that column. An installation upgrading from an older
 schema must use transitional commit `a52bc33` for the rolling boundary, wait
 until every replica is healthy, run `006_remove_resident_pin.sql`, verify that
-the column is absent, and only then deploy the current source.
+the column is absent, stop notification workers and run migration 007, then run
+migration 008. Migration 009 requires a maintenance window with public traffic,
+web/worker writes, and scheduled billing stopped; deploy the matching current
+source, reissue credentials for legacy active residents, and pass the strict
+data gate before reopening traffic or restarting worker/cron. Run migrations 010,
+011, and 012 after 009 and before deploying source that issues self-service LINE
+bind codes, exposes the configured LINE Official Account add-friend link, and
+persists immutable move-in replay digests.
 
 Existing installations must be backed up and upgraded by a schema-owning
 account. Run `database/migrations/001_integration_settings.sql` if the
@@ -201,7 +212,17 @@ active bookings per phone, then deploy transitional commit `a52bc33` before
 running `database/migrations/006_remove_resident_pin.sql`. Migration 006 is a
 destructive schema cleanup, so back up and test restore first; an old
 PIN-dependent application version cannot be rolled back after the column is
-removed. Deploy the current source only after migration 006 succeeds.
+removed. With notification workers stopped, migration 007 adds claim-token
+lease fencing and hashed worker heartbeat storage. Migration 008 adds resident
+activation/password credentials. Migration 009 must run after 008 with all
+writes stopped; it binds readings to occupancies, installs two meter guards
+and two booking/occupancy insert guards, and hardens bill creation. Deploy the current source only after migrations
+006–012 succeed. Migration 010 is rerunnable for a compatible schema and adds
+`line_link_codes`, two unique guards, two lookup indexes, a resident foreign key,
+and four CHECK constraints. Migration 011 adds the public LINE Basic ID, while
+migration 012 adds the nullable move-in request digest, its named CHECK, and the
+matching immutable-evidence trigger body. Readiness/schema audit must report 16
+tables, 19 triggers, and at least 86 CHECK constraints.
 The application runtime account has only `SELECT`, `INSERT`, and `UPDATE` on the
 application database and must not run any migration. After upgrade, an owner
 configures integrations in Admin -> Settings.

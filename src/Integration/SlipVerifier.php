@@ -18,7 +18,7 @@ final class SlipVerifier
         if(!in_array($provider,['slipok','easyslip','none'],true))return $this->pending(null,'Unsupported SLIP_PROVIDER',[]);
         if($provider==='none')return $this->pending(null,'Slip verification provider is not configured',[]);
         try{$raw=$provider==='slipok'?$this->slipOk($path,$mime,$expectedAmount):$this->easySlip($path,$mime,$expectedAmount);}
-        catch(\Throwable $e){return $this->pending($provider,'Provider unavailable: '.substr($e->getMessage(),0,300),[]);}
+        catch(\Throwable){return $this->pending($provider,'ผู้ให้บริการตรวจสลิปยังไม่พร้อม กรุณารอตรวจซ้ำ',[]);}
         if(!($raw['ok']??false)){
             // A duplicate response is ambiguous after a provider accepted a
             // request but the local process crashed before committing the
@@ -307,8 +307,10 @@ final class SlipVerifier
     /** @param array<string,mixed> $payload */
     private function providerReason(array $payload,string $fallback): string
     {
-        $candidate=$payload['message']??(is_array($payload['error']??null)?($payload['error']['message']??null):($payload['error']??null));
-        return is_scalar($candidate)&&trim((string)$candidate)!==''?substr(trim((string)$candidate),0,300):$fallback;
+        // Provider messages are untrusted and can contain proxy, TLS or
+        // request diagnostics. Keep the public/persisted reason bounded to a
+        // controlled message; status and provider code remain in audit data.
+        return $fallback;
     }
 
     private function scalarString(mixed $value): ?string
@@ -333,8 +335,8 @@ final class SlipVerifier
         $ch=curl_init($url);if($ch===false)throw new \RuntimeException('Cannot initialize cURL');
         $response='';$tooLarge=false;
         curl_setopt_array($ch,[CURLOPT_POST=>true,CURLOPT_POSTFIELDS=>$body,CURLOPT_HTTPHEADER=>$headers,CURLOPT_RETURNTRANSFER=>false,CURLOPT_HEADER=>false,CURLOPT_FOLLOWLOCATION=>false,CURLOPT_PROTOCOLS=>CURLPROTO_HTTPS,CURLOPT_CONNECTTIMEOUT=>5,CURLOPT_TIMEOUT=>12,CURLOPT_MAXREDIRS=>0,CURLOPT_SSL_VERIFYPEER=>true,CURLOPT_SSL_VERIFYHOST=>2,CURLOPT_NOSIGNAL=>true,CURLOPT_WRITEFUNCTION=>static function($handle,string $chunk)use(&$response,&$tooLarge):int{if(strlen($response)+strlen($chunk)>262144){$tooLarge=true;return 0;}$response.=$chunk;return strlen($chunk);}]);
-        $executed=curl_exec($ch);$status=(int)curl_getinfo($ch,CURLINFO_RESPONSE_CODE);$error=curl_error($ch);curl_close($ch);
-        if($tooLarge)throw new \RuntimeException('Provider response exceeded limit');if($executed===false)throw new \RuntimeException($error?:'Request failed');
+        $executed=curl_exec($ch);$status=(int)curl_getinfo($ch,CURLINFO_RESPONSE_CODE);$errorCode=(int)curl_errno($ch);curl_close($ch);
+        if($tooLarge)throw new \RuntimeException('Provider response exceeded limit');if($executed===false)throw new \RuntimeException('Provider HTTPS request failed (curl '.$errorCode.')');
         try{$decoded=json_decode($response,true,32,JSON_THROW_ON_ERROR);}catch(\Throwable){throw new \RuntimeException('Provider returned malformed JSON');}
         if(!is_array($decoded))throw new \RuntimeException('Provider returned an invalid response');$decoded['_status']=$status;return $decoded;
     }

@@ -7,6 +7,7 @@ use Dormitory\Application;
 use Dormitory\Http\HttpException;
 use Dormitory\Http\Request;
 use Dormitory\Security\Password;
+use Dormitory\Security\ResidentAccessCredential;
 use Dormitory\Support\Validator;
 use PDO;
 
@@ -44,6 +45,11 @@ final class AuthService
             ];
         }
         if ($sessionActor['type'] === 'resident') {
+            $authMethod=is_string($sessionActor['auth_method']??null)?$sessionActor['auth_method']:'';
+            if(!in_array($authMethod,['activation_code','password'],true)){
+                $this->app->session()->revokeLocal();
+                return null;
+            }
             $statement = $pdo->prepare(
                 "SELECT r.id,r.full_name,r.phone_norm,r.email,r.line_user_id,r.auth_version,r.active,
                         o.id AS occupancy_id,rm.id AS room_id,rm.room_code
@@ -66,7 +72,7 @@ final class AuthService
                 'line_user_id' => $row['line_user_id'], 'auth_version' => (int) $row['auth_version'],
                 'occupancy_id' => (int) $row['occupancy_id'], 'room_id' => (int) $row['room_id'],
                 'room_code' => $row['room_code'], 'role' => 'resident',
-                'auth_method' => 'phone_only', 'assurance' => 'low',
+                'auth_method' => $authMethod, 'assurance' => 'high',
             ];
         }
         $this->app->session()->revokeLocal();
@@ -138,20 +144,36 @@ final class AuthService
     /** @return array<string,mixed> */
     public function residentLogin(Request $request, array $input): array
     {
-        Validator::only($input, ['phone']);
+        Validator::only($input, ['phone','credential','new_password']);
         $rawPhone = is_string($input['phone'] ?? null) && strlen($input['phone']) <= 32
             ? $input['phone']
             : '';
+        $credential=is_string($input['credential']??null)&&strlen($input['credential'])<=200
+            ?$input['credential']:'';
+        $newPasswordProvided=array_key_exists('new_password',$input);
+        $newPassword=$newPasswordProvided&&is_string($input['new_password'])?$input['new_password']:'';
         try { $phone = Validator::phone($rawPhone); $phoneValid = $rawPhone !== ''; }
         catch (HttpException) { $phone = ''; $phoneValid = false; }
         $ip = $this->app->security()->clientIp($request);
         $this->app->limiter()->hit('resident-login-ip', $ip, 12, 900, 900);
         $this->app->limiter()->hit('resident-login-ip-daily', $ip, 100, 86400, 3600);
+        $newPasswordHash=null;
+        if($newPasswordProvided){
+            try{Password::assertAdmin($newPassword);}
+            catch(HttpException $error){
+                $details=$error->details;$details['field']='new_password';
+                throw new HttpException($error->status,$error->getMessage(),$error->errorCode,$details);
+            }
+            $newPasswordHash=Password::hash($newPassword);
+        }
 
         $row = false;
         if ($phoneValid) {
             $statement = $this->app->database()->pdo()->prepare(
                 "SELECT r.id,r.full_name,r.phone_norm,r.email,r.auth_version,
+                        r.access_password_hash,r.activation_code_hash,r.activation_expires_at,
+                        r.activation_consumed_at,
+                        r.activation_expires_at>UTC_TIMESTAMP(6) AS activation_valid,
                         o.id AS occupancy_id,o.room_id,rm.room_code
                    FROM residents r
                    JOIN occupancies o ON o.resident_id=r.id AND o.status='active'
@@ -168,8 +190,55 @@ final class AuthService
         $sourceAllowed=$this->accountAttemptAllowed('resident-login-account-source',$sourceIdentity,8,900,1800);
         $globalAllowed=$this->globalAccountAttemptAllowed('resident-login-account',$accountIdentity,$sourceAllowed,$ip,30,86400,3600);
         $accountAllowed=$sourceAllowed&&$globalAllowed;
+        $passwordHash=is_string($row['access_password_hash']??null)?$row['access_password_hash']:null;
+        $passwordValid=self::verifyCredential($credential,$passwordHash);
+        $activationValid=$row
+            &&$newPasswordHash!==null
+            &&$row['activation_consumed_at']===null
+            &&(int)($row['activation_valid']??0)===1
+            &&ResidentAccessCredential::verify(
+                $this->app->config,(int)$row['id'],(int)$row['auth_version'],$credential,
+                is_string($row['activation_code_hash']??null)?$row['activation_code_hash']:null
+            );
+        $authMethod=null;
+        if($accountAllowed&&$row&&$activationValid){
+            $newAuthVersion=$this->app->database()->transaction(function(PDO $pdo)use($row,$credential,$newPasswordHash):?int{
+                $lock=$pdo->prepare('SELECT id,auth_version,activation_code_hash,activation_expires_at,
+                        activation_consumed_at,active,activation_expires_at>UTC_TIMESTAMP(6) AS activation_valid
+                    FROM residents WHERE id=? AND phone_norm=? LIMIT 1 FOR UPDATE');
+                $lock->execute([(int)$row['id'],(string)$row['phone_norm']]);
+                $fresh=$lock->fetch();
+                if(!$fresh||!(bool)$fresh['active']||$fresh['activation_consumed_at']!==null
+                    ||(int)$fresh['activation_valid']!==1
+                    ||!ResidentAccessCredential::verify(
+                        $this->app->config,(int)$fresh['id'],(int)$fresh['auth_version'],$credential,
+                        is_string($fresh['activation_code_hash']??null)?$fresh['activation_code_hash']:null
+                    ))return null;
+                $update=$pdo->prepare('UPDATE residents
+                    SET access_password_hash=?,activation_code_hash=NULL,activation_expires_at=NULL,
+                        activation_consumed_at=UTC_TIMESTAMP(6),auth_version=auth_version+1,updated_at=UTC_TIMESTAMP()
+                    WHERE id=? AND auth_version=? AND activation_code_hash=?');
+                $update->execute([$newPasswordHash,(int)$fresh['id'],(int)$fresh['auth_version'],$fresh['activation_code_hash']]);
+                return $update->rowCount()===1?(int)$fresh['auth_version']+1:null;
+            });
+            if($newAuthVersion!==null){
+                $row['auth_version']=$newAuthVersion;
+                $authMethod='activation_code';
+            }
+        }elseif($accountAllowed&&$row&&$newPasswordHash===null&&$passwordHash!==null&&$passwordValid){
+            if(Password::needsRehash($passwordHash)){
+                $replacement=Password::hash($credential);
+                $rehash=$this->app->database()->pdo()->prepare(
+                    'UPDATE residents SET access_password_hash=?,updated_at=UTC_TIMESTAMP()
+                     WHERE id=? AND access_password_hash=? AND auth_version=? AND active=1'
+                );
+                $rehash->execute([$replacement,$row['id'],$passwordHash,$row['auth_version']]);
+                if($rehash->rowCount()!==1)$row=false;
+            }
+            if($row)$authMethod='password';
+        }
         usleep(random_int(180000, 320000));
-        if (!$accountAllowed || !$row) {
+        if (!$accountAllowed || !$row || $authMethod===null) {
             $this->app->audit()->write($request, null, 'auth.resident_failed', 'resident', null, [
                 'principal_hash' => hash_hmac('sha256', $phoneValid?$phone:trim($rawPhone), $this->app->config->appKey()),
                 'account_rate_limited'=>!$accountAllowed,
@@ -181,13 +250,15 @@ final class AuthService
             'name' => $row['full_name'], 'phone' => $row['phone_norm'], 'email' => $row['email'],
             'auth_version' => (int) $row['auth_version'], 'occupancy_id' => (int) $row['occupancy_id'],
             'room_id' => (int) $row['room_id'], 'room_code' => $row['room_code'], 'role' => 'resident',
-            'auth_method' => 'phone_only', 'assurance' => 'low',
+            'auth_method' => $authMethod, 'assurance' => 'high',
         ];
         $this->app->audit()->writeStrict($request, $actor, 'auth.resident_login', 'resident', $row['id'], [
-            'auth_method'=>'phone_only', 'assurance'=>'low',
+            'auth_method'=>$authMethod, 'assurance'=>'high',
         ]);
         $this->app->session()->login($actor);
         $this->app->clearActorCache();
+        $this->app->limiter()->clear('resident-login-account',$accountIdentity);
+        $this->app->limiter()->clear('resident-login-account-source',$sourceIdentity);
         return $actor;
     }
 

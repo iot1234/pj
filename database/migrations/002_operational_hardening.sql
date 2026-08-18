@@ -200,10 +200,12 @@ BEGIN
       FROM occupancies
      WHERE id = NEW.occupancy_id
      LIMIT 1;
-    IF NOT (occupancy_resident <=> NEW.resident_id)
+    IF NEW.status <> 'pending'
+        OR NEW.paid_at IS NOT NULL
+        OR NOT (occupancy_resident <=> NEW.resident_id)
         OR NOT (occupancy_room <=> NEW.room_id) THEN
         SIGNAL SQLSTATE '45000'
-            SET MESSAGE_TEXT = 'Bill resident/room must match its occupancy';
+            SET MESSAGE_TEXT = 'Bill must start pending and match its occupancy';
     END IF;
 END$$
 

@@ -49,6 +49,7 @@ RUN mkdir -p \
         /var/www/html/scripts/bootstrap_database.sh \
         /var/www/html/scripts/provision_runtime_db_user.sh \
         /var/www/html/scripts/setup-database.sh \
+        /var/www/html/scripts/run_monthly_billing.sh \
         /var/www/html/scripts/start-runtime.sh \
         /var/www/html/scripts/start-web.sh \
         /var/www/html/scripts/start-worker.sh \

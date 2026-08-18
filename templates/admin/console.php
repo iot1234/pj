@@ -19,8 +19,13 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
         </a>
 
         <nav class="admin-nav">
+            <p class="admin-nav-label">สรุปประจำวัน</p>
+            <button class="admin-nav-item is-active" type="button" data-admin-nav="overview" aria-current="page">
+                <span aria-hidden="true">◉</span><span>ภาพรวม</span>
+            </button>
+
             <p class="admin-nav-label">จัดการหอพัก</p>
-            <button class="admin-nav-item is-active" type="button" data-admin-nav="rooms" aria-current="page">
+            <button class="admin-nav-item" type="button" data-admin-nav="rooms">
                 <span aria-hidden="true">▦</span><span>ห้องพัก</span>
             </button>
             <button class="admin-nav-item" type="button" data-admin-nav="bookings">
@@ -38,7 +43,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                 <span aria-hidden="true">฿</span><span>ใบแจ้งหนี้</span>
             </button>
             <button class="admin-nav-item" type="button" data-admin-nav="payments">
-                <span aria-hidden="true">✓</span><span>การชำระเงิน</span>
+                <span aria-hidden="true">✓</span><span>การชำระเงิน</span><span class="nav-count" id="payment-nav-count" hidden>0</span>
             </button>
 
             <p class="admin-nav-label">ระบบ</p>
@@ -61,7 +66,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
             <button class="icon-button admin-menu-toggle" type="button" aria-label="เปิดเมนู" aria-controls="admin-sidebar" aria-expanded="false" data-admin-menu-toggle>☰</button>
             <div>
                 <p class="eyebrow">ภาพรวมการจัดการ</p>
-                <h1 id="admin-page-title">ห้องพัก</h1>
+                <h1 id="admin-page-title">ภาพรวม</h1>
             </div>
             <div class="admin-topbar-actions">
                 <span class="live-indicator"><span aria-hidden="true"></span>เข้าสู่ระบบแล้ว</span>
@@ -70,10 +75,65 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
         </header>
 
         <main class="admin-content" id="main-content" tabindex="-1">
-            <section class="admin-view is-active" data-admin-view="rooms" aria-labelledby="rooms-title">
+            <section class="admin-view is-active" data-admin-view="overview" aria-labelledby="overview-title">
                 <div class="section-heading">
-                    <div><p class="eyebrow">สถานะห้องแบบเรียลไทม์</p><h2 id="rooms-title">ห้องพักทั้งหมด</h2></div>
-                    <button class="button button-primary" type="button" data-open-room-dialog>+  เพิ่มห้องพัก</button>
+                    <div><p class="eyebrow">สรุปสถานะวันนี้</p><h2 id="overview-title">วันนี้ต้องทำอะไรบ้าง</h2><p>กดการ์ดเพื่อไปยังหน้าที่เกี่ยวข้องได้ทันที</p></div>
+                    <div class="section-heading-actions"><button class="button button-secondary" type="button" data-refresh="overview">รีเฟรช</button></div>
+                </div>
+                <div class="alert alert-error" id="overview-error" role="alert" hidden>
+                    <div><strong>โหลดภาพรวมได้ไม่ครบ</strong><p data-error-message></p></div>
+                    <button class="button button-small" type="button" data-refresh="overview">ลองใหม่</button>
+                </div>
+                <div class="stats-grid stats-grid-four" id="overview-stats" aria-live="polite">
+                    <button class="stat-card stat-action" type="button" data-overview-jump="bookings"><span>การจองรอยืนยัน</span><strong data-overview-stat="bookings">—</strong><small data-overview-note="bookings">กำลังโหลด…</small></button>
+                    <button class="stat-card stat-action" type="button" data-overview-jump="payments"><span>สลิปรอตรวจ</span><strong data-overview-stat="payments">—</strong><small data-overview-note="payments">กำลังโหลด…</small></button>
+                    <button class="stat-card stat-action" type="button" data-overview-jump="rooms"><span>ห้องว่าง</span><strong data-overview-stat="rooms">—</strong><small data-overview-note="rooms">กำลังโหลด…</small></button>
+                    <button class="stat-card stat-action" type="button" data-overview-jump="bills"><span>ยอดค้างชำระรอบนี้</span><strong data-overview-stat="outstanding">—</strong><small data-overview-note="outstanding">กำลังโหลด…</small></button>
+                </div>
+                <div class="overview-grid">
+                    <section class="panel overview-panel" aria-labelledby="overview-month-title">
+                        <div class="panel-heading">
+                            <div><h3 id="overview-month-title">งานรอบเดือน <span id="overview-period">—</span></h3><p>ลำดับงาน: จดมิเตอร์ → ตรวจยอด → ออกบิล → ตามการชำระ</p></div>
+                        </div>
+                        <ul class="overview-tasks">
+                            <li class="overview-task">
+                                <div class="overview-task-head"><span>จดมิเตอร์</span><strong data-overview-task="meters">—</strong></div>
+                                <span class="overview-progress"><span data-overview-bar="meters"></span></span>
+                                <small data-overview-task-note="meters">กำลังโหลด…</small>
+                                <button class="button button-small button-secondary" type="button" data-overview-jump="meters">ไปจดมิเตอร์</button>
+                            </li>
+                            <li class="overview-task">
+                                <div class="overview-task-head"><span>ออกบิลห้องที่มีผู้พัก</span><strong data-overview-task="bills">—</strong></div>
+                                <span class="overview-progress"><span data-overview-bar="bills"></span></span>
+                                <small data-overview-task-note="bills">กำลังโหลด…</small>
+                                <button class="button button-small button-secondary" type="button" data-overview-jump="bills">ไปออกบิล</button>
+                            </li>
+                            <li class="overview-task">
+                                <div class="overview-task-head"><span>เก็บเงินตามบิล</span><strong data-overview-task="collection">—</strong></div>
+                                <span class="overview-progress"><span data-overview-bar="collection"></span></span>
+                                <small data-overview-task-note="collection">กำลังโหลด…</small>
+                                <button class="button button-small button-secondary" type="button" data-overview-jump="payments">ไปตรวจการชำระ</button>
+                            </li>
+                        </ul>
+                    </section>
+
+                    <?php if ($canManageIntegrations): ?>
+                    <section class="panel overview-panel owner-only" id="overview-health-card" aria-labelledby="overview-health-title">
+                        <div class="panel-heading">
+                            <div><h3 id="overview-health-title">การส่งบิลผ่าน LINE</h3><p>ตัวส่งข้อความเบื้องหลัง (worker) และคิวที่ค้างอยู่</p></div>
+                            <span class="status-pill status-neutral" id="overview-health-status">กำลังโหลด</span>
+                        </div>
+                        <dl class="overview-health" id="overview-health-detail"></dl>
+                        <p class="field-hint" id="overview-health-note">ถ้า worker หยุดทำงาน บิลจะค้างอยู่ในคิวและผู้พักจะไม่ได้รับข้อความ</p>
+                    </section>
+                    <?php endif; ?>
+                </div>
+            </section>
+
+            <section class="admin-view" data-admin-view="rooms" aria-labelledby="rooms-title" hidden>
+                <div class="section-heading">
+                    <div><p class="eyebrow">สถานะห้องล่าสุด</p><h2 id="rooms-title">ห้องพักทั้งหมด</h2></div>
+                    <div class="section-heading-actions"><button class="button button-secondary" type="button" data-refresh="rooms">รีเฟรช</button><button class="button button-primary" type="button" data-open-room-dialog>+  เพิ่มห้องพัก</button></div>
                 </div>
                 <div class="stats-grid stats-grid-four" id="room-stats" aria-live="polite">
                     <article class="stat-card"><span>ห้องทั้งหมด</span><strong data-room-stat="all">—</strong></article>
@@ -86,32 +146,43 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                     <label><span class="sr-only">สถานะห้อง</span><select id="admin-room-status"><option value="">ทุกสถานะ</option><option value="available">ว่าง</option><option value="reserved">รอเข้าพัก</option><option value="occupied">มีผู้พัก</option></select></label>
                 </div>
                 <div class="panel table-panel">
-                    <div class="table-scroll"><table><thead><tr><th>ห้อง</th><th>ชั้น</th><th>ประเภท</th><th>ราคา/เดือน</th><th>สถานะ</th><th class="align-right">จัดการ</th></tr></thead><tbody id="admin-room-rows"></tbody></table></div>
+                    <div class="table-scroll" role="region" aria-label="ตารางห้องพัก" tabindex="0"><table><thead><tr><th>ห้อง</th><th>ชั้น</th><th>ประเภท</th><th>ราคา/เดือน</th><th>สถานะ</th><th class="align-right">จัดการ</th></tr></thead><tbody id="admin-room-rows"></tbody></table></div>
                     <div class="table-state" id="admin-room-state" data-state="loading"><span class="spinner" aria-hidden="true"></span><p>กำลังโหลดห้องพัก…</p></div>
                 </div>
             </section>
 
             <section class="admin-view" data-admin-view="bookings" aria-labelledby="bookings-title" hidden>
                 <div class="section-heading"><div><p class="eyebrow">จัดการคำขอ</p><h2 id="bookings-title">การจองห้อง</h2></div></div>
+                <div class="stats-grid" id="booking-stats" aria-live="polite">
+                    <article class="stat-card stat-reserved"><span>รอตรวจสอบ</span><strong data-booking-stat="pending">—</strong><small>ทั้งระบบ ไม่ขึ้นกับตัวกรอง</small></article>
+                    <article class="stat-card"><span>ยืนยันแล้ว รอเข้าพัก</span><strong data-booking-stat="confirmed">—</strong><small>นับจากรายการที่โหลดอยู่</small></article>
+                    <article class="stat-card"><span>แสดงอยู่ในตาราง</span><strong data-booking-stat="loaded">—</strong><small data-booking-stat-note="loaded">—</small></article>
+                </div>
                 <div class="toolbar">
                     <label><span>สถานะ</span><select id="booking-status-filter"><option value="">ทั้งหมด</option><option value="pending">รอตรวจสอบ</option><option value="confirmed">ยืนยันแล้ว</option><option value="cancelled">ยกเลิก</option><option value="moved_in">เข้าพักแล้ว</option></select></label>
                     <button class="button button-secondary button-small" type="button" data-refresh="bookings">รีเฟรช</button>
                     <button class="button button-ghost button-small" id="booking-load-more" type="button" hidden>โหลดรายการเพิ่มเติม</button>
                 </div>
-                <div class="panel table-panel"><div class="table-scroll"><table><thead><tr><th>เลขที่</th><th>ผู้จอง</th><th>ห้อง</th><th>วันที่ขอ</th><th>สถานะ</th><th class="align-right">จัดการ</th></tr></thead><tbody id="booking-rows"></tbody></table></div><div class="table-state" id="booking-state" data-state="loading"><span class="spinner" aria-hidden="true"></span><p>กำลังโหลดการจอง…</p></div></div>
+                <div class="panel table-panel"><div class="table-scroll" role="region" aria-label="ตารางการจองห้องพัก" tabindex="0"><table><thead><tr><th>เลขที่</th><th>ผู้จอง</th><th>ห้อง</th><th>วันที่ขอ</th><th>สถานะ</th><th class="align-right">จัดการ</th></tr></thead><tbody id="booking-rows"></tbody></table></div><div class="table-state" id="booking-state" data-state="loading"><span class="spinner" aria-hidden="true"></span><p>กำลังโหลดการจอง…</p></div></div>
             </section>
 
             <section class="admin-view" data-admin-view="residents" aria-labelledby="residents-title" hidden>
                 <div class="section-heading"><div><p class="eyebrow">ข้อมูลผู้เช่าปัจจุบัน</p><h2 id="residents-title">ผู้พักอาศัย</h2></div><button class="button button-primary" type="button" data-open-resident-create>+&nbsp; เพิ่มผู้พักเข้าห้อง</button></div>
+                <div class="stats-grid stats-grid-four" id="resident-stats" aria-live="polite">
+                    <article class="stat-card"><span>ผู้พักทั้งหมด</span><strong data-resident-stat="all">—</strong></article>
+                    <article class="stat-card stat-occupied"><span>ผูก LINE แล้ว</span><strong data-resident-stat="line">—</strong><small>รับบิลผ่าน LINE ได้</small></article>
+                    <article class="stat-card stat-reserved"><span>รอเปิดใช้งาน</span><strong data-resident-stat="activation">—</strong><small>ยังไม่ได้ใช้รหัสเปิดใช้งาน</small></article>
+                    <article class="stat-card"><span>ยังไม่ผูก LINE</span><strong data-resident-stat="noline">—</strong><small>ต้องแจ้งบิลด้วยวิธีอื่น</small></article>
+                </div>
                 <div class="toolbar"><label class="search-field"><span class="sr-only">ค้นหาผู้พัก</span><input id="resident-search" type="search" placeholder="ค้นหาชื่อ เบอร์โทร หรือห้อง…"></label></div>
-                <div class="panel table-panel"><div class="table-scroll"><table><thead><tr><th>ผู้พัก</th><th>ห้อง</th><th>ติดต่อ</th><th>LINE</th><th>วันเข้าพัก</th><th>สถานะ</th><th class="align-right">จัดการ</th></tr></thead><tbody id="resident-rows"></tbody></table></div><div class="table-state" id="resident-state" data-state="loading"><span class="spinner" aria-hidden="true"></span><p>กำลังโหลดผู้พัก…</p></div></div>
+                <div class="panel table-panel"><div class="table-scroll" role="region" aria-label="ตารางผู้พักอาศัย" tabindex="0"><table><thead><tr><th>ผู้พัก</th><th>ห้อง</th><th>ติดต่อ</th><th>LINE</th><th>วันเข้าพัก</th><th>สถานะ</th><th class="align-right">จัดการ</th></tr></thead><tbody id="resident-rows"></tbody></table></div><div class="table-state" id="resident-state" data-state="loading"><span class="spinner" aria-hidden="true"></span><p>กำลังโหลดผู้พัก…</p></div></div>
             </section>
 
             <section class="admin-view" data-admin-view="meters" aria-labelledby="meters-title" hidden>
                 <div class="section-heading"><div><p class="eyebrow">บันทึกการใช้น้ำและไฟ</p><h2 id="meters-title">จดมิเตอร์รายเดือน</h2></div></div>
-                <div class="toolbar toolbar-period"><label><span>รอบเดือน</span><input type="month" id="meter-period" max="<?= e($maximumBillingPeriod) ?>" required></label><p class="toolbar-note">ค่าที่กรอกต้องไม่น้อยกว่าครั้งก่อน</p></div>
+                <div class="toolbar toolbar-period"><label><span>รอบเดือน</span><input type="month" id="meter-period" max="<?= e($maximumBillingPeriod) ?>" required></label><p class="toolbar-note">ค่าที่กรอกต้องไม่น้อยกว่าครั้งก่อน</p><p class="toolbar-progress" id="meter-progress" role="status">—</p></div>
                 <div class="security-note meter-baseline-note" role="note"><strong>มิเตอร์ช่องที่ขึ้น “เดือนแรก · หน่วย 0”</strong><span>เลขที่กรอกครั้งแรกจะเป็นค่าตั้งต้น (baseline) และหน่วยของรอบนี้จะเป็น 0 เฉพาะมิเตอร์ช่องนั้น มิเตอร์อีกประเภทที่มีค่าก่อนหน้าแล้วจะคิดส่วนต่างตามปกติ</span></div>
-                <div class="panel table-panel"><div class="table-scroll meter-table"><table><thead><tr><th rowspan="2">ห้อง</th><th colspan="3">มิเตอร์น้ำ</th><th colspan="3">มิเตอร์ไฟ</th><th rowspan="2" class="align-right">จัดการ</th></tr><tr><th>ก่อน</th><th>ปัจจุบัน</th><th>ใช้</th><th>ก่อน</th><th>ปัจจุบัน</th><th>ใช้</th></tr></thead><tbody id="meter-rows"></tbody></table></div><div class="table-state" id="meter-state" data-state="loading"><span class="spinner" aria-hidden="true"></span><p>กำลังโหลดมิเตอร์…</p></div></div>
+                <div class="panel table-panel"><div class="table-scroll meter-table" role="region" aria-label="ตารางจดมิเตอร์รายเดือน" tabindex="0"><table><thead><tr><th rowspan="2">ห้อง</th><th colspan="3">มิเตอร์น้ำ</th><th colspan="3">มิเตอร์ไฟ</th><th rowspan="2" class="align-right">จัดการ</th></tr><tr><th>ก่อน</th><th>ปัจจุบัน</th><th>ใช้</th><th>ก่อน</th><th>ปัจจุบัน</th><th>ใช้</th></tr></thead><tbody id="meter-rows"></tbody></table></div><div class="table-state" id="meter-state" data-state="loading"><span class="spinner" aria-hidden="true"></span><p>กำลังโหลดมิเตอร์…</p></div></div>
             </section>
 
             <section class="admin-view" data-admin-view="bills" aria-labelledby="bills-title" hidden>
@@ -126,25 +197,41 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                         <label class="field form-span-two"><span>รายการอื่น (ไม่บังคับ)</span><input type="text" name="other_description" maxlength="120" placeholder="เช่น ค่าทำความสะอาด"></label>
                         <label class="field"><span>จำนวนเงินอื่น / ห้อง</span><input type="number" name="other_amount" min="0" step="0.01" value="0"><small>จำนวนนี้จะเพิ่มให้ทุกห้องที่เลือก ไม่ใช่ยอดรวมของทุกห้อง</small></label>
                     </div>
+                    <label class="check-field" id="bill-current-period-confirmation" hidden>
+                        <input type="checkbox" name="confirm_current_period">
+                        <span>ยืนยันว่าจดมิเตอร์ครบและต้องการปิดยอดของเดือนปัจจุบันตอนนี้</span>
+                    </label>
+                    <p class="field-hint" id="bill-current-period-help" hidden>บิลเดือนปัจจุบันเป็นยอดเต็มรอบ ระบบไม่คิดค่าเช่าแบบแบ่งวัน และจะไม่รับการแก้เลขมิเตอร์หลังออกบิลแล้ว</p>
                     <fieldset class="room-selector"><legend>เลือกห้องที่จะออกบิล</legend><label class="check-field"><input type="checkbox" id="select-all-bill-rooms"><span>เลือกทุกห้อง</span></label><div class="room-check-grid" id="bill-room-options"><span class="muted">เลือกรอบเดือนเพื่อโหลดห้อง</span></div></fieldset>
                     <p class="form-error" id="bill-builder-error" role="alert" hidden></p>
-                    <div class="form-actions"><button class="button button-secondary" type="button" id="preview-bills-button">ตรวจยอดก่อน</button><button class="button button-primary" type="submit">ออกบิลที่เลือก</button></div>
+                    <div class="form-actions"><button class="button button-secondary" type="button" id="preview-bills-button" disabled>ตรวจยอดก่อน</button><button class="button button-primary" type="submit" id="create-bills-button" disabled>ออกบิลที่เลือก</button></div>
                 </form>
                 <div class="section-subheading"><h3>บิลในรอบเดือน</h3><button class="button button-secondary button-small" type="button" id="line-bulk-button" disabled>เข้าคิว LINE ทั้งหมด</button></div>
-                <div class="panel table-panel"><div class="table-scroll"><table><thead><tr><th>เลขที่บิล</th><th>ห้อง</th><th>ผู้พัก</th><th>ยอดรวม</th><th>กำหนดชำระ</th><th>สถานะ</th><th class="align-right">LINE</th></tr></thead><tbody id="bill-admin-rows"></tbody></table></div><div class="table-state" id="bill-admin-state" data-state="idle"><p>เลือกรอบเดือนเพื่อดูบิล</p></div></div>
+                <div class="stats-grid stats-grid-four" id="bill-stats" aria-live="polite">
+                    <article class="stat-card"><span>บิลรอบนี้</span><strong data-bill-stat="all">—</strong></article>
+                    <article class="stat-card stat-reserved"><span>รอชำระ</span><strong data-bill-stat="pending">—</strong></article>
+                    <article class="stat-card"><span>กำลังตรวจสลิป</span><strong data-bill-stat="verifying">—</strong></article>
+                    <article class="stat-card stat-occupied"><span>ยอดค้างรวม</span><strong data-bill-stat="outstanding">—</strong></article>
+                </div>
+                <div class="panel table-panel"><div class="table-scroll" role="region" aria-label="ตารางใบแจ้งหนี้" tabindex="0"><table><thead><tr><th>เลขที่บิล</th><th>ห้อง</th><th>ผู้พัก</th><th>ยอดรวม</th><th>กำหนดชำระ</th><th>สถานะ</th><th class="align-right">LINE</th></tr></thead><tbody id="bill-admin-rows"></tbody></table></div><div class="table-state" id="bill-admin-state" data-state="idle"><p>เลือกรอบเดือนเพื่อดูบิล</p></div></div>
             </section>
 
             <section class="admin-view" data-admin-view="payments" aria-labelledby="payments-title" hidden>
                 <div class="section-heading"><div><p class="eyebrow">หลักฐานการโอนจากผู้พัก</p><h2 id="payments-title">การชำระเงิน</h2></div></div>
+                <div class="stats-grid" id="payment-stats" aria-live="polite">
+                    <article class="stat-card stat-reserved"><span>รอตรวจ</span><strong data-payment-stat="pending">—</strong><small>ทั้งระบบ ไม่ขึ้นกับตัวกรอง</small></article>
+                    <article class="stat-card"><span>แสดงอยู่ในตาราง</span><strong data-payment-stat="loaded">—</strong><small data-payment-stat-note="loaded">—</small></article>
+                    <article class="stat-card"><span>ยอดรวมที่แสดง</span><strong data-payment-stat="amount">—</strong><small>นับจากรายการที่โหลดอยู่</small></article>
+                </div>
                 <div class="toolbar"><label><span>สถานะตรวจสอบ</span><select id="payment-status-filter"><option value="">ทั้งหมด (รายการค้างก่อน)</option><option value="pending">รอตรวจ</option><option value="verified">ยืนยันแล้ว</option><option value="rejected">ปฏิเสธสลิป</option></select></label><button class="button button-secondary button-small" type="button" data-refresh="payments">รีเฟรช</button><button class="button button-ghost button-small" id="payment-load-more" type="button" hidden>โหลดรายการเพิ่มเติม</button></div>
                 <div class="security-note"><strong>ระบบไม่อนุญาตให้กดยืนยันยอดด้วยมือ</strong><span>รายการจะเป็น “ชำระแล้ว” ต่อเมื่อผู้ให้บริการตรวจสลิปผ่านเท่านั้น หากรายการค้าง ให้ดูหลักฐานแล้วเลือกตรวจซ้ำหรือปิดเพื่อให้ผู้พักส่งสลิปใหม่</span></div>
-                <div class="panel table-panel"><div class="table-scroll"><table><thead><tr><th>อัปโหลดเมื่อ</th><th>บิล / ห้อง</th><th>ผู้พัก</th><th>ยอดเงิน</th><th>ผลตรวจ</th><th class="align-right">จัดการ</th></tr></thead><tbody id="payment-rows"></tbody></table></div><div class="table-state" id="payment-state" data-state="loading"><span class="spinner" aria-hidden="true"></span><p>กำลังโหลดการชำระ…</p></div></div>
+                <div class="panel table-panel"><div class="table-scroll" role="region" aria-label="ตารางการชำระเงิน" tabindex="0"><table><thead><tr><th>อัปโหลดเมื่อ</th><th>บิล / ห้อง</th><th>ผู้พัก</th><th>ยอดเงิน</th><th>ผลตรวจ</th><th class="align-right">จัดการ</th></tr></thead><tbody id="payment-rows"></tbody></table></div><div class="table-state" id="payment-state" data-state="loading"><span class="spinner" aria-hidden="true"></span><p>กำลังโหลดการชำระ…</p></div></div>
             </section>
 
-            <section class="admin-view owner-only" data-admin-view="users" aria-labelledby="users-title" <?= $adminRole === 'owner' ? 'hidden' : 'hidden' ?>>
+            <section class="admin-view owner-only" data-admin-view="users" aria-labelledby="users-title" hidden>
                 <div class="section-heading"><div><p class="eyebrow">เฉพาะเจ้าของระบบ</p><h2 id="users-title">ผู้ดูแลระบบ</h2></div><button class="button button-primary" type="button" data-open-user-dialog>+  เพิ่มผู้ดูแล</button></div>
                 <div class="security-note"><strong>สิทธิ์การเข้าถึง</strong><span>เจ้าของ (Owner) จัดการบัญชีได้ ผู้ดูแล (Admin) ใช้งานโมดูลหอพักและการเงิน</span></div>
-                <div class="panel table-panel"><div class="table-scroll"><table><thead><tr><th>ชื่อผู้ใช้</th><th>บทบาท</th><th>สถานะ</th><th>แก้ไขล่าสุด</th><th class="align-right">จัดการ</th></tr></thead><tbody id="user-rows"></tbody></table></div><div class="table-state" id="user-state" data-state="loading"><span class="spinner" aria-hidden="true"></span><p>กำลังโหลดผู้ดูแล…</p></div></div>
+                <div class="panel table-panel"><div class="table-scroll" role="region" aria-label="ตารางผู้ดูแลระบบ" tabindex="0"><table><thead><tr><th>ชื่อผู้ใช้</th><th>บทบาท</th><th>สถานะ</th><th>แก้ไขล่าสุด</th><th class="align-right">จัดการ</th></tr></thead><tbody id="user-rows"></tbody></table></div><div class="table-state" id="user-state" data-state="loading"><span class="spinner" aria-hidden="true"></span><p>กำลังโหลดผู้ดูแล…</p></div></div>
             </section>
 
             <section class="admin-view" data-admin-view="settings" aria-labelledby="settings-title" hidden>
@@ -164,6 +251,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
 
                             <fieldset class="integration-fieldset">
                                 <legend><span class="integration-icon">L</span> LINE Messaging API</legend>
+                                <label class="field"><span>LINE Official Account Basic ID</span><input name="line_basic_id" type="text" maxlength="33" pattern="@[A-Za-z0-9._-]{1,32}" placeholder="@youraccount"<?= $integrationDisabled ?>><small>ใช้สร้างปุ่มเพิ่มเพื่อนและปุ่มติดต่อผู้ดูแลในหน้าสาธารณะ ตรวจได้จากหน้า Basic settings ของ LINE Official Account</small></label>
                                 <label class="field"><span>Channel access token</span><input name="line_channel_access_token" type="password" maxlength="4096" autocomplete="new-password" placeholder="เว้นว่างเพื่อเก็บค่าเดิม"<?= $integrationDisabled ?>><small data-secret-status="line_channel_access_token">ยังไม่ได้โหลดสถานะ</small></label>
                                 <label class="check-field danger-check"><input name="line_channel_access_token_clear" type="checkbox" value="1"<?= $integrationDisabled ?>><span>ล้าง Channel access token ที่บันทึกไว้</span></label>
                                 <label class="field"><span>Channel secret</span><input name="line_channel_secret" type="password" maxlength="4096" autocomplete="new-password" placeholder="เว้นว่างเพื่อเก็บค่าเดิม"<?= $integrationDisabled ?>><small data-secret-status="line_channel_secret">ยังไม่ได้โหลดสถานะ</small></label>
@@ -199,6 +287,13 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                 </div>
             </section>
         </main>
+
+        <nav class="mobile-bottom-nav admin-bottom-nav" aria-label="เมนูผู้ดูแลบนมือถือ">
+            <button class="is-active" type="button" data-admin-nav="overview"><span aria-hidden="true">◉</span>ภาพรวม</button>
+            <button type="button" data-admin-nav="bookings"><span aria-hidden="true">▣</span>การจอง<span class="nav-count nav-count-dot" id="booking-bottom-count" hidden>0</span></button>
+            <button type="button" data-admin-nav="payments"><span aria-hidden="true">✓</span>ชำระเงิน<span class="nav-count nav-count-dot" id="payment-bottom-count" hidden>0</span></button>
+            <button type="button" aria-controls="admin-sidebar" aria-expanded="false" data-admin-menu-toggle><span aria-hidden="true">☰</span>เมนูทั้งหมด</button>
+        </nav>
     </div>
 </div>
 
@@ -222,7 +317,22 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
 </dialog>
 
 <dialog class="modal" id="move-in-dialog" aria-labelledby="move-in-title">
-    <form class="modal-card" id="move-in-form"><input type="hidden" name="booking_id"><div class="modal-header"><div><p class="eyebrow">เปิดบัญชีผู้พัก</p><h2 id="move-in-title">รับเข้าพัก</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div><p class="modal-lead" id="move-in-summary"></p><div class="form-grid"><label class="field"><span>อีเมล (ไม่บังคับ)</span><input name="email" type="email" maxlength="254" autocomplete="email"></label><label class="field"><span>วันที่เข้าพัก</span><input name="move_in_date" type="date" min="2000-01-01" required></label></div><p class="field-hint">ผู้พักเข้าสู่ระบบด้วยเบอร์ที่ยืนยันในใบจองนี้ และสามารถผูก LINE ได้เองโดยยืนยันรหัสที่ส่งไปยังบัญชี LINE</p><label class="check-field" id="move-in-reuse-field" hidden><input name="reuse_resident_id" type="checkbox" disabled><span id="move-in-reuse-label">ยืนยันการเชื่อมบัญชีผู้พักเดิม</span></label><p class="field-hint" id="move-in-reuse-help" hidden>เลือกเฉพาะเมื่อยืนยันแล้วว่าเป็นบุคคลเดิม ประวัติบิลเก่าจะถูกเชื่อมกับบัญชีนี้ หากเป็นคนละคนต้องใช้เบอร์โทรอื่นเพื่อปกป้องข้อมูลส่วนบุคคล</p><p class="form-error" id="move-in-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-primary" type="submit">ยืนยันเข้าพัก</button></div></form>
+    <form class="modal-card" id="move-in-form">
+        <input type="hidden" name="booking_id">
+        <div class="modal-header"><div><p class="eyebrow">เปิดบัญชีผู้พัก</p><h2 id="move-in-title">รับเข้าพัก</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div>
+        <p class="modal-lead" id="move-in-summary"></p>
+        <div class="form-grid form-grid-two">
+            <label class="field"><span>วันที่เข้าพัก</span><input name="move_in_date" type="date" min="2000-01-01" required></label>
+            <label class="field"><span>อีเมล (ไม่บังคับ)</span><input name="email" type="email" maxlength="190" autocomplete="email"></label>
+            <label class="field"><span>เลขมิเตอร์น้ำเริ่มต้น</span><input name="opening_water_reading" type="number" inputmode="decimal" min="0" max="9999999" step="0.01" required><small>อ่านจากหน้ามิเตอร์ ณ ตอนส่งมอบห้อง</small></label>
+            <label class="field"><span>เลขมิเตอร์ไฟเริ่มต้น</span><input name="opening_electric_reading" type="number" inputmode="decimal" min="0" max="9999999" step="0.01" required><small>อ่านจากหน้ามิเตอร์ ณ ตอนส่งมอบห้อง</small></label>
+        </div>
+        <p class="field-hint">หลังบันทึก ระบบจะแสดงรหัสเปิดใช้งานครั้งเดียว ผู้พักต้องใช้รหัสนี้กับเบอร์โทรเพื่อตั้งรหัสผ่านใหม่</p>
+        <label class="check-field" id="move-in-reuse-field" hidden><input name="reuse_resident_id" type="checkbox" disabled><span id="move-in-reuse-label">ยืนยันการเชื่อมบัญชีผู้พักเดิม</span></label>
+        <p class="field-hint" id="move-in-reuse-help" hidden>เลือกเฉพาะเมื่อยืนยันแล้วว่าเป็นบุคคลเดิม ประวัติบิลเก่าจะถูกเชื่อมกับบัญชีนี้ หากเป็นคนละคนต้องใช้เบอร์โทรอื่นเพื่อปกป้องข้อมูลส่วนบุคคล</p>
+        <p class="form-error" id="move-in-error" role="alert" hidden></p>
+        <div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-primary" type="submit">ยืนยันเข้าพัก</button></div>
+    </form>
 </dialog>
 
 <dialog class="modal" id="booking-cancel-dialog" aria-labelledby="booking-cancel-title">
@@ -233,12 +343,14 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
     <form class="modal-card modal-card-wide" id="resident-create-form">
         <input type="hidden" name="idempotency_key">
         <div class="modal-header"><div><p class="eyebrow">ผู้พักหลัก / ผู้ถือบัญชีของห้อง</p><h2 id="resident-create-title">เพิ่มผู้พักเข้าห้อง</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div>
-        <div class="security-note"><strong>หนึ่งห้องมีผู้พักหลักได้ครั้งละ 1 คน</strong><span>ระบบจะสร้างหลักฐานรับเข้าพักและผูกประวัติบิลกับบุคคลนี้ทันที ผู้พักเข้าสู่ระบบด้วยเบอร์โทร จึงต้องตรวจตัวตนและเบอร์ให้ถูกต้องก่อนบันทึก</span></div>
+        <div class="security-note"><strong>หนึ่งห้องมีผู้พักหลักได้ครั้งละ 1 คน</strong><span>ระบบจะสร้างหลักฐานรับเข้าพักและรหัสเปิดใช้งานครั้งเดียว ต้องตรวจตัวตน เบอร์ และเลขมิเตอร์จริงก่อนบันทึก</span></div>
         <div class="form-grid form-grid-two">
             <label class="field"><span>ห้องว่าง</span><select name="room_id" required></select><small id="resident-create-room-help">แสดงเฉพาะห้องที่ระบบตรวจว่าไม่มีผู้จองหรือผู้พัก</small></label>
             <label class="field"><span>วันที่เข้าพัก</span><input name="move_in_date" type="date" min="2000-01-01" required></label>
             <label class="field"><span>ชื่อ–นามสกุล</span><input name="full_name" type="text" minlength="1" maxlength="150" required autocomplete="name"></label>
             <label class="field"><span>เบอร์โทรศัพท์สำหรับเข้าสู่ระบบ</span><input name="phone" type="tel" minlength="10" maxlength="20" required autocomplete="tel" placeholder="0812345678"></label>
+            <label class="field"><span>เลขมิเตอร์น้ำเริ่มต้น</span><input name="opening_water_reading" type="number" inputmode="decimal" min="0" max="9999999" step="0.01" required><small>อ่านจากหน้ามิเตอร์ ณ ตอนส่งมอบห้อง</small></label>
+            <label class="field"><span>เลขมิเตอร์ไฟเริ่มต้น</span><input name="opening_electric_reading" type="number" inputmode="decimal" min="0" max="9999999" step="0.01" required><small>อ่านจากหน้ามิเตอร์ ณ ตอนส่งมอบห้อง</small></label>
             <label class="field form-span-two"><span>อีเมล (ไม่บังคับ)</span><input name="email" type="email" maxlength="190" autocomplete="email"></label>
         </div>
         <label class="check-field" id="resident-create-reuse-field" hidden><input name="reuse_resident_id" type="checkbox" disabled><span id="resident-create-reuse-label">ยืนยันการเชื่อมบัญชีผู้พักเดิม</span></label>
@@ -249,7 +361,18 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
 </dialog>
 
 <dialog class="modal" id="resident-edit-dialog" aria-labelledby="resident-edit-title">
-    <form class="modal-card" id="resident-edit-form"><input type="hidden" name="resident_id"><div class="modal-header"><div><p class="eyebrow">ข้อมูลผู้พักที่ยืนยันแล้ว</p><h2 id="resident-edit-title">แก้ข้อมูลผู้พัก</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div><p class="modal-lead" id="resident-edit-summary"></p><div class="security-note"><strong>เบอร์โทรคือข้อมูลเข้าสู่ระบบของผู้พัก</strong><span>ตรวจสอบตัวตนก่อนเปลี่ยนเบอร์ เมื่อบันทึกแล้วระบบจะยกเลิกเซสชันเดิมทันที และผู้พักต้องเข้าสู่ระบบด้วยเบอร์ใหม่</span></div><div class="form-grid form-grid-two"><label class="field"><span>ชื่อ–นามสกุล</span><input name="full_name" type="text" minlength="1" maxlength="150" required autocomplete="name"></label><label class="field"><span>เบอร์โทรศัพท์</span><input name="phone" type="tel" minlength="10" maxlength="20" required autocomplete="tel"></label><label class="field"><span>อีเมล</span><input name="email" type="email" maxlength="190" autocomplete="email"></label></div><p class="field-hint">LINE User ID เปลี่ยนได้จากบัญชีผู้พักเท่านั้น และต้องยืนยันรหัสที่ส่งผ่าน LINE</p><p class="form-error" id="resident-edit-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-primary" type="submit">บันทึกข้อมูล</button></div></form>
+    <form class="modal-card" id="resident-edit-form"><input type="hidden" name="resident_id"><div class="modal-header"><div><p class="eyebrow">ข้อมูลผู้พักที่ยืนยันแล้ว</p><h2 id="resident-edit-title">แก้ข้อมูลผู้พัก</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div><p class="modal-lead" id="resident-edit-summary"></p><div class="security-note"><strong>เบอร์โทรเป็นชื่อบัญชี ไม่ใช่รหัสผ่าน</strong><span>ตรวจสอบตัวตนก่อนเปลี่ยนเบอร์ เมื่อบันทึก ระบบจะยกเลิกเซสชันและรหัสผ่านเดิม แล้วออก activation code ใหม่ให้ส่งมอบผู้พัก</span></div><div class="form-grid form-grid-two"><label class="field"><span>ชื่อ–นามสกุล</span><input name="full_name" type="text" minlength="1" maxlength="150" required autocomplete="name"></label><label class="field"><span>เบอร์โทรศัพท์</span><input name="phone" type="tel" minlength="10" maxlength="20" required autocomplete="tel"></label><label class="field"><span>อีเมล</span><input name="email" type="email" maxlength="190" autocomplete="email"></label></div><p class="field-hint">LINE User ID เปลี่ยนได้จากบัญชีผู้พักเท่านั้น และต้องยืนยันรหัสที่ส่งผ่าน LINE</p><p class="form-error" id="resident-edit-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-primary" type="submit">บันทึกข้อมูล</button></div></form>
+</dialog>
+
+<dialog class="modal" id="resident-access-dialog" aria-labelledby="resident-access-title" data-require-explicit-close="true">
+    <div class="modal-card">
+        <div class="modal-header"><div><p class="eyebrow">ข้อมูลลับ แสดงเฉพาะครั้งนี้</p><h2 id="resident-access-title">รหัสเปิดใช้งานผู้พัก</h2></div></div>
+        <p class="modal-lead" id="resident-access-summary"></p>
+        <div class="security-note"><strong>ส่งให้ผู้พักโดยตรงเท่านั้น</strong><span>รหัสนี้ใช้ได้ครั้งเดียวและจะยกเลิกรหัสผ่าน/เซสชันเดิม ห้ามบันทึกในหมายเหตุ แชตกลุ่ม หรือภาพหน้าจอสาธารณะ</span></div>
+        <label class="field"><span>Activation code</span><output id="resident-access-code" aria-live="polite">•••••-•••••-•••••-•••••</output><small id="resident-access-expiry"></small></label>
+        <p class="form-error" id="resident-access-error" role="alert" hidden></p>
+        <div class="form-actions"><button class="button button-secondary" type="button" id="resident-access-copy">คัดลอกรหัส</button><button class="button button-primary" type="button" data-close-dialog data-explicit-close>ส่งมอบแล้วและปิด</button></div>
+    </div>
 </dialog>
 
 <dialog class="modal" id="resident-move-out-dialog" aria-labelledby="resident-move-out-title">

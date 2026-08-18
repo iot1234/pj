@@ -63,9 +63,13 @@ jobs:
           docker run --rm --entrypoint bash dormitory-ci:${{ github.sha }} \
             -n scripts/setup-database.sh
           docker run --rm --entrypoint bash dormitory-ci:${{ github.sha }} \
+            -n scripts/run_monthly_billing.sh
+          docker run --rm --entrypoint bash dormitory-ci:${{ github.sha }} \
             -n scripts/ci-initial-quota-check.sh
           docker run --rm --entrypoint bash dormitory-ci:${{ github.sha }} \
             -n scripts/ci-booking-edge-tests.sh
+          docker run --rm --entrypoint bash dormitory-ci:${{ github.sha }} \
+            -n database/03-runtime-grants.sh
           docker run --rm --entrypoint sh dormitory-ci:${{ github.sha }} \
             -n scripts/start-web.sh
           docker run --rm --entrypoint sh dormitory-ci:${{ github.sha }} \
@@ -99,11 +103,20 @@ jobs:
             -e DB_PASSWORD=testing-only \
             dormitory-ci:${{ github.sha }} tests/run.php
 
+      - name: Run worker, billing CLI, and install bundle contract tests
+        run: |
+          docker run --rm --entrypoint php dormitory-ci:${{ github.sha }} \
+            tests/notification_worker_hardening.php
+          docker run --rm --entrypoint php dormitory-ci:${{ github.sha }} \
+            scripts/test_generate_monthly_bills_cli.php
+          docker run --rm --entrypoint php dormitory-ci:${{ github.sha }} \
+            scripts/build_install_sql.php --check
+
       - name: Exercise MySQL bootstrap, web readiness, and worker isolation
         env:
           CI_APP_KEY: 5a1697717edc7dd7783c09b4c594fefa546e5aab212ae6136749002617d085f6
           CI_DBA_PASSWORD: ci-root-password-not-for-production
-          CI_DB_DATABASE: ci_dormitory
+          CI_DB_DATABASE: appj_ci_dormitory
           CI_DB_USERNAME: dormitory_app
           CI_DB_PASSWORD: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
         run: |
@@ -167,6 +180,80 @@ jobs:
 
           run_database_setup
           run_database_setup
+
+          # The single-file fresh installer must create the canonical schema
+          # and must refuse a second import before changing a non-empty DB.
+          docker exec --interactive \
+            --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+            "$database" mysql --host=127.0.0.1 --user=root \
+            < database/install.sql
+          install_shape="$(docker exec \
+            --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+            "$database" mysql --batch --skip-column-names \
+            --host=127.0.0.1 --user=root --execute="
+              SELECT CONCAT(
+                (SELECT COUNT(*) FROM information_schema.tables
+                  WHERE table_schema='dormitory' AND table_type='BASE TABLE'),
+                '|',
+                (SELECT COUNT(*) FROM information_schema.triggers
+                  WHERE trigger_schema='dormitory'),
+                '|',
+                (SELECT COUNT(*) FROM information_schema.table_constraints
+                  WHERE constraint_schema='dormitory'
+                    AND constraint_type='CHECK')
+              )")"
+          [ "$install_shape" = '16|19|86' ]
+          set +e
+          docker exec --interactive \
+            --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+            "$database" mysql --host=127.0.0.1 --user=root \
+            < database/install.sql >/tmp/ci-install-reimport.log 2>&1
+          install_reimport_status=$?
+          set -e
+          if [ "$install_reimport_status" -eq 0 ]; then
+            echo 'install.sql unexpectedly accepted a non-empty database'
+            exit 1
+          fi
+          grep --quiet 'DORMITORY_INSTALL_ABORT_DATABASE_NOT_EMPTY' \
+            /tmp/ci-install-reimport.log
+
+          # Exercise the complete business lifecycle with the same
+          # least-privileged runtime account used by the web service.
+          docker run --rm \
+            --network "$network" \
+            --entrypoint php \
+            --env APP_ENV=testing \
+            --env APP_DEBUG=false \
+            --env APP_URL=http://localhost \
+            --env APP_TIMEZONE=Asia/Bangkok \
+            --env APP_KEY="$CI_APP_KEY" \
+            --env FORCE_HTTPS=false \
+            --env DB_HOST="$database" \
+            --env DB_PORT=3306 \
+            --env DB_DATABASE="$CI_DB_DATABASE" \
+            --env DB_USERNAME="$CI_DB_USERNAME" \
+            --env DB_PASSWORD="$CI_DB_PASSWORD" \
+            --env DB_SSL=false \
+            "$image" tests/lifecycle_mysql.php
+
+          # Trigger bodies and metadata require the temporary schema-owner
+          # account; the long-running web/worker account remains least privilege.
+          docker run --rm \
+            --network "$network" \
+            --entrypoint php \
+            --env APP_ENV=testing \
+            --env APP_DEBUG=false \
+            --env APP_URL=http://localhost \
+            --env APP_TIMEZONE=Asia/Bangkok \
+            --env APP_KEY="$CI_APP_KEY" \
+            --env FORCE_HTTPS=false \
+            --env DB_HOST="$database" \
+            --env DB_PORT=3306 \
+            --env DB_DATABASE="$CI_DB_DATABASE" \
+            --env DB_USERNAME=root \
+            --env DB_PASSWORD="$CI_DBA_PASSWORD" \
+            --env DB_SSL=false \
+            "$image" scripts/check_requirements.php --db --schema-audit
 
           docker run --detach \
             --name "$web" \

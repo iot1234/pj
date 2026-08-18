@@ -7,7 +7,7 @@
 -- Never use a force/continue-on-error import option with this file.
 -- Regenerate: php scripts/build_install_sql.php
 -- Verify current: php scripts/build_install_sql.php --check
--- Source digest: 5651764457fce1639e3f62930b1ac2a14337774ff3e540bbe0736d6c49af3a27
+-- Source digest: 3327135c65c6d7793cc2151004ed191221662ceeda02184df1f255e5375680f8
 -- BEGIN database/00-create-database.sql
 -- Advanced/manual fresh-install step. For the simplest new installation,
 -- import database/install.sql once instead. Run this standalone file from the
@@ -63,7 +63,15 @@ DEALLOCATE PREPARE dormitory_fresh_install_guard;
 -- database/migrations/005_booking_active_phone.sql. Then deploy transitional
 -- commit a52bc33 to every replica, verify health, back up and test restore,
 -- run database/migrations/006_remove_resident_pin.sql, verify the column is
--- absent, and only then deploy the current source.
+-- absent, stop notification workers, run
+-- database/migrations/007_notification_worker_fencing.sql and
+-- database/migrations/008_resident_access_credentials.sql, then enter a
+-- maintenance window with web/worker writes stopped and run
+-- database/migrations/009_occupancy_meter_baselines.sql, followed by
+-- database/migrations/010_line_self_service_binding.sql,
+-- database/migrations/011_line_add_friend_identity.sql and
+-- database/migrations/012_move_in_request_hash.sql. Deploy the current source
+-- before reopening traffic.
 
 SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
 -- Store timestamps in UTC. PHP formats them for Asia/Bangkok at the UI edge.
@@ -99,6 +107,10 @@ CREATE TABLE IF NOT EXISTS residents (
     email VARCHAR(254) NULL,
     line_user_id VARCHAR(33) CHARACTER SET ascii COLLATE ascii_bin NULL,
     auth_version INT UNSIGNED NOT NULL DEFAULT 1,
+    access_password_hash VARCHAR(255) NULL,
+    activation_code_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    activation_expires_at DATETIME(6) NULL,
+    activation_consumed_at DATETIME(6) NULL,
     active TINYINT(1) NOT NULL DEFAULT 1,
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
@@ -113,7 +125,104 @@ CREATE TABLE IF NOT EXISTS residents (
         line_user_id IS NULL OR line_user_id REGEXP '^U[0-9a-f]{32}$'
     ),
     CONSTRAINT chk_residents_auth_version CHECK (auth_version >= 1),
+    CONSTRAINT chk_residents_access_password CHECK (
+        access_password_hash IS NULL
+        OR CHAR_LENGTH(access_password_hash) BETWEEN 20 AND 255
+    ),
+    CONSTRAINT chk_residents_activation_state CHECK (
+        (
+            activation_code_hash IS NULL
+            AND activation_expires_at IS NULL
+        )
+        OR (
+            activation_code_hash REGEXP '^[0-9a-f]{64}$'
+            AND activation_expires_at IS NOT NULL
+            AND activation_consumed_at IS NULL
+            AND access_password_hash IS NULL
+        )
+    ),
+    CONSTRAINT chk_residents_password_activation CHECK (
+        access_password_hash IS NULL
+        OR (
+            activation_code_hash IS NULL
+            AND activation_expires_at IS NULL
+            AND activation_consumed_at IS NOT NULL
+        )
+    ),
     CONSTRAINT chk_residents_active CHECK (active IN (0, 1))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS line_link_codes (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    resident_id BIGINT UNSIGNED NOT NULL,
+    code_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    status ENUM('pending', 'bound', 'expired', 'revoked') NOT NULL DEFAULT 'pending',
+    line_user_id VARCHAR(33) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    expires_at DATETIME(6) NOT NULL,
+    bound_at DATETIME(6) NULL,
+    revoked_at DATETIME(6) NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+        ON UPDATE CURRENT_TIMESTAMP(6),
+    pending_resident_id BIGINT UNSIGNED
+        GENERATED ALWAYS AS (
+            CASE WHEN status = 'pending' THEN resident_id ELSE NULL END
+        ) STORED,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_line_link_codes_code_hash (code_hash),
+    UNIQUE KEY uq_line_link_codes_pending_resident (pending_resident_id),
+    KEY idx_line_link_codes_expiry (status, expires_at),
+    KEY idx_line_link_codes_resident (resident_id, created_at),
+    CONSTRAINT fk_line_link_codes_resident
+        FOREIGN KEY (resident_id) REFERENCES residents(id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT chk_line_link_codes_hash
+        CHECK (code_hash REGEXP '^[0-9a-f]{64}$'),
+    CONSTRAINT chk_line_link_codes_line_user CHECK (
+        line_user_id IS NULL OR line_user_id REGEXP '^U[0-9a-f]{32}$'
+    ),
+    CONSTRAINT chk_line_link_codes_state CHECK (
+        (
+            status = 'pending'
+            AND line_user_id IS NULL
+            AND bound_at IS NULL
+            AND revoked_at IS NULL
+        )
+        OR (
+            status = 'bound'
+            AND line_user_id IS NOT NULL
+            AND bound_at IS NOT NULL
+            AND revoked_at IS NULL
+        )
+        OR (
+            status = 'expired'
+            AND line_user_id IS NULL
+            AND bound_at IS NULL
+            AND revoked_at IS NULL
+        )
+        OR (
+            status = 'revoked'
+            AND revoked_at IS NOT NULL
+            AND (
+                (line_user_id IS NULL AND bound_at IS NULL)
+                OR (line_user_id IS NOT NULL AND bound_at IS NOT NULL)
+            )
+        )
+    ),
+    CONSTRAINT chk_line_link_codes_timestamps CHECK (
+        expires_at > created_at
+        AND (
+            bound_at IS NULL
+            OR (bound_at >= created_at AND bound_at < expires_at)
+        )
+        AND (
+            revoked_at IS NULL
+            OR (
+                revoked_at >= created_at
+                AND (bound_at IS NULL OR revoked_at >= bound_at)
+            )
+        )
+    )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS rooms (
@@ -161,6 +270,7 @@ CREATE TABLE IF NOT EXISTS bookings (
     cancel_reason VARCHAR(500) NULL,
     resident_id BIGINT UNSIGNED NULL,
     moved_in_at DATETIME(6) NULL,
+    move_in_request_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
     active_room_id BIGINT UNSIGNED
         GENERATED ALWAYS AS (
             CASE WHEN status IN ('pending', 'confirmed') THEN room_id ELSE NULL END
@@ -198,6 +308,13 @@ CREATE TABLE IF NOT EXISTS bookings (
     CONSTRAINT chk_bookings_phone CHECK (phone_norm REGEXP '^0[0-9]{9}$'),
     CONSTRAINT chk_bookings_monthly_rent CHECK (booked_monthly_rent > 0 AND booked_monthly_rent <= 1000000),
     CONSTRAINT chk_bookings_idempotency CHECK (CHAR_LENGTH(idempotency_key) BETWEEN 16 AND 64),
+    CONSTRAINT chk_bookings_move_in_request_hash CHECK (
+        move_in_request_hash IS NULL
+        OR (
+            status = 'moved_in'
+            AND move_in_request_hash REGEXP '^[0-9a-f]{64}$'
+        )
+    ),
     CONSTRAINT chk_bookings_state CHECK (
         (status = 'pending'
             AND confirmed_at IS NULL AND cancelled_at IS NULL
@@ -223,6 +340,8 @@ CREATE TABLE IF NOT EXISTS occupancies (
     status ENUM('active', 'ended') NOT NULL DEFAULT 'active',
     move_in_date DATE NOT NULL,
     move_out_date DATE NULL,
+    opening_water_reading DECIMAL(14,2) NULL,
+    opening_electric_reading DECIMAL(14,2) NULL,
     active_room_id BIGINT UNSIGNED
         GENERATED ALWAYS AS (CASE WHEN status = 'active' THEN room_id ELSE NULL END) STORED,
     active_resident_id BIGINT UNSIGNED
@@ -249,6 +368,19 @@ CREATE TABLE IF NOT EXISTS occupancies (
         CHECK (monthly_rent > 0 AND monthly_rent <= 1000000),
     CONSTRAINT chk_occupancies_dates
         CHECK (move_out_date IS NULL OR move_out_date >= move_in_date),
+    CONSTRAINT chk_occupancies_opening_readings CHECK (
+        (
+            status = 'ended'
+            AND opening_water_reading IS NULL
+            AND opening_electric_reading IS NULL
+        )
+        OR (
+            opening_water_reading >= 0
+            AND opening_water_reading <= 9999999.00
+            AND opening_electric_reading >= 0
+            AND opening_electric_reading <= 9999999.00
+        )
+    ),
     CONSTRAINT chk_occupancies_state
         CHECK ((status = 'active' AND move_out_date IS NULL)
             OR (status = 'ended' AND move_out_date IS NOT NULL))
@@ -257,6 +389,7 @@ CREATE TABLE IF NOT EXISTS occupancies (
 CREATE TABLE IF NOT EXISTS meter_readings (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     room_id BIGINT UNSIGNED NOT NULL,
+    occupancy_id BIGINT UNSIGNED NULL,
     meter_type ENUM('water', 'electric') NOT NULL,
     period DATE NOT NULL,
     previous_reading DECIMAL(14,2) NOT NULL,
@@ -269,8 +402,12 @@ CREATE TABLE IF NOT EXISTS meter_readings (
     PRIMARY KEY (id),
     UNIQUE KEY uq_meter_readings_room_type_period (room_id, meter_type, period),
     KEY idx_meter_readings_period (period, room_id),
+    KEY idx_meter_readings_occupancy_period (occupancy_id, period),
     CONSTRAINT fk_meter_readings_room
         FOREIGN KEY (room_id) REFERENCES rooms(id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT fk_meter_readings_occupancy
+        FOREIGN KEY (occupancy_id) REFERENCES occupancies(id)
         ON UPDATE RESTRICT ON DELETE RESTRICT,
     CONSTRAINT fk_meter_readings_recorded_by
         FOREIGN KEY (recorded_by) REFERENCES admin_users(id)
@@ -314,6 +451,7 @@ CREATE TABLE IF NOT EXISTS integration_settings (
     promptpay_target VARCHAR(13) CHARACTER SET ascii COLLATE ascii_bin NULL,
     promptpay_name VARCHAR(120) NULL,
     payment_receiver_account_tail VARCHAR(20) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    line_basic_id VARCHAR(33) CHARACTER SET ascii COLLATE ascii_bin NULL,
     line_channel_access_token_enc TEXT CHARACTER SET ascii COLLATE ascii_bin NULL,
     line_channel_secret_enc TEXT CHARACTER SET ascii COLLATE ascii_bin NULL,
     line_max_attempts TINYINT UNSIGNED NOT NULL DEFAULT 5,
@@ -343,6 +481,10 @@ CREATE TABLE IF NOT EXISTS integration_settings (
     CONSTRAINT chk_integration_settings_receiver_tail CHECK (
         payment_receiver_account_tail IS NULL
         OR payment_receiver_account_tail REGEXP '^[0-9]{6,20}$'
+    ),
+    CONSTRAINT chk_integration_settings_line_basic_id CHECK (
+        line_basic_id IS NULL
+        OR line_basic_id REGEXP '^@[A-Za-z0-9._-]{1,32}$'
     ),
     CONSTRAINT chk_integration_settings_line_token CHECK (
         line_channel_access_token_enc IS NULL
@@ -550,6 +692,8 @@ CREATE TABLE IF NOT EXISTS notification_outbox (
     attempts SMALLINT UNSIGNED NOT NULL DEFAULT 0,
     next_attempt_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     retry_key CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    claim_token CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    lease_until DATETIME(6) NULL,
     line_request_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NULL,
     line_accepted_request_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NULL,
     last_error VARCHAR(1000) NULL,
@@ -561,6 +705,7 @@ CREATE TABLE IF NOT EXISTS notification_outbox (
     UNIQUE KEY uq_notification_outbox_bill_purpose (bill_id, purpose),
     UNIQUE KEY uq_notification_outbox_retry_key (retry_key),
     KEY idx_notification_outbox_due (status, next_attempt_at),
+    KEY idx_notification_outbox_lease (status, lease_until),
     KEY idx_notification_outbox_resident (resident_id, created_at),
     CONSTRAINT fk_notification_outbox_bill
         FOREIGN KEY (bill_id) REFERENCES bills(id)
@@ -579,9 +724,47 @@ CREATE TABLE IF NOT EXISTS notification_outbox (
     CONSTRAINT chk_notification_outbox_line_accepted_request_id
         CHECK (line_accepted_request_id IS NULL OR line_accepted_request_id REGEXP '^[!-~]{1,128}$'),
     CONSTRAINT chk_notification_outbox_attempts CHECK (attempts <= 100),
+    CONSTRAINT chk_notification_outbox_claim_lease CHECK (
+        (
+            status = 'processing'
+            AND claim_token REGEXP '^[0-9a-f]{64}$'
+            AND lease_until IS NOT NULL
+        )
+        OR (
+            status <> 'processing'
+            AND claim_token IS NULL
+            AND lease_until IS NULL
+        )
+    ),
     CONSTRAINT chk_notification_outbox_sent CHECK (
         (status = 'sent' AND sent_at IS NOT NULL)
         OR (status <> 'sent' AND sent_at IS NULL)
+    )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS notification_worker_heartbeats (
+    worker_id CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    status ENUM('starting', 'running', 'error', 'stopped') NOT NULL,
+    started_at DATETIME(6) NOT NULL,
+    heartbeat_at DATETIME(6) NOT NULL,
+    last_cycle_at DATETIME(6) NULL,
+    last_processed INT UNSIGNED NOT NULL DEFAULT 0,
+    last_sent INT UNSIGNED NOT NULL DEFAULT 0,
+    last_failed INT UNSIGNED NOT NULL DEFAULT 0,
+    last_retried INT UNSIGNED NOT NULL DEFAULT 0,
+    last_lost_claims INT UNSIGNED NOT NULL DEFAULT 0,
+    last_recovered INT UNSIGNED NOT NULL DEFAULT 0,
+    last_error VARCHAR(1000) NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+        ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (worker_id),
+    KEY idx_notification_worker_heartbeat (heartbeat_at),
+    CONSTRAINT chk_notification_worker_id
+        CHECK (worker_id REGEXP '^[0-9a-f]{64}$'),
+    CONSTRAINT chk_notification_worker_error CHECK (
+        last_error IS NULL
+        OR CHAR_LENGTH(TRIM(last_error)) BETWEEN 1 AND 1000
     )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -670,8 +853,50 @@ DROP TRIGGER IF EXISTS trg_bills_relationship_guard;
 DROP TRIGGER IF EXISTS trg_payments_relationship_guard;
 DROP TRIGGER IF EXISTS trg_notification_relationship_guard;
 DROP TRIGGER IF EXISTS trg_notification_relationship_guard_update;
+DROP TRIGGER IF EXISTS trg_meter_readings_occupancy_guard;
+DROP TRIGGER IF EXISTS trg_meter_readings_occupancy_guard_update;
+DROP TRIGGER IF EXISTS trg_bookings_insert_guard;
+DROP TRIGGER IF EXISTS trg_occupancies_relationship_guard;
 
 DELIMITER $$
+
+CREATE TRIGGER trg_bookings_insert_guard
+BEFORE INSERT ON bookings
+FOR EACH ROW
+BEGIN
+    DECLARE room_deleted DATETIME(6) DEFAULT NULL;
+    DECLARE active_occupancy_count INT UNSIGNED DEFAULT 0;
+    DECLARE active_phone_occupancy_count INT UNSIGNED DEFAULT 0;
+
+    SELECT deleted_at
+      INTO room_deleted
+      FROM rooms
+     WHERE id = NEW.room_id
+     LIMIT 1
+     FOR UPDATE;
+    SELECT COUNT(*)
+      INTO active_occupancy_count
+      FROM occupancies
+     WHERE room_id = NEW.room_id
+       AND status = 'active'
+     FOR SHARE;
+    SELECT COUNT(*)
+      INTO active_phone_occupancy_count
+      FROM residents resident_row
+      JOIN occupancies active_occupancy
+        ON active_occupancy.resident_id = resident_row.id
+       AND active_occupancy.status = 'active'
+     WHERE resident_row.phone_norm = NEW.phone_norm
+     FOR SHARE;
+
+    IF NEW.status <> 'pending'
+        OR room_deleted IS NOT NULL
+        OR active_occupancy_count <> 0
+        OR active_phone_occupancy_count <> 0 THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'A booking must start pending for an available room and resident';
+    END IF;
+END$$
 
 CREATE TRIGGER trg_bookings_identity_immutable
 BEFORE UPDATE ON bookings
@@ -704,9 +929,73 @@ BEGIN
                 OR NOT (OLD.cancel_reason <=> NEW.cancel_reason)))
         OR (OLD.moved_in_at IS NOT NULL
             AND (NOT (OLD.moved_in_at <=> NEW.moved_in_at)
-                OR NOT (OLD.resident_id <=> NEW.resident_id))) THEN
+                OR NOT (OLD.resident_id <=> NEW.resident_id)))
+        OR (OLD.status = 'moved_in'
+            AND NOT (OLD.move_in_request_hash <=> NEW.move_in_request_hash)) THEN
         SIGNAL SQLSTATE '45000'
             SET MESSAGE_TEXT = 'Booking transition evidence is immutable once recorded';
+    END IF;
+END$$
+
+CREATE TRIGGER trg_occupancies_relationship_guard
+BEFORE INSERT ON occupancies
+FOR EACH ROW
+BEGIN
+    DECLARE booking_status VARCHAR(16) DEFAULT NULL;
+    DECLARE booking_resident BIGINT UNSIGNED DEFAULT NULL;
+    DECLARE booking_room BIGINT UNSIGNED DEFAULT NULL;
+    DECLARE booking_rent DECIMAL(12,2) DEFAULT NULL;
+    DECLARE resident_active TINYINT DEFAULT NULL;
+    DECLARE room_deleted DATETIME(6) DEFAULT NULL;
+    DECLARE overlapping_periods INT UNSIGNED DEFAULT 0;
+
+    SELECT deleted_at
+      INTO room_deleted
+      FROM rooms
+     WHERE id = NEW.room_id
+     LIMIT 1
+     FOR UPDATE;
+    SELECT active
+      INTO resident_active
+      FROM residents
+     WHERE id = NEW.resident_id
+     LIMIT 1
+     FOR UPDATE;
+    SELECT status, resident_id, room_id, booked_monthly_rent
+      INTO booking_status, booking_resident, booking_room, booking_rent
+      FROM bookings
+     WHERE id = NEW.booking_id
+     LIMIT 1
+     FOR SHARE;
+    SELECT COUNT(*)
+      INTO overlapping_periods
+      FROM occupancies existing_occupancy
+     WHERE (
+            existing_occupancy.room_id = NEW.room_id
+            OR existing_occupancy.resident_id = NEW.resident_id
+       )
+       AND DATE_FORMAT(existing_occupancy.move_in_date, '%Y-%m-01')
+               <= DATE_FORMAT(COALESCE(NEW.move_out_date, '9999-12-31'), '%Y-%m-01')
+       AND DATE_FORMAT(NEW.move_in_date, '%Y-%m-01')
+               <= DATE_FORMAT(
+                   COALESCE(existing_occupancy.move_out_date, '9999-12-31'),
+                   '%Y-%m-01'
+               )
+     FOR SHARE;
+
+    IF NEW.status <> 'active'
+        OR NEW.move_out_date IS NOT NULL
+        OR NEW.opening_water_reading IS NULL
+        OR NEW.opening_electric_reading IS NULL
+        OR room_deleted IS NOT NULL
+        OR resident_active <> 1
+        OR booking_status <> 'moved_in'
+        OR NOT (booking_resident <=> NEW.resident_id)
+        OR NOT (booking_room <=> NEW.room_id)
+        OR NOT (booking_rent <=> NEW.monthly_rent)
+        OR overlapping_periods <> 0 THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Occupancy must start active and match its moved-in booking';
     END IF;
 END$$
 
@@ -719,6 +1008,8 @@ BEGIN
         OR NOT (OLD.booking_id <=> NEW.booking_id)
         OR NOT (OLD.monthly_rent <=> NEW.monthly_rent)
         OR NOT (OLD.move_in_date <=> NEW.move_in_date)
+        OR NOT (OLD.opening_water_reading <=> NEW.opening_water_reading)
+        OR NOT (OLD.opening_electric_reading <=> NEW.opening_electric_reading)
         OR NOT (OLD.created_at <=> NEW.created_at) THEN
         SIGNAL SQLSTATE '45000'
             SET MESSAGE_TEXT = 'Occupancy identity and rent snapshot are immutable';
@@ -731,6 +1022,161 @@ BEGIN
     IF OLD.status = 'active' AND NEW.status NOT IN ('active', 'ended') THEN
         SIGNAL SQLSTATE '45000'
             SET MESSAGE_TEXT = 'Invalid occupancy state transition';
+    END IF;
+END$$
+
+CREATE TRIGGER trg_meter_readings_occupancy_guard
+BEFORE INSERT ON meter_readings
+FOR EACH ROW
+BEGIN
+    DECLARE occupancy_room BIGINT UNSIGNED DEFAULT NULL;
+    DECLARE occupancy_move_in DATE DEFAULT NULL;
+    DECLARE occupancy_move_out DATE DEFAULT NULL;
+    DECLARE occupancy_opening_water DECIMAL(14,2) DEFAULT NULL;
+    DECLARE occupancy_opening_electric DECIMAL(14,2) DEFAULT NULL;
+    DECLARE expected_previous DECIMAL(14,2) DEFAULT NULL;
+    DECLARE prior_rows INT UNSIGNED DEFAULT 0;
+    DECLARE overlapping_occupancies INT UNSIGNED DEFAULT 0;
+
+    IF NEW.occupancy_id IS NULL THEN
+        SELECT COUNT(*) INTO overlapping_occupancies
+          FROM occupancies
+         WHERE room_id = NEW.room_id
+           AND move_in_date <= LAST_DAY(NEW.period)
+           AND (move_out_date IS NULL OR move_out_date >= NEW.period);
+        IF overlapping_occupancies <> 0 THEN
+            SIGNAL SQLSTATE '45000'
+                SET MESSAGE_TEXT = 'An occupied-room meter reading requires occupancy_id';
+        END IF;
+    ELSE
+        SELECT room_id, move_in_date, move_out_date,
+               opening_water_reading, opening_electric_reading
+          INTO occupancy_room, occupancy_move_in, occupancy_move_out,
+               occupancy_opening_water, occupancy_opening_electric
+          FROM occupancies
+         WHERE id = NEW.occupancy_id
+         LIMIT 1;
+        IF NOT (occupancy_room <=> NEW.room_id)
+            OR occupancy_move_in > LAST_DAY(NEW.period)
+            OR (occupancy_move_out IS NOT NULL
+                AND occupancy_move_out < NEW.period) THEN
+            SIGNAL SQLSTATE '45000'
+                SET MESSAGE_TEXT = 'Meter reading must belong to its occupancy period and room';
+        END IF;
+        IF DATE_FORMAT(occupancy_move_in, '%Y-%m-01') = NEW.period THEN
+            SET expected_previous = IF(
+                NEW.meter_type = 'water',
+                occupancy_opening_water,
+                occupancy_opening_electric
+            );
+            IF expected_previous IS NULL
+                OR NOT (expected_previous <=> NEW.previous_reading) THEN
+                SIGNAL SQLSTATE '45000'
+                    SET MESSAGE_TEXT = 'First-period meter baseline must match the occupancy opening reading';
+            END IF;
+        ELSE
+            SELECT COUNT(*), MAX(current_reading)
+              INTO prior_rows, expected_previous
+              FROM meter_readings
+             WHERE room_id = NEW.room_id
+               AND occupancy_id = NEW.occupancy_id
+               AND meter_type = NEW.meter_type
+               AND period = DATE_SUB(NEW.period, INTERVAL 1 MONTH);
+            IF prior_rows <> 1
+                OR NOT (expected_previous <=> NEW.previous_reading) THEN
+                SIGNAL SQLSTATE '45000'
+                    SET MESSAGE_TEXT = 'Meter history must be contiguous within one occupancy';
+            END IF;
+        END IF;
+    END IF;
+END$$
+
+CREATE TRIGGER trg_meter_readings_occupancy_guard_update
+BEFORE UPDATE ON meter_readings
+FOR EACH ROW
+BEGIN
+    DECLARE occupancy_room BIGINT UNSIGNED DEFAULT NULL;
+    DECLARE occupancy_move_in DATE DEFAULT NULL;
+    DECLARE occupancy_move_out DATE DEFAULT NULL;
+    DECLARE occupancy_opening_water DECIMAL(14,2) DEFAULT NULL;
+    DECLARE occupancy_opening_electric DECIMAL(14,2) DEFAULT NULL;
+    DECLARE expected_previous DECIMAL(14,2) DEFAULT NULL;
+    DECLARE prior_rows INT UNSIGNED DEFAULT 0;
+    DECLARE later_rows INT UNSIGNED DEFAULT 0;
+    DECLARE overlapping_occupancies INT UNSIGNED DEFAULT 0;
+
+    IF NOT (OLD.room_id <=> NEW.room_id)
+        OR NOT (OLD.meter_type <=> NEW.meter_type)
+        OR NOT (OLD.period <=> NEW.period)
+        OR NOT (OLD.previous_reading <=> NEW.previous_reading)
+        OR NOT (OLD.created_at <=> NEW.created_at)
+        OR (OLD.occupancy_id IS NOT NULL
+            AND NOT (OLD.occupancy_id <=> NEW.occupancy_id)) THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Meter identity and previous reading are immutable';
+    END IF;
+
+    IF NEW.occupancy_id IS NULL THEN
+        SELECT COUNT(*) INTO overlapping_occupancies
+          FROM occupancies
+         WHERE room_id = NEW.room_id
+           AND move_in_date <= LAST_DAY(NEW.period)
+           AND (move_out_date IS NULL OR move_out_date >= NEW.period);
+        IF overlapping_occupancies <> 0 THEN
+            SIGNAL SQLSTATE '45000'
+                SET MESSAGE_TEXT = 'An occupied-room meter reading requires occupancy_id';
+        END IF;
+    ELSE
+        SELECT room_id, move_in_date, move_out_date,
+               opening_water_reading, opening_electric_reading
+          INTO occupancy_room, occupancy_move_in, occupancy_move_out,
+               occupancy_opening_water, occupancy_opening_electric
+          FROM occupancies
+         WHERE id = NEW.occupancy_id
+         LIMIT 1;
+        IF NOT (occupancy_room <=> NEW.room_id)
+            OR occupancy_move_in > LAST_DAY(NEW.period)
+            OR (occupancy_move_out IS NOT NULL
+                AND occupancy_move_out < NEW.period) THEN
+            SIGNAL SQLSTATE '45000'
+                SET MESSAGE_TEXT = 'Meter reading must belong to its occupancy period and room';
+        END IF;
+        IF DATE_FORMAT(occupancy_move_in, '%Y-%m-01') = NEW.period THEN
+            SET expected_previous = IF(
+                NEW.meter_type = 'water',
+                occupancy_opening_water,
+                occupancy_opening_electric
+            );
+            IF expected_previous IS NULL
+                OR NOT (expected_previous <=> NEW.previous_reading) THEN
+                SIGNAL SQLSTATE '45000'
+                    SET MESSAGE_TEXT = 'First-period meter baseline must match the occupancy opening reading';
+            END IF;
+        ELSE
+            SELECT COUNT(*), MAX(current_reading)
+              INTO prior_rows, expected_previous
+              FROM meter_readings
+             WHERE room_id = NEW.room_id
+               AND occupancy_id = NEW.occupancy_id
+               AND meter_type = NEW.meter_type
+               AND period = DATE_SUB(NEW.period, INTERVAL 1 MONTH);
+            IF prior_rows <> 1
+                OR NOT (expected_previous <=> NEW.previous_reading) THEN
+                SIGNAL SQLSTATE '45000'
+                    SET MESSAGE_TEXT = 'Meter history must be contiguous within one occupancy';
+            END IF;
+        END IF;
+        IF NOT (OLD.current_reading <=> NEW.current_reading) THEN
+            SELECT COUNT(*) INTO later_rows
+              FROM meter_readings
+             WHERE room_id = NEW.room_id
+               AND meter_type = NEW.meter_type
+               AND period > NEW.period;
+            IF later_rows <> 0 THEN
+                SIGNAL SQLSTATE '45000'
+                    SET MESSAGE_TEXT = 'A meter reading referenced by a later period is immutable';
+            END IF;
+        END IF;
     END IF;
 END$$
 
@@ -790,15 +1236,60 @@ FOR EACH ROW
 BEGIN
     DECLARE occupancy_resident BIGINT UNSIGNED DEFAULT NULL;
     DECLARE occupancy_room BIGINT UNSIGNED DEFAULT NULL;
-    SELECT resident_id, room_id
-      INTO occupancy_resident, occupancy_room
+    DECLARE occupancy_rent DECIMAL(12,2) DEFAULT NULL;
+    DECLARE occupancy_move_in DATE DEFAULT NULL;
+    DECLARE occupancy_move_out DATE DEFAULT NULL;
+    DECLARE water_previous DECIMAL(14,2) DEFAULT NULL;
+    DECLARE water_current DECIMAL(14,2) DEFAULT NULL;
+    DECLARE water_units DECIMAL(14,2) DEFAULT NULL;
+    DECLARE electric_previous DECIMAL(14,2) DEFAULT NULL;
+    DECLARE electric_current DECIMAL(14,2) DEFAULT NULL;
+    DECLARE electric_units DECIMAL(14,2) DEFAULT NULL;
+
+    SELECT resident_id, room_id, monthly_rent, move_in_date, move_out_date
+      INTO occupancy_resident, occupancy_room, occupancy_rent,
+           occupancy_move_in, occupancy_move_out
       FROM occupancies
      WHERE id = NEW.occupancy_id
-     LIMIT 1;
-    IF NOT (occupancy_resident <=> NEW.resident_id)
+     LIMIT 1
+     FOR SHARE;
+    SELECT previous_reading, current_reading, units_used
+      INTO water_previous, water_current, water_units
+      FROM meter_readings
+     WHERE room_id = NEW.room_id
+       AND occupancy_id = NEW.occupancy_id
+       AND meter_type = 'water'
+       AND period = NEW.period
+     LIMIT 1
+     FOR SHARE;
+    SELECT previous_reading, current_reading, units_used
+      INTO electric_previous, electric_current, electric_units
+      FROM meter_readings
+     WHERE room_id = NEW.room_id
+       AND occupancy_id = NEW.occupancy_id
+       AND meter_type = 'electric'
+       AND period = NEW.period
+     LIMIT 1
+     FOR SHARE;
+
+    IF NEW.status <> 'pending'
+        OR NEW.paid_at IS NOT NULL
+        OR NOT (occupancy_resident <=> NEW.resident_id)
         OR NOT (occupancy_room <=> NEW.room_id) THEN
         SIGNAL SQLSTATE '45000'
-            SET MESSAGE_TEXT = 'Bill resident/room must match its occupancy';
+            SET MESSAGE_TEXT = 'Bill must start pending and match its occupancy';
+    END IF;
+    IF NOT (occupancy_rent <=> NEW.rent_amount)
+        OR NEW.period < DATE_FORMAT(occupancy_move_in, '%Y-%m-01')
+        OR NEW.period > DATE_FORMAT(COALESCE(occupancy_move_out, '9999-12-31'), '%Y-%m-01')
+        OR NOT (water_previous <=> NEW.water_previous)
+        OR NOT (water_current <=> NEW.water_current)
+        OR NOT (water_units <=> NEW.water_units)
+        OR NOT (electric_previous <=> NEW.electric_previous)
+        OR NOT (electric_current <=> NEW.electric_current)
+        OR NOT (electric_units <=> NEW.electric_units) THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Bill rent and meter snapshots must match its occupancy period';
     END IF;
 END$$
 

@@ -17,6 +17,7 @@ final class SystemSettingsService
         'promptpay_target',
         'promptpay_name',
         'payment_receiver_account_tail',
+        'line_basic_id',
         'line_channel_access_token',
         'line_channel_access_token_clear',
         'line_channel_secret',
@@ -38,6 +39,7 @@ final class SystemSettingsService
         'PROMPTPAY_TARGET' => 'promptpay_target',
         'PROMPTPAY_NAME' => 'promptpay_name',
         'PAYMENT_RECEIVER_ACCOUNT_TAIL' => 'payment_receiver_account_tail',
+        'LINE_BASIC_ID' => 'line_basic_id',
         'LINE_MAX_ATTEMPTS' => 'line_max_attempts',
         'NOTIFICATION_BATCH_SIZE' => 'notification_batch_size',
         'SLIP_PROVIDER' => 'slip_provider',
@@ -98,6 +100,8 @@ final class SystemSettingsService
         $promptPayReady = $this->nullableString($row['promptpay_target'] ?? null) !== null;
         $lineReady = $lineSecret['configured'];
         $lineWebhookReady = $lineReady && $lineChannelSecret['configured'];
+        $lineBasicId = $this->nullableString($row['line_basic_id'] ?? null);
+        $lineBindingReady = $lineWebhookReady && $lineBasicId !== null;
         $provider = (string) ($row['slip_provider'] ?? 'none');
         $receiverConfigured = $this->nullableString($row['payment_receiver_account_tail'] ?? null) !== null;
         $slipReady = $receiverConfigured && match ($provider) {
@@ -108,7 +112,7 @@ final class SystemSettingsService
         };
 
         $configuredFields = [];
-        foreach (['promptpay_target', 'promptpay_name', 'payment_receiver_account_tail', 'slipok_branch_id'] as $field) {
+        foreach (['promptpay_target', 'promptpay_name', 'payment_receiver_account_tail', 'line_basic_id', 'slipok_branch_id'] as $field) {
             if ($this->nullableString($row[$field] ?? null) !== null) {
                 $configuredFields[] = $field;
             }
@@ -131,6 +135,7 @@ final class SystemSettingsService
             'promptpay_target' => $this->nullableString($row['promptpay_target'] ?? null),
             'promptpay_name' => $this->nullableString($row['promptpay_name'] ?? null),
             'payment_receiver_account_tail' => $this->nullableString($row['payment_receiver_account_tail'] ?? null),
+            'line_basic_id' => $lineBasicId,
             'line_max_attempts' => $this->databaseInteger($row, 'line_max_attempts'),
             'notification_batch_size' => $this->databaseInteger($row, 'notification_batch_size'),
             'slip_provider' => $provider,
@@ -151,14 +156,39 @@ final class SystemSettingsService
                 'promptpay' => $promptPayReady,
                 'line' => $lineReady,
                 'line_webhook' => $lineWebhookReady,
+                'line_add_friend' => $lineBasicId !== null,
+                'line_binding' => $lineBindingReady,
                 'slip_verification' => $slipReady,
             ],
             'promptpay_ready' => $promptPayReady,
             'line_ready' => $lineReady,
             'line_webhook_ready' => $lineWebhookReady,
+            'line_binding_ready' => $lineBindingReady,
             'slip_verification_ready' => $slipReady,
             'updated_by' => isset($row['updated_by']) ? (int) $row['updated_by'] : null,
             'updated_at' => $row['updated_at'] ?? null,
+        ];
+    }
+
+    /**
+     * Return only the public contact path. LINE Basic ID is a public Official
+     * Account identifier; tokens, channel secrets and payment settings are
+     * deliberately excluded from this response.
+     *
+     * @return array{line_basic_id:?string,line_add_friend_url:?string}
+     */
+    public function publicContact(): array
+    {
+        $statement = $this->app->database()->pdo()->query('SELECT line_basic_id FROM integration_settings WHERE id=1');
+        $row = $statement->fetch() ?: [];
+        $lineBasicId = $this->nullableString($row['line_basic_id'] ?? null);
+        if ($lineBasicId === null || !preg_match('/^@[A-Za-z0-9._-]{1,32}$/D', $lineBasicId)) {
+            return ['line_basic_id' => null, 'line_add_friend_url' => null];
+        }
+
+        return [
+            'line_basic_id' => $lineBasicId,
+            'line_add_friend_url' => 'https://line.me/R/ti/p/' . $lineBasicId,
         ];
     }
 
@@ -189,6 +219,13 @@ final class SystemSettingsService
             }
             if (array_key_exists('payment_receiver_account_tail', $input)) {
                 $settings['payment_receiver_account_tail'] = $this->receiverAccountTail($input['payment_receiver_account_tail']);
+            }
+            if (array_key_exists('line_basic_id', $input)) {
+                $basicId = $this->optionalText($input['line_basic_id'], 'line_basic_id', 33);
+                if ($basicId !== null && !preg_match('/^@[A-Za-z0-9._-]{1,32}$/D', $basicId)) {
+                    throw $this->validation('line_basic_id', 'LINE Basic ID must start with @ and contain only supported characters');
+                }
+                $settings['line_basic_id'] = $basicId;
             }
             if (array_key_exists('line_max_attempts', $input)) {
                 $settings['line_max_attempts'] = $this->boundedInteger($input['line_max_attempts'], 'line_max_attempts', 1, 20);
@@ -225,15 +262,16 @@ final class SystemSettingsService
 
             $upsert = $pdo->prepare(
                 'INSERT INTO integration_settings
-                 (id,promptpay_target,promptpay_name,payment_receiver_account_tail,
+                 (id,promptpay_target,promptpay_name,payment_receiver_account_tail,line_basic_id,
                   line_channel_access_token_enc,line_channel_secret_enc,line_max_attempts,notification_batch_size,
                   slip_provider,slipok_api_key_enc,slipok_branch_id,easyslip_api_key_enc,
                   slip_max_bytes,slip_time_tolerance_seconds,updated_by,updated_at)
-                 VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP(6))
+                 VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP(6))
                  ON DUPLICATE KEY UPDATE
                   promptpay_target=VALUES(promptpay_target),
                   promptpay_name=VALUES(promptpay_name),
                   payment_receiver_account_tail=VALUES(payment_receiver_account_tail),
+                  line_basic_id=VALUES(line_basic_id),
                   line_channel_access_token_enc=VALUES(line_channel_access_token_enc),
                   line_channel_secret_enc=VALUES(line_channel_secret_enc),
                   line_max_attempts=VALUES(line_max_attempts),
@@ -251,6 +289,7 @@ final class SystemSettingsService
                 $settings['promptpay_target'],
                 $settings['promptpay_name'],
                 $settings['payment_receiver_account_tail'],
+                $settings['line_basic_id'],
                 $settings['line_channel_access_token_enc'],
                 $settings['line_channel_secret_enc'],
                 $settings['line_max_attempts'],
@@ -456,24 +495,24 @@ final class SystemSettingsService
         ]);
         $executed = curl_exec($ch);
         $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-        $networkError = curl_error($ch);
+        $networkErrorCode = curl_errno($ch);
         curl_close($ch);
         if ($tooLarge) {
-            throw new HttpException(502, 'LINE returned an oversized response', 'LINE_TEST_FAILED');
+            throw new HttpException(502, 'LINE ส่งข้อมูลตอบกลับใหญ่เกินกำหนด', 'LINE_TEST_FAILED');
         }
         if ($executed === false) {
-            throw new HttpException(502, 'Cannot connect to LINE: ' . substr($networkError, 0, 160), 'LINE_TEST_FAILED');
+            throw new HttpException(502, $this->curlFailureMessage($networkErrorCode, 'LINE'), 'LINE_TEST_FAILED');
         }
         if ($status !== 200) {
-            throw new HttpException(422, 'LINE rejected the configured token (HTTP ' . $status . ')', 'LINE_TEST_FAILED');
+            throw new HttpException(422, 'LINE ปฏิเสธ Channel access token ที่บันทึกไว้ (HTTP ' . $status . ')', 'LINE_TEST_FAILED');
         }
         try {
             $decoded = json_decode($response, true, 16, JSON_THROW_ON_ERROR);
         } catch (\Throwable) {
-            throw new HttpException(502, 'LINE returned malformed JSON', 'LINE_TEST_FAILED');
+            throw new HttpException(502, 'LINE ส่งข้อมูลตอบกลับที่อ่านไม่ได้', 'LINE_TEST_FAILED');
         }
         if (!is_array($decoded)) {
-            throw new HttpException(502, 'LINE returned an invalid response', 'LINE_TEST_FAILED');
+            throw new HttpException(502, 'LINE ส่งข้อมูลตอบกลับไม่ถูกต้อง', 'LINE_TEST_FAILED');
         }
         return [
             'integration' => 'line',
@@ -498,12 +537,26 @@ final class SystemSettingsService
                 if(strlen($response)+strlen($chunk)>65_536){$tooLarge=true;return 0;}$response.=$chunk;return strlen($chunk);
             },
         ]);
-        $executed=curl_exec($ch);$status=(int)curl_getinfo($ch,CURLINFO_RESPONSE_CODE);$networkError=curl_error($ch);curl_close($ch);
+        $executed=curl_exec($ch);$status=(int)curl_getinfo($ch,CURLINFO_RESPONSE_CODE);$networkErrorCode=curl_errno($ch);curl_close($ch);
         if($tooLarge)throw new HttpException(502,'ผู้ให้บริการส่งข้อมูลตอบกลับใหญ่เกินกำหนด',$errorCode);
-        if($executed===false)throw new HttpException(502,'ติดต่อผู้ให้บริการไม่ได้: '.substr($networkError,0,160),$errorCode);
+        if($executed===false)throw new HttpException(502,$this->curlFailureMessage($networkErrorCode,'ผู้ให้บริการตรวจสลิป'),$errorCode);
         try{$decoded=json_decode($response,true,24,JSON_THROW_ON_ERROR);}catch(\Throwable){throw new HttpException(502,'ผู้ให้บริการส่ง JSON ไม่ถูกต้อง',$errorCode);}
         if(!is_array($decoded))throw new HttpException(502,'ผู้ให้บริการส่งข้อมูลตอบกลับไม่ถูกต้อง',$errorCode);
         return ['status'=>$status,'body'=>$decoded];
+    }
+
+    private function curlFailureMessage(int $errorCode,string $service): string
+    {
+        if($errorCode===CURLE_OPERATION_TIMEDOUT){
+            return 'การเชื่อมต่อ '.$service.' หมดเวลา กรุณาลองใหม่';
+        }
+        if(in_array($errorCode,[CURLE_COULDNT_RESOLVE_HOST,CURLE_COULDNT_CONNECT],true)){
+            return 'เชื่อมต่อ '.$service.' ไม่สำเร็จ กรุณาตรวจเครือข่ายของเซิร์ฟเวอร์';
+        }
+        if(in_array($errorCode,[CURLE_SSL_CACERT,CURLE_SSL_CACERT_BADFILE,CURLE_SSL_CERTPROBLEM],true)){
+            return 'ตรวจสอบใบรับรอง TLS ของ '.$service.' ไม่สำเร็จ กรุณาตรวจ CA certificate ของเซิร์ฟเวอร์';
+        }
+        return 'ติดต่อ '.$service.' ไม่สำเร็จชั่วคราว กรุณาลองใหม่';
     }
 
     /** @return array<string,mixed>|null */
@@ -521,6 +574,7 @@ final class SystemSettingsService
             'promptpay_target' => null,
             'promptpay_name' => null,
             'payment_receiver_account_tail' => null,
+            'line_basic_id' => null,
             'line_channel_access_token_enc' => null,
             'line_channel_secret_enc' => null,
             'line_max_attempts' => self::INTEGER_DEFAULTS['line_max_attempts'],

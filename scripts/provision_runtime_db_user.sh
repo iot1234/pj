@@ -25,6 +25,61 @@ done
 
 command -v mysql >/dev/null 2>&1 || fail 'The mysql client is required'
 
+mysql_tls_args=()
+mysql_tls_enabled=false
+configure_mysql_tls() {
+    local db_ssl_value="${DB_SSL-false}"
+    case "${db_ssl_value,,}" in
+        1|true|yes|on)
+            ;;
+        0|false|no|off)
+            return
+            ;;
+        *)
+            fail 'DB_SSL must be a boolean (true/false, yes/no, on/off, or 1/0)'
+            ;;
+    esac
+
+    mysql_tls_enabled=true
+    [[ -n "${DB_SSL_CA:-}" \
+        && "$DB_SSL_CA" == /* \
+        && "$DB_SSL_CA" != *$'\n'* \
+        && "$DB_SSL_CA" != *$'\r'* \
+        && -f "$DB_SSL_CA" \
+        && -r "$DB_SSL_CA" ]] \
+        || fail 'DB_SSL_CA must be an absolute path to a readable CA file when DB_SSL is enabled'
+
+    local mysql_help
+    if ! mysql_help="$(mysql --no-defaults --help 2>&1)"; then
+        fail 'Could not inspect mysql CLI TLS capabilities'
+    fi
+    [[ "$mysql_help" == *"--ssl-ca"* ]] \
+        || fail 'The mysql client does not support a configured CA file; refusing to connect without identity verification'
+
+    if [[ "$mysql_help" == *"--ssl-mode"* ]]; then
+        mysql_tls_args+=(
+            --ssl-mode=VERIFY_IDENTITY
+            "--ssl-ca=${DB_SSL_CA}"
+        )
+    elif [[ "$mysql_help" == *"--ssl-verify-server-cert"* ]]; then
+        mysql_tls_args+=(
+            --ssl
+            "--ssl-ca=${DB_SSL_CA}"
+            --ssl-verify-server-cert
+        )
+    else
+        fail 'The mysql client cannot verify the database server identity; refusing to connect'
+    fi
+}
+configure_mysql_tls
+
+runtime_account_tls_clause=''
+if [[ "$mysql_tls_enabled" == true ]]; then
+    # MySQL 8 CREATE USER grammar places REQUIRE after authentication options
+    # and before password-expiry and account-lock options.
+    runtime_account_tls_clause='REQUIRE SSL'
+fi
+
 [[ "$DB_DBA_HOST" =~ ^[A-Za-z0-9._:-]{1,253}$ ]] \
     || fail 'DB_DBA_HOST contains unsupported characters'
 [[ "$DB_HOST" =~ ^[A-Za-z0-9._:-]{1,253}$ ]] \
@@ -71,6 +126,7 @@ dba_args=(
     --skip-column-names
     --raw
 )
+dba_args+=("${mysql_tls_args[@]}")
 
 dba_query() {
     MYSQL_PWD="$DB_DBA_PASSWORD" mysql "${dba_args[@]}" --execute="$1"
@@ -179,6 +235,7 @@ DEALLOCATE PREPARE provision_guard;
 DROP USER IF EXISTS '${DB_USERNAME}'@'%';
 CREATE USER '${DB_USERNAME}'@'%'
     IDENTIFIED BY '${DB_PASSWORD}'
+    ${runtime_account_tls_clause}
     PASSWORD EXPIRE NEVER
     ACCOUNT UNLOCK;
 GRANT SELECT, INSERT, UPDATE ON \`${grant_database}\`.* TO '${DB_USERNAME}'@'%';
@@ -201,6 +258,7 @@ runtime_args=(
     --skip-column-names
     --raw
 )
+runtime_args+=("${mysql_tls_args[@]}")
 
 runtime_query() {
     MYSQL_PWD="$DB_PASSWORD" mysql "${runtime_args[@]}" --execute="$1"
@@ -263,7 +321,7 @@ if ! readiness="$(runtime_query "
     fail 'The runtime account could not read the required application schema'
 fi
 readiness="${readiness%$'\r'}"
-[[ "$readiness" == '14|1|1' ]] \
+[[ "$readiness" == '16|1|1' ]] \
     || fail 'The application schema or required defaults are incomplete'
 
 printf '%s\n' 'Runtime database account provisioned and verified'

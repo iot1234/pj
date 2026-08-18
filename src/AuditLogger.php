@@ -63,7 +63,7 @@ final class AuditLogger
 
     private function redact(mixed $value, string $key = ''): mixed
     {
-        if (preg_match('/password|pin|token|secret|authorization|slip/i', $key)) {
+        if (preg_match('/password|pin|token|secret|credential|activation.?code|access.?key|authorization|slip/i', $key)) {
             return '[REDACTED]';
         }
         if (is_array($value)) {

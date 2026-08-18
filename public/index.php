@@ -17,12 +17,12 @@ try{
     $path=(string)(parse_url((string)($_SERVER['REQUEST_URI']??'/'),PHP_URL_PATH)?:'/');
     $response=str_starts_with($path,'/api/')
         ?Response::error($error->getMessage(),$error->status,$error->errorCode,$error->details)
-        :Response::html('<h1>'.e($error->status).'</h1><p>'.e($error->getMessage()).'</p>',$error->status);
+        :Response::htmlError($error->status,$error->status>=500?$requestId:null);
 }catch(Throwable $error){
     error_log(sprintf('[%s] %s: %s',$requestId,$error::class,$error->getMessage()));
     $path=(string)(parse_url((string)($_SERVER['REQUEST_URI']??'/'),PHP_URL_PATH)?:'/');
     $response=str_starts_with($path,'/api/')
         ?Response::error('Internal server error',500,'INTERNAL_ERROR',['request_id'=>$requestId])
-        :Response::html('<h1>500</h1><p>Internal server error</p>',500);
+        :Response::htmlError(500,$requestId);
 }
 $response->send($app->security()->headers($requestId));

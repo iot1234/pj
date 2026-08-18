@@ -11,31 +11,9 @@ use PDO;
 final class NotificationService
 {
     private const LINE_ENDPOINT = 'https://api.line.me/v2/bot/message/push';
+    private const CLAIM_LEASE_SECONDS = 120;
 
     public function __construct(private readonly Application $app) {}
-
-    public function sendLineLinkCode(string $lineUserId,string $code): void
-    {
-        if(!$this->validLineUserId($lineUserId)||preg_match('/^\d{6}$/D',$code)!==1){
-            throw new HttpException(422,'Invalid LINE link request','VALIDATION_ERROR');
-        }
-        if(trim((string)$this->app->settings()->value('line_channel_access_token',''))===''){
-            throw new HttpException(503,'ยังไม่ได้ตั้งค่า LINE Messaging','LINE_NOT_CONFIGURED');
-        }
-        $payload=[
-            'to'=>$lineUserId,
-            'messages'=>[['type'=>'text','text'=>"รหัสยืนยันการรับบิล: {$code}\nรหัสหมดอายุใน 10 นาที หากคุณไม่ได้ร้องขอ ไม่ต้องดำเนินการใด ๆ"]],
-        ];
-        $body=json_encode($payload,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR);
-        try{
-            $this->pushLine($body,$this->randomUuid());
-        }catch(LineDeliveryException $error){
-            if($error->retryable){
-                throw new HttpException(503,'ไม่สามารถเชื่อมต่อ LINE ได้ชั่วคราว กรุณาลองใหม่','LINE_DELIVERY_TEMPORARY');
-            }
-            throw new HttpException(502,'LINE ปฏิเสธการส่งข้อความ กรุณาตรวจสอบ LINE User ID และการตั้งค่า Messaging API','LINE_DELIVERY_REJECTED');
-        }
-    }
 
     /** @return array<string,mixed> */
     public function enqueueBill(int $billId): array
@@ -49,6 +27,19 @@ final class NotificationService
             $statement->execute([$billId]);
             $bill=$statement->fetch();
             if(!$bill)throw new HttpException(404,'ไม่พบบิล','BILL_NOT_FOUND');
+            // Keep the lock order aligned with PaymentService: bill first,
+            // then the latest payment. A current locking read prevents a
+            // manual or bulk API call from queuing a duplicate reminder while
+            // a slip is pending or has already been verified.
+            $latestPayment=$pdo->prepare('SELECT status FROM payments WHERE bill_id=? ORDER BY id DESC LIMIT 1 FOR UPDATE');
+            $latestPayment->execute([$billId]);
+            $paymentStatus=$latestPayment->fetchColumn();
+            if($paymentStatus==='pending'){
+                throw new HttpException(409,'บิลนี้มีสลิปที่กำลังตรวจสอบ จึงไม่ส่งข้อความให้ชำระซ้ำ','BILL_PAYMENT_PENDING',['payment_status'=>$paymentStatus]);
+            }
+            if($paymentStatus==='verified'){
+                throw new HttpException(409,'สลิปของบิลนี้ผ่านการตรวจแล้ว จึงไม่ส่งข้อความให้ชำระซ้ำ','BILL_PAYMENT_VERIFIED',['payment_status'=>$paymentStatus]);
+            }
             if($bill['status']!=='pending'){
                 throw new HttpException(409,'บิลนี้ชำระแล้ว จึงไม่สามารถเข้าคิวแจ้งชำระได้','BILL_NOT_PENDING',['status'=>$bill['status']]);
             }
@@ -83,13 +74,15 @@ final class NotificationService
                         SET resident_id=?,recipient=?,payload=?,status='pending',attempts=0,last_error=NULL,
                             next_attempt_at=UTC_TIMESTAMP(),retry_key=?,sent_at=NULL,
                             line_request_id=NULL,line_accepted_request_id=NULL,
+                            claim_token=NULL,lease_until=NULL,
                             created_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP()
                         WHERE id=? AND status='failed'");
                     $update->execute([$bill['resident_id'],$bill['line_user_id'],$encoded,$this->randomUuid(),$outboxId]);
                     $enqueueState='requeued';
                 }elseif($existing['status']==='pending'&&(int)$existing['attempts']===0){
                     $update=$pdo->prepare("UPDATE notification_outbox
-                        SET resident_id=?,recipient=?,payload=?,retry_key=?,created_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP()
+                        SET resident_id=?,recipient=?,payload=?,retry_key=?,claim_token=NULL,lease_until=NULL,
+                            created_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP()
                         WHERE id=? AND status='pending' AND attempts=0");
                     $update->execute([$bill['resident_id'],$bill['line_user_id'],$encoded,$this->randomUuid(),$outboxId]);
                 }
@@ -124,82 +117,269 @@ final class NotificationService
         return ['period'=>substr($period,0,7),'queued'=>$queued,'already'=>$already,'skipped'=>$skipped];
     }
 
-    /** @return array{processed:int,sent:int,failed:int,retried:int} */
+    /** @return array{processed:int,sent:int,failed:int,retried:int,lost_claims:int,recovered:int} */
     public function process(int $limit=25): array
     {
         $limit=max(1,min(100,$limit));
-        $this->app->database()->pdo()->exec("UPDATE notification_outbox SET status='pending',next_attempt_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP() WHERE status='processing' AND updated_at < DATE_SUB(UTC_TIMESTAMP(),INTERVAL 10 MINUTE)");
-        $ids=$this->app->database()->transaction(function(PDO $pdo) use($limit): array {
-            $rows=$pdo->query("SELECT id FROM notification_outbox WHERE status='pending' AND next_attempt_at<=UTC_TIMESTAMP() ORDER BY id LIMIT {$limit} FOR UPDATE SKIP LOCKED")->fetchAll(PDO::FETCH_COLUMN);
-            if($rows!==[]){$marks=implode(',',array_fill(0,count($rows),'?'));$pdo->prepare("UPDATE notification_outbox SET status='processing',attempts=attempts+1,updated_at=UTC_TIMESTAMP() WHERE id IN ({$marks})")->execute($rows);}
-            return array_map('intval',$rows);
-        });
-        $result=['processed'=>0,'sent'=>0,'failed'=>0,'retried'=>0];$max=max(1,min(20,$this->app->settings()->intValue('line_max_attempts',5)));
-        foreach($ids as $id){
-            $get=$this->app->database()->pdo()->prepare("SELECT n.id,n.attempts,res.id AS resident_id
-                FROM notification_outbox n
-                JOIN bills b ON b.id=n.bill_id
-                JOIN residents res ON res.id=b.resident_id
-                WHERE n.id=? AND n.status='processing'");
-            $get->execute([$id]);
-            $row=$get->fetch();
+        $result=[
+            'processed'=>0,'sent'=>0,'failed'=>0,'retried'=>0,
+            'lost_claims'=>0,'recovered'=>$this->recoverExpiredClaims(),
+        ];
+        $max=max(1,min(20,$this->app->settings()->intValue('line_max_attempts',5)));
+        for($position=0;$position<$limit;$position++){
+            $row=$this->claimNext();
+            if($row===null)break;
+            $id=(int)$row['id'];$billId=(int)$row['bill_id'];$claimToken=(string)$row['claim_token'];
             $result['processed']++;
-            if(!$row){
-                $this->markTerminalFailure($id,'LINE delivery data is incomplete');
-                $result['failed']++;
+            if((int)$row['resident_id']<1){
+                if($this->markTerminalFailure($id,$claimToken,'LINE delivery data is incomplete'))$result['failed']++;
+                else $result['lost_claims']++;
                 continue;
             }
             try{
-                $delivery=$this->withLineBindingLock((int)$row['resident_id'],function()use($id):array{
-                    // Reload after acquiring the binding lock. Confirm/unlink
-                    // use the same lock, so a successful change cannot race a
-                    // later delivery to the old recipient.
-                    $get=$this->app->database()->pdo()->prepare("SELECT n.id,n.retry_key,n.attempts,n.recipient,n.payload,
-                            (n.created_at<=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 24 HOUR)) AS retry_generation_expired,
-                            b.status AS bill_status,res.id AS resident_id,res.line_user_id
-                        FROM notification_outbox n
-                        JOIN bills b ON b.id=n.bill_id
-                        JOIN residents res ON res.id=b.resident_id
-                        WHERE n.id=? AND n.status='processing'");
-                    $get->execute([$id]);$current=$get->fetch();
-                    if(!$current)return ['terminal'=>'LINE delivery data is incomplete'];
-                    if((int)$current['retry_generation_expired']===1)return ['terminal'=>'ยกเลิกการส่ง เนื่องจาก X-Line-Retry-Key มีอายุครบ 24 ชั่วโมง'];
-                    if($current['bill_status']!=='pending')return ['terminal'=>'ยกเลิกการส่ง เนื่องจากบิลชำระแล้ว'];
-                    $recipient=$current['recipient']??null;
-                    if(!$this->validLineUserId($recipient))return ['terminal'=>'ยกเลิกการส่ง เนื่องจากผู้รับที่บันทึกไว้ไม่ถูกต้อง'];
-                    $currentLineUserId=$current['line_user_id']??null;
-                    if(!$this->validLineUserId($currentLineUserId)||!hash_equals((string)$recipient,(string)$currentLineUserId)){
-                        return ['terminal'=>'ยกเลิกการส่ง เนื่องจากบัญชี LINE ที่ยืนยันแล้วไม่ตรงกับผู้รับเดิม'];
-                    }
-                    if(!$this->isLineBindingVerified((int)$current['resident_id'],(string)$recipient))return ['terminal'=>'ยกเลิกการส่ง เนื่องจากบัญชี LINE ยังไม่ผ่านการยืนยัน'];
-                    if(!$this->validRetryUuid($current['retry_key']??null))return ['terminal'=>'ยกเลิกการส่ง เนื่องจาก X-Line-Retry-Key ที่บันทึกไว้ไม่ถูกต้อง'];
-                    $body=$this->storedLinePayloadBody($current['payload']??null,(string)$recipient);
-                    $acceptance=$this->pushLine($body,(string)$current['retry_key']);
-                    $sent=$this->app->database()->pdo()->prepare("UPDATE notification_outbox SET status='sent',sent_at=UTC_TIMESTAMP(),last_error=NULL,line_request_id=?,line_accepted_request_id=?,updated_at=UTC_TIMESTAMP() WHERE id=? AND status='processing'");
-                    $sent->execute([$acceptance['request_id'],$acceptance['accepted_request_id'],$id]);
-                    return ['sent'=>$sent->rowCount()===1];
+                $delivery=$this->withLineBindingLock((int)$row['resident_id'],function()use($id,$billId,$claimToken):array{
+                    // Refresh only a still-live claim after the advisory binding
+                    // lock. A stale worker never reaches the provider.
+                    if(!$this->refreshClaim($id,$claimToken))return ['lost_claim'=>true];
+                    return $this->deliverClaimed($id,$billId,$claimToken);
                 });
                 if(is_string($delivery['terminal']??null)){
-                    $this->markTerminalFailure($id,$delivery['terminal']);$result['failed']++;
+                    if($this->markTerminalFailure($id,$claimToken,$delivery['terminal']))$result['failed']++;
+                    else $result['lost_claims']++;
                 }elseif(($delivery['sent']??false)===true)$result['sent']++;
+                else $result['lost_claims']++;
             }catch(LineDeliveryException $e){
-                $attempts=(int)$row['attempts'];$terminal=!$e->retryable||$attempts>=$max;$delay=min(3600,30*(2**min(6,max(0,$attempts-1))));
-                $message=substr(preg_replace('/[\x00-\x1F\x7F]+/u',' ',(string)$e->getMessage())??'LINE delivery failed',0,1000);
-                $sql=$terminal?"UPDATE notification_outbox SET status='failed',last_error=?,next_attempt_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP() WHERE id=? AND status='processing'":"UPDATE notification_outbox SET status='pending',last_error=?,next_attempt_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL {$delay} SECOND),updated_at=UTC_TIMESTAMP() WHERE id=? AND status='processing'";
-                $this->app->database()->pdo()->prepare($sql)->execute([$message,$id]);
-                $terminal?$result['failed']++:$result['retried']++;
+                $outcome=$this->settleClaimFailure($id,$claimToken,(int)$row['attempts'],$max,$e->getMessage(),$e->retryable);
+                $result[$outcome==='lost_claim'?'lost_claims':$outcome]++;
             }catch(\Throwable $e){
-                // Database/lock failures are transient infrastructure errors. If
-                // the push was accepted before the failure, the immutable retry
-                // key makes the next attempt idempotent (LINE returns HTTP 409).
-                $attempts=(int)$row['attempts'];$terminal=$attempts>=$max;$delay=min(3600,30*(2**min(6,max(0,$attempts-1))));
-                $message=substr(preg_replace('/[\x00-\x1F\x7F]+/u',' ',(string)$e->getMessage())??'LINE delivery failed',0,1000);
-                $sql=$terminal?"UPDATE notification_outbox SET status='failed',last_error=?,next_attempt_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP() WHERE id=? AND status='processing'":"UPDATE notification_outbox SET status='pending',last_error=?,next_attempt_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL {$delay} SECOND),updated_at=UTC_TIMESTAMP() WHERE id=? AND status='processing'";
-                $this->app->database()->pdo()->prepare($sql)->execute([$message,$id]);
-                $terminal?$result['failed']++:$result['retried']++;
+                // A provider acceptance followed by a DB error remains safe:
+                // the immutable retry key makes the next attempt return 409.
+                $outcome=$this->settleClaimFailure($id,$claimToken,(int)$row['attempts'],$max,$e->getMessage(),true);
+                $result[$outcome==='lost_claim'?'lost_claims':$outcome]++;
             }
         }
         return $result;
+    }
+
+    private function recoverExpiredClaims(): int
+    {
+        $statement=$this->app->database()->pdo()->prepare("UPDATE notification_outbox
+            SET status='pending',next_attempt_at=UTC_TIMESTAMP(6),
+                claim_token=NULL,lease_until=NULL,updated_at=UTC_TIMESTAMP(6)
+            WHERE status='processing'
+              AND (claim_token IS NULL OR lease_until IS NULL OR lease_until<=UTC_TIMESTAMP(6))");
+        $statement->execute();
+        return $statement->rowCount();
+    }
+
+    /** @return array{id:int,bill_id:int,resident_id:int,attempts:int,claim_token:string}|null */
+    private function claimNext(): ?array
+    {
+        return $this->app->database()->transaction(function(PDO $pdo): ?array {
+            $candidate=$pdo->query("SELECT id FROM notification_outbox
+                WHERE status='pending' AND next_attempt_at<=UTC_TIMESTAMP(6)
+                ORDER BY next_attempt_at,id LIMIT 1 FOR UPDATE SKIP LOCKED")->fetchColumn();
+            if($candidate===false)return null;
+            $id=(int)$candidate;$token=bin2hex(random_bytes(32));
+            $claim=$pdo->prepare("UPDATE notification_outbox
+                SET status='processing',attempts=attempts+1,claim_token=?,
+                    lease_until=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL ".self::CLAIM_LEASE_SECONDS." SECOND),
+                    updated_at=UTC_TIMESTAMP(6)
+                WHERE id=? AND status='pending' AND next_attempt_at<=UTC_TIMESTAMP(6)");
+            $claim->execute([$token,$id]);
+            if($claim->rowCount()!==1)throw new \RuntimeException('Notification claim changed while locked');
+            $get=$pdo->prepare("SELECT id,bill_id,resident_id,attempts,claim_token
+                FROM notification_outbox
+                WHERE id=? AND status='processing' AND claim_token=?");
+            $get->execute([$id,$token]);$row=$get->fetch();
+            if(!$row)throw new \RuntimeException('Cannot reload claimed notification');
+            return [
+                'id'=>(int)$row['id'],'bill_id'=>(int)$row['bill_id'],'resident_id'=>(int)$row['resident_id'],
+                'attempts'=>(int)$row['attempts'],'claim_token'=>(string)$row['claim_token'],
+            ];
+        });
+    }
+
+    /** @return array{sent?:true,terminal?:string,lost_claim?:true} */
+    private function deliverClaimed(int $id,int $billId,string $claimToken): array
+    {
+        return $this->app->database()->transaction(function(PDO $pdo)use($id,$billId,$claimToken):array{
+            // PaymentService always locks a bill before its payment row. Keep
+            // that global order here, then lock the outbox claim last. Holding
+            // the bill lock through provider acceptance makes a concurrent
+            // slip reservation wait instead of creating a pending payment
+            // between this final check and the LINE push.
+            $billLock=$pdo->prepare('SELECT id,status,resident_id FROM bills WHERE id=? FOR UPDATE');
+            $billLock->execute([$billId]);$bill=$billLock->fetch();
+            if(!$bill)return ['terminal'=>'LINE delivery cancelled: bill no longer exists'];
+
+            $latestPaymentLock=$pdo->prepare('SELECT status FROM payments WHERE bill_id=? ORDER BY id DESC LIMIT 1 FOR UPDATE');
+            $latestPaymentLock->execute([$billId]);
+            $paymentStatus=$latestPaymentLock->fetchColumn();
+
+            $claimLock=$pdo->prepare("SELECT id,resident_id,retry_key,attempts,recipient,payload,
+                    (created_at<=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 24 HOUR)) AS retry_generation_expired
+                FROM notification_outbox
+                WHERE id=? AND bill_id=? AND status='processing' AND claim_token=?
+                  AND lease_until>UTC_TIMESTAMP(6)
+                FOR UPDATE");
+            $claimLock->execute([$id,$billId,$claimToken]);$current=$claimLock->fetch();
+            if(!$current)return ['lost_claim'=>true];
+            if((int)$current['retry_generation_expired']===1)return ['terminal'=>'LINE retry generation expired'];
+            if($bill['status']!=='pending')return ['terminal'=>'Bill is no longer pending'];
+            if($paymentStatus==='pending')return ['terminal'=>'LINE delivery cancelled: payment slip is pending review'];
+            if($paymentStatus==='verified')return ['terminal'=>'LINE delivery cancelled: payment slip is already verified'];
+            if((int)$current['resident_id']!==(int)$bill['resident_id'])return ['terminal'=>'LINE delivery data is incomplete'];
+
+            $resident=$pdo->prepare('SELECT line_user_id FROM residents WHERE id=?');
+            $resident->execute([$bill['resident_id']]);$currentLineUserId=$resident->fetchColumn();
+            $recipient=$current['recipient']??null;
+            if(!$this->validLineUserId($recipient))return ['terminal'=>'Stored LINE recipient is invalid'];
+            if(!$this->validLineUserId($currentLineUserId)||!hash_equals((string)$recipient,(string)$currentLineUserId)){
+                return ['terminal'=>'Verified LINE recipient changed'];
+            }
+            if(!$this->isLineBindingVerified((int)$bill['resident_id'],(string)$recipient))return ['terminal'=>'LINE binding is no longer verified'];
+            if(!$this->validRetryUuid($current['retry_key']??null))return ['terminal'=>'Stored LINE retry key is invalid'];
+            $body=$this->storedLinePayloadBody($current['payload']??null,(string)$recipient);
+            $acceptance=$this->pushLine($body,(string)$current['retry_key']);
+            $sent=$pdo->prepare("UPDATE notification_outbox
+                SET status='sent',sent_at=UTC_TIMESTAMP(6),last_error=NULL,
+                    line_request_id=?,line_accepted_request_id=?,
+                    claim_token=NULL,lease_until=NULL,updated_at=UTC_TIMESTAMP(6)
+                WHERE id=? AND status='processing' AND claim_token=?");
+            $sent->execute([$acceptance['request_id'],$acceptance['accepted_request_id'],$id,$claimToken]);
+            return $sent->rowCount()===1?['sent'=>true]:['lost_claim'=>true];
+        });
+    }
+
+    private function refreshClaim(int $id,string $claimToken): bool
+    {
+        $statement=$this->app->database()->pdo()->prepare("UPDATE notification_outbox
+            SET lease_until=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL ".self::CLAIM_LEASE_SECONDS." SECOND),
+                updated_at=UTC_TIMESTAMP(6)
+            WHERE id=? AND status='processing' AND claim_token=?
+              AND lease_until>UTC_TIMESTAMP(6)");
+        $statement->execute([$id,$claimToken]);
+        return $statement->rowCount()===1;
+    }
+
+    /** @return 'failed'|'retried'|'lost_claim' */
+    private function settleClaimFailure(int $id,string $claimToken,int $attempts,int $max,string $message,bool $retryable): string
+    {
+        $terminal=!$retryable||$attempts>=$max;
+        $delay=min(3600,30*(2**min(6,max(0,$attempts-1))));
+        $safe=$this->safeWorkerMessage($message,'LINE delivery failed');
+        $sql=$terminal
+            ?"UPDATE notification_outbox
+                SET status='failed',last_error=?,next_attempt_at=UTC_TIMESTAMP(6),
+                    claim_token=NULL,lease_until=NULL,updated_at=UTC_TIMESTAMP(6)
+                WHERE id=? AND status='processing' AND claim_token=?"
+            :"UPDATE notification_outbox
+                SET status='pending',last_error=?,
+                    next_attempt_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL {$delay} SECOND),
+                    claim_token=NULL,lease_until=NULL,updated_at=UTC_TIMESTAMP(6)
+                WHERE id=? AND status='processing' AND claim_token=?";
+        $statement=$this->app->database()->pdo()->prepare($sql);
+        $statement->execute([$safe,$id,$claimToken]);
+        if($statement->rowCount()!==1)return 'lost_claim';
+        return $terminal?'failed':'retried';
+    }
+
+    /**
+     * Record liveness without storing the platform's raw replica identifier.
+     * @param array<string,int>|null $cycle
+     */
+    public function recordWorkerHeartbeat(string $instanceIdentity,string $status='running',?array $cycle=null,?string $error=null): void
+    {
+        $instanceIdentity=trim($instanceIdentity);
+        if($instanceIdentity===''||strlen($instanceIdentity)>512)throw new \InvalidArgumentException('Invalid notification worker identity');
+        if(!in_array($status,['starting','running','error','stopped'],true))throw new \InvalidArgumentException('Invalid notification worker status');
+        $workerId=hash_hmac('sha256',"notification-worker\0".$instanceIdentity,$this->app->config->appKey());
+        $safeError=$error!==null?$this->safeWorkerMessage($error,'Notification worker failed'):null;
+        if($cycle===null){
+            $statement=$this->app->database()->pdo()->prepare("INSERT INTO notification_worker_heartbeats
+                (worker_id,status,started_at,heartbeat_at,last_error,created_at,updated_at)
+                VALUES (?,?,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),?,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))
+                ON DUPLICATE KEY UPDATE
+                    started_at=IF(VALUES(status)='starting',VALUES(started_at),started_at),
+                    status=VALUES(status),heartbeat_at=VALUES(heartbeat_at),
+                    last_error=VALUES(last_error),updated_at=UTC_TIMESTAMP(6)");
+            $statement->execute([$workerId,$status,$safeError]);
+            return;
+        }
+        $counts=[];
+        foreach(['processed','sent','failed','retried','lost_claims','recovered']as$field){
+            $value=$cycle[$field]??0;
+            if(!is_int($value)||$value<0||$value>1000000)throw new \InvalidArgumentException('Invalid notification worker cycle counters');
+            $counts[]=$value;
+        }
+        $statement=$this->app->database()->pdo()->prepare("INSERT INTO notification_worker_heartbeats
+            (worker_id,status,started_at,heartbeat_at,last_cycle_at,
+             last_processed,last_sent,last_failed,last_retried,last_lost_claims,last_recovered,
+             last_error,created_at,updated_at)
+            VALUES (?,?,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),?,?,?,?,?,?,?,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))
+            ON DUPLICATE KEY UPDATE
+                started_at=IF(VALUES(status)='starting',VALUES(started_at),started_at),
+                status=VALUES(status),heartbeat_at=VALUES(heartbeat_at),
+                last_cycle_at=VALUES(last_cycle_at),last_processed=VALUES(last_processed),
+                last_sent=VALUES(last_sent),last_failed=VALUES(last_failed),
+                last_retried=VALUES(last_retried),last_lost_claims=VALUES(last_lost_claims),
+                last_recovered=VALUES(last_recovered),last_error=VALUES(last_error),
+                updated_at=UTC_TIMESTAMP(6)");
+        $statement->execute([$workerId,$status,...$counts,$safeError]);
+    }
+
+    /** @return array<string,mixed> */
+    public function workerHealth(int $heartbeatMaxAgeSeconds=600,int $queueMaxLagSeconds=900): array
+    {
+        $heartbeatMaxAgeSeconds=max(30,min(3600,$heartbeatMaxAgeSeconds));
+        $queueMaxLagSeconds=max(30,min(86400,$queueMaxLagSeconds));
+        $worker=$this->app->database()->pdo()->query("SELECT status,
+                GREATEST(0,TIMESTAMPDIFF(SECOND,heartbeat_at,UTC_TIMESTAMP(6))) AS heartbeat_age_seconds,
+                last_cycle_at,last_processed,last_sent,last_failed,last_retried,last_lost_claims,last_recovered
+            FROM notification_worker_heartbeats ORDER BY heartbeat_at DESC LIMIT 1")->fetch();
+        $queue=$this->app->database()->pdo()->query("SELECT COUNT(*) AS total,
+                COALESCE(SUM(n.status='pending'),0) AS pending,
+                COALESCE(SUM(n.status='processing'),0) AS processing,
+                COALESCE(SUM(n.status='failed' AND b.status='pending'),0) AS failed,
+                COALESCE(SUM(n.status='processing' AND (n.lease_until IS NULL OR n.lease_until<=UTC_TIMESTAMP(6))),0) AS stale_claims,
+                COALESCE(MAX(CASE WHEN n.status='pending' AND n.next_attempt_at<=UTC_TIMESTAMP(6)
+                    THEN GREATEST(0,TIMESTAMPDIFF(SECOND,n.next_attempt_at,UTC_TIMESTAMP(6)))
+                    ELSE NULL END),0) AS oldest_due_lag_seconds
+            FROM notification_outbox n
+            JOIN bills b ON b.id=n.bill_id")->fetch();
+        if(!$queue)throw new \RuntimeException('Cannot read notification queue health');
+        $heartbeatAge=$worker!==false?(int)$worker['heartbeat_age_seconds']:null;
+        $workerLive=$worker!==false&&in_array($worker['status'],['starting','running'],true)
+            &&$heartbeatAge!==null&&$heartbeatAge<=$heartbeatMaxAgeSeconds;
+        $queueLag=(int)$queue['oldest_due_lag_seconds'];$staleClaims=(int)$queue['stale_claims'];
+        $attention=$staleClaims>0||(int)$queue['failed']>0||(int)($worker['last_lost_claims']??0)>0;
+        $healthy=$workerLive&&$queueLag<=$queueMaxLagSeconds&&$staleClaims===0;
+        return [
+            'status'=>$healthy?($attention?'degraded':'ok'):'unhealthy',
+            'worker_live'=>$workerLive,
+            'worker_status'=>$worker!==false?(string)$worker['status']:'missing',
+            'heartbeat_age_seconds'=>$heartbeatAge,
+            'last_cycle_at'=>$worker!==false?$worker['last_cycle_at']:null,
+            'last_processed'=>$worker!==false?(int)$worker['last_processed']:0,
+            'last_sent'=>$worker!==false?(int)$worker['last_sent']:0,
+            'last_failed'=>$worker!==false?(int)$worker['last_failed']:0,
+            'last_retried'=>$worker!==false?(int)$worker['last_retried']:0,
+            'last_lost_claims'=>$worker!==false?(int)$worker['last_lost_claims']:0,
+            'last_recovered'=>$worker!==false?(int)$worker['last_recovered']:0,
+            'queue'=>[
+                'total'=>(int)$queue['total'],'pending'=>(int)$queue['pending'],
+                'processing'=>(int)$queue['processing'],'failed'=>(int)$queue['failed'],
+                'stale_claims'=>$staleClaims,'oldest_due_lag_seconds'=>$queueLag,
+            ],
+            'attention_required'=>$attention,
+        ];
+    }
+
+    private function safeWorkerMessage(string $message,string $fallback): string
+    {
+        $safe=trim(preg_replace('/[\x00-\x1F\x7F]+/u',' ',$message)??$fallback);
+        return substr($safe!==''?$safe:$fallback,0,1000);
     }
 
     /** @param array<string,mixed> $bill @return array<string,mixed> */
@@ -290,13 +470,15 @@ final class NotificationService
         }
     }
 
-    private function markTerminalFailure(int $id,string $message): void
+    private function markTerminalFailure(int $id,string $claimToken,string $message): bool
     {
-        $safe=substr(preg_replace('/[\x00-\x1F\x7F]+/u',' ',$message)??'LINE delivery cancelled',0,1000);
+        $safe=$this->safeWorkerMessage($message,'LINE delivery cancelled');
         $statement=$this->app->database()->pdo()->prepare("UPDATE notification_outbox
-            SET status='failed',last_error=?,next_attempt_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP()
-            WHERE id=? AND status='processing'");
-        $statement->execute([$safe,$id]);
+            SET status='failed',last_error=?,next_attempt_at=UTC_TIMESTAMP(6),
+                claim_token=NULL,lease_until=NULL,updated_at=UTC_TIMESTAMP(6)
+            WHERE id=? AND status='processing' AND claim_token=?");
+        $statement->execute([$safe,$id,$claimToken]);
+        return $statement->rowCount()===1;
     }
 
     private function storedLinePayloadBody(mixed $stored,string $recipient): string
@@ -336,8 +518,38 @@ final class NotificationService
         $executed=curl_exec($ch);$status=(int)curl_getinfo($ch,CURLINFO_RESPONSE_CODE);$curlError=(int)curl_errno($ch);curl_close($ch);
         if($tooLarge)throw new LineDeliveryException('LINE response exceeded the size limit',false,$status>0?$status:null);
         if($executed===false)throw new LineDeliveryException('LINE network request failed (cURL '.$curlError.')',true,$status>0?$status:null);
-        // LINE returns 409 when the same retry UUID was already accepted. Treat it as delivered.
-        if(($status>=200&&$status<300)||$status===409)return ['request_id'=>$providerHeaders['x-line-request-id']??null,'accepted_request_id'=>$providerHeaders['x-line-accepted-request-id']??null,'status'=>$status];
+        if($status>=200&&$status<300){
+            return [
+                'request_id'=>$providerHeaders['x-line-request-id']??null,
+                'accepted_request_id'=>$providerHeaders['x-line-accepted-request-id']??null,
+                'status'=>$status,
+            ];
+        }
+        // A retry-key collision proves prior acceptance only when LINE returns
+        // the accepted request identifier. Never turn an unproven conflict
+        // into a successful notification.
+        if($status===409){
+            $accepted=$providerHeaders['x-line-accepted-request-id']??null;
+            if(is_string($accepted)&&$accepted!==''){
+                return [
+                    'request_id'=>$providerHeaders['x-line-request-id']??null,
+                    'accepted_request_id'=>$accepted,
+                    'status'=>$status,
+                ];
+            }
+            throw new LineDeliveryException(
+                'LINE retry conflict did not include an accepted request ID',
+                false,
+                $status
+            );
+        }
+        if(in_array($status,[408,429],true)){
+            throw new LineDeliveryException(
+                'LINE API temporarily rejected the request (HTTP '.$status.')',
+                true,
+                $status
+            );
+        }
         if($status>=500&&$status<=599)throw new LineDeliveryException('LINE API is temporarily unavailable (HTTP '.$status.')',true,$status);
         throw new LineDeliveryException('LINE API rejected the request (HTTP '.$status.')',false,$status);
     }

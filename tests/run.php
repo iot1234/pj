@@ -14,9 +14,14 @@ use Dormitory\Config;
 use Dormitory\Database;
 use Dormitory\Http\HttpException;
 use Dormitory\Http\Request;
+use Dormitory\Http\Response;
+use Dormitory\Http\Router;
+use Dormitory\Http\Routes;
 use Dormitory\Integration\SlipVerifier;
 use Dormitory\Security\Password;
+use Dormitory\Security\ResidentAccessCredential;
 use Dormitory\Security\SecretCipher;
+use Dormitory\Support\MySqlError;
 use Dormitory\Support\SchemaGuard;
 use Dormitory\Support\Validator;
 
@@ -166,7 +171,9 @@ $test('service string inputs reject composite JSON values before casting',functi
     $same(5,$boundedInteger->invoke($app->settings(),'5','line_max_attempts',1,20));
     $today=(new DateTimeImmutable('today',new DateTimeZone((string)$app->config->get('APP_TIMEZONE','Asia/Bangkok'))))->format('Y-m-d');
     $assertValidation(fn()=>$app->bookings()->createAdminResident(1,[
-        'room_id'=>1,'full_name'=>'Composite Input','phone'=>'0812345678','move_in_date'=>$today,'idempotency_key'=>[],
+        'room_id'=>1,'full_name'=>'Composite Input','phone'=>'0812345678',
+        'move_in_date'=>$today,'opening_water_reading'=>'0.00',
+        'opening_electric_reading'=>'0.00','idempotency_key'=>[],
     ]),'idempotency_key');
     $roomValidate=new ReflectionMethod($app->rooms(),'validate');
     $same(['description'=>null,'image_key'=>null],$roomValidate->invoke($app->rooms(),['description'=>null,'image_key'=>null],true));
@@ -199,12 +206,90 @@ $test('admin payment query helpers are captured and reject composite values befo
     }
 });
 $test('unknown fields rejected',fn()=>$throws(fn()=>Validator::only(['safe'=>1,'password'=>2],['safe']),'UNKNOWN_FIELDS'));
+$test('protected HTML pages redirect to the matching login while APIs keep JSON 401',function()use($same,$app):void{
+    $app->session()->logout();
+    $app->clearActorCache();
+    $router=Routes::build($app);
+    foreach(['/resident'=>'/resident/login','/resident/'=>'/resident/login','/admin'=>'/admin/login','/admin/'=>'/admin/login']as$path=>$destination){
+        $response=$router->dispatch(new Request('GET',$path,[],[],[],[],[],'html-auth-redirect'));
+        $same(302,$response->status);
+        $same($destination,$response->headers['Location']??null);
+        $same('no-store',$response->headers['Cache-Control']??null);
+    }
+    $response=$router->dispatch(new Request('GET','/api/resident/profile',[],[],[],[],[],'api-auth-json'));
+    $same(401,$response->status);
+    $same('application/json; charset=utf-8',$response->headers['Content-Type']??null);
+    $payload=json_decode($response->body,true,64,JSON_THROW_ON_ERROR);
+    $same(false,$payload['ok']??null);
+    $same('UNAUTHENTICATED',$payload['data']['code']??null);
+});
+$test('HTML router errors are safe Thai pages with a deterministic home link',function()use($same,$app):void{
+    $assertPage=static function(Response $response,int $status,string $thaiTitle)use($same):void{
+        $same($status,$response->status);
+        $same('text/html; charset=utf-8',$response->headers['Content-Type']??null);
+        $same(true,str_contains($response->body,'<html lang="th">'));
+        $same(true,str_contains($response->body,$thaiTitle));
+        $same(true,str_contains($response->body,'href="/"'));
+        $same(true,str_contains($response->body,'กลับหน้าแรก'));
+    };
+
+    $notFound=(new Router($app))->dispatch(new Request('GET','/missing-page',[],[],[],[],[],'html-404'));
+    $assertPage($notFound,404,'ไม่พบหน้าที่ต้องการ');
+
+    $forbidden=new Router($app);
+    $forbidden->get('/forbidden',static fn():never=>throw new HttpException(403,'sensitive permission detail','FORBIDDEN'));
+    $forbiddenResponse=$forbidden->dispatch(new Request('GET','/forbidden',[],[],[],[],[],'html-403'));
+    $assertPage($forbiddenResponse,403,'ไม่มีสิทธิ์เข้าถึง');
+    $same(false,str_contains($forbiddenResponse->body,'sensitive permission detail'));
+
+    $broken=new Router($app);
+    $broken->get('/broken',static fn():null=>null);
+    $brokenResponse=$broken->dispatch(new Request('GET','/broken',[],[],[],[],[],'html-500-reference'));
+    $assertPage($brokenResponse,500,'ระบบขัดข้องชั่วคราว');
+    $same(true,str_contains($brokenResponse->body,'html-500-reference'));
+    $same(false,str_contains($brokenResponse->body,'Route did not return a response'));
+
+    $escaped=Response::htmlError(500,'"><script>alert(1)</script>');
+    $same(false,str_contains($escaped->body,'<script>alert(1)</script>'));
+    $same(true,str_contains($escaped->body,'&lt;script&gt;alert(1)&lt;/script&gt;'));
+});
+$test('empty-body mutation routes reject unknown JSON fields before side effects',function()use($same,$app):void{
+    $property=new ReflectionProperty(Router::class,'routes');
+    $registered=$property->getValue(Routes::build($app));
+    $cases=[
+        ['POST','/api/auth/admin/logout'],
+        ['POST','/api/auth/resident/logout'],
+        ['POST','/api/resident/profile/line/code'],
+        ['POST','/api/resident/profile/line/unlink'],
+        ['POST','/api/resident/bills/1/slip'],
+        ['DELETE','/api/admin/users/1'],
+        ['DELETE','/api/admin/rooms/1'],
+        ['POST','/api/admin/residents/1/access/reissue'],
+        ['POST','/api/admin/bookings/1/confirm'],
+        ['POST','/api/admin/bills/1/line'],
+        ['POST','/api/admin/payments/1/retry'],
+    ];
+    foreach($cases as[$method,$path]){
+        $matchedRoutes=[];
+        foreach($registered as$route){
+            if($route['method']!==$method||!preg_match($route['regex'],$path,$matches))continue;
+            $params=[];
+            foreach($matches as$key=>$value)if(is_string($key))$params[$key]=rawurldecode($value);
+            $matchedRoutes[]=[$route['handler'],$params];
+        }
+        $same(1,count($matchedRoutes));
+        [$handler,$params]=$matchedRoutes[0];
+        $request=(new Request($method,$path,[],[],['unexpected'=>true],[],[],'empty-body-allowlist'))->withParams($params);
+        try{$handler($request);throw new RuntimeException("{$method} {$path} accepted an unknown field");}
+        catch(HttpException $error){$same('UNKNOWN_FIELDS',$error->errorCode);}
+    }
+});
 $test('FR-10 resident lifecycle endpoints are explicitly allowlisted',function()use($same,$app):void{
     $property=new ReflectionProperty(Dormitory\Http\Router::class,'routes');
     $routes=$property->getValue(Dormitory\Http\Routes::build($app));
     $methods=[];
     foreach($routes as$route){if(str_contains($route['regex'],'api/admin/residents'))$methods[]=$route['method'];}
-    $same(['GET','POST','PUT','POST'],$methods);
+    $same(['GET','POST','PUT','POST','POST'],$methods);
 });
 $test('FR-16 payment recovery has no manual paid endpoint',function()use($same,$app):void{
     $property=new ReflectionProperty(Dormitory\Http\Router::class,'routes');
@@ -214,17 +299,30 @@ $test('FR-16 payment recovery has no manual paid endpoint',function()use($same,$
     $same(['GET','GET','POST','POST'],$methods);
     foreach($paymentRoutes as$regex){if(preg_match('/approve|manual|mark.paid/i',$regex))throw new RuntimeException('manual payment approval route exists');}
 });
-$test('all SQL bootstraps include 15 integrity triggers',function()use($same):void{
+$test('all SQL bootstraps include the expected integrity triggers',function()use($same):void{
     $root=dirname(__DIR__);
-    foreach(['database/schema.sql','database/migrations/002_operational_hardening.sql']as$file){
+    foreach([
+        'database/schema.sql'=>19,
+        'database/migrations/002_operational_hardening.sql'=>15,
+    ]as$file=>$expected){
         $sql=file_get_contents($root.'/'.$file);if(!is_string($sql))throw new RuntimeException("cannot read {$file}");
         preg_match_all('/^CREATE TRIGGER\s+([a-z0-9_]+)/mi',$sql,$matches);
-        $same(15,count(array_unique($matches[1])));
+        $same($expected,count(array_unique($matches[1])));
     }
     $repair=file_get_contents($root.'/database/migrations/003_append_only_guards.sql');if(!is_string($repair))throw new RuntimeException('cannot read migration 003');
     preg_match_all('/^CREATE TRIGGER\s+([a-z0-9_]+)/mi',$repair,$matches);$same(4,count(array_unique($matches[1])));
     $installer=file_get_contents($root.'/database/install.sql');if(!is_string($installer))throw new RuntimeException('cannot read fresh installer');
-    preg_match_all('/^CREATE TRIGGER\s+([a-z0-9_]+)/mi',$installer,$matches);$same(15,count(array_unique($matches[1])));
+    preg_match_all('/^CREATE TRIGGER\s+([a-z0-9_]+)/mi',$installer,$matches);$same(19,count(array_unique($matches[1])));
+    $schema=file_get_contents($root.'/database/schema.sql');if(!is_string($schema))throw new RuntimeException('cannot read fresh schema');
+    foreach([
+        'trg_bookings_insert_guard',
+        'trg_occupancies_relationship_guard',
+        "NEW.status <> 'pending'",
+        "booking_status <> 'moved_in'",
+        "NEW.opening_water_reading IS NULL",
+        'Bill rent and meter snapshots must match its occupancy period',
+        "period = NEW.period\n     LIMIT 1\n     FOR SHARE",
+    ]as$guard)$same(true,str_contains($schema,$guard));
     $same(1,preg_match('/CREATE DATABASE IF NOT EXISTS dormitory/i',$installer));
     $same(1,preg_match('/DORMITORY_INSTALL_ABORT_DATABASE_NOT_EMPTY/i',$installer));
     $same(1,preg_match('/information_schema\.tables\s+WHERE table_schema = DATABASE\(\)/is',$installer));
@@ -251,13 +349,62 @@ $test('PromptPay QR is blocked until the full payment path is ready',function()u
         &&$billLock<$settingsLock&&$settingsLock<$missingSettingsGuard&&$missingSettingsGuard<$detailRead);
 });
 $test('critical usability guards remain in the web UI',function()use($same):void{
-    $root=dirname(__DIR__);$js=file_get_contents($root.'/public/assets/js/app.js');$admin=file_get_contents($root.'/templates/admin/console.php');
-    if(!is_string($js)||!is_string($admin))throw new RuntimeException('cannot read UI sources');
+    $root=dirname(__DIR__);$js=file_get_contents($root.'/public/assets/js/app.js');$admin=file_get_contents($root.'/templates/admin/console.php');$layout=file_get_contents($root.'/templates/layout.php');$resident=file_get_contents($root.'/src/Domain/ResidentService.php');$meters=file_get_contents($root.'/src/Domain/MeterService.php');$portal=file_get_contents($root.'/templates/resident/portal.php');
+    if(!is_string($js)||!is_string($admin)||!is_string($layout)||!is_string($resident)||!is_string($meters)||!is_string($portal))throw new RuntimeException('cannot read UI sources');
     $same(1,preg_match('/paymentConfigurationReady\s*=\s*promptPayReady\s*&&\s*slipReady/',$js));
     $same(1,preg_match('/function applySavedMeterResult\s*\(/',$js));
     $same(0,preg_match('/name="confirm_pin"[^>]*required/',$admin));
     $same(1,preg_match('/จำนวนเงินอื่น \/ ห้อง/',$admin));
     $same(1,preg_match('/water_units.*water_rate.*water_amount/s',$js));
+    $same(true,str_contains($js,'Array.isArray(bill.items)'));
+    $same(false,str_contains($js,'bill.line_items'));
+    $same(true,str_contains($js,'function syncBillActionState()'));
+    $same(true,str_contains($js,'currentPeriodConfirmed'));
+    $same(true,str_contains($js,"elements.confirm_current_period.addEventListener('change', invalidateBillPreview)"));
+    $same(true,str_contains($js,'function hasDirtyMeterRows()'));
+    $same(1,preg_match("/activeView === 'meters'.*?hasDirtyMeterRows\(\).*?renderMeters\(\);/s",$js));
+    foreach(['is_billed','has_later_reading',"'_locked'", "'_lock_reason'"]as$item)$same(true,str_contains($meters,$item));
+    foreach(['waterLocked','electricLocked','editableInputs','ออกบิลแล้ว']as$item)$same(true,str_contains($js,$item));
+    $same(true,str_contains($js,"profile.line_user_id_hint"));
+    $same(true,str_contains($resident,"unset(\$row['line_user_id'],\$row['auth_version'])"));
+    $same(2,preg_match_all('/id="(?:preview-bills-button|create-bills-button)" disabled/',$admin));
+    $same(true,str_contains($portal,'id="resident-line-status-refresh"'));
+    $same(true,str_contains($portal,'id="resident-line-add-friend"'));
+    $same(true,str_contains($portal,'id="resident-line-code-qr"'));
+    $same(true,str_contains($portal,'id="resident-line-code-qr-fallback"'));
+    $same(true,str_contains($js,'startLineCodeTracking(result.expires_at)'));
+    $same(true,str_contains($js,'async function getQrLibrary()'));
+    $same(true,str_contains($js,'const moduleUrl = `${source}${source.includes(\'?\') ? \'&\' : \'?\'}module=1`;'));
+    $same(false,str_contains($js,'qrcode-loader'));
+    $same(true,str_contains($layout,'$assetUrl = static function'));
+    $same(true,str_contains($layout,'$assetUrl(\'/assets/js/vendor/qrcode.min.js\')'));
+    $same(true,str_contains($layout,'$assetUrl(\'/assets/js/app.js\')'));
+    $same(true,str_contains($layout,'meta name="app-timezone"'));
+    $same(false,str_contains($js,"timeZone: 'Asia/Bangkok'"));
+});
+$test('login controls and admin tables retain accessibility contracts',function()use($same):void{
+    $root=dirname(__DIR__);
+    $residentLogin=file_get_contents($root.'/templates/resident/login.php');
+    $adminLogin=file_get_contents($root.'/templates/admin/login.php');
+    $admin=file_get_contents($root.'/templates/admin/console.php');
+    $css=file_get_contents($root.'/public/assets/css/app.css');
+    if(!is_string($residentLogin)||!is_string($adminLogin)||!is_string($admin)||!is_string($css))throw new RuntimeException('cannot read accessibility UI sources');
+
+    foreach([
+        'for="resident-phone"','id="resident-phone"','aria-describedby="resident-phone-help"',
+        'for="resident-credential"','id="resident-credential"','aria-controls="resident-credential"',
+        'for="resident-new-password"','id="resident-new-password"','aria-controls="resident-new-password"',
+        'for="resident-new-password-confirm"','id="resident-new-password-confirm"','aria-controls="resident-new-password-confirm"',
+    ]as$contract)$same(true,str_contains($residentLogin,$contract));
+    foreach([
+        'for="admin-username"','id="admin-username"','for="admin-password"','id="admin-password"','aria-controls="admin-password"',
+    ]as$contract)$same(true,str_contains($adminLogin,$contract));
+    $same(0,preg_match('/<label[^>]*class="field"[^>]*>.*?password-toggle.*?<\/label>/s',$residentLogin.$adminLogin));
+    $same(7,preg_match_all('/class="table-scroll(?: meter-table)?" role="region" aria-label="[^"]+" tabindex="0"/',$admin));
+    $same(true,str_contains($css,'.table-scroll:focus-visible'));
+    $same(1,preg_match('/\.status-[^{]*\.status-danger\s*\{[^}]*var\(--red\)/s',$css));
+    foreach(['.button { display: inline-flex; min-height: 44px','.button-small { min-height: 44px','.icon-button { display: inline-grid; width: 44px; height: 44px','.password-toggle { position: absolute;']as$contract)$same(true,str_contains($css,$contract));
+    $same(1,preg_match('/\.password-toggle\s*\{[^}]*min-width:\s*44px;[^}]*min-height:\s*44px;/s',$css));
 });
 $test('resident PIN surfaces and runtime compatibility paths are retired',function()use($same,$app):void{
     $root=dirname(__DIR__);
@@ -313,6 +460,40 @@ $test('Apache permits the hidden-file access guard',function()use($same):void{
 });
 $test('strict boolean validation',function()use($same,$throws):void{$same(false,Validator::boolean(false,'active'));$same(true,Validator::boolean(true,'active'));$same(false,Validator::boolean(0,'active'));$same(true,Validator::boolean(1,'active'));$throws(fn()=>Validator::boolean('false','active'),'VALIDATION_ERROR');$throws(fn()=>Validator::boolean(2,'active'),'VALIDATION_ERROR');});
 $test('admin active aliases are strict and unambiguous',function()use($same,$throws):void{$active=new ReflectionMethod(AdminUserService::class,'requestedActive');$same(false,$active->invoke(null,['active'=>false]));$same(true,$active->invoke(null,['is_active'=>1]));$throws(fn()=>$active->invoke(null,['active'=>'false']),'VALIDATION_ERROR');$throws(fn()=>$active->invoke(null,['active'=>true,'is_active'=>false]),'VALIDATION_ERROR');});
+$test('MySQL duplicate classification requires errno 1062 and an expected unique key',function()use($same):void{
+    $error=static function(int $driverCode,string $message,string $sqlState='23000'):PDOException{
+        $exception=new PDOException($message);
+        $exception->errorInfo=[$sqlState,$driverCode,$message];
+        return $exception;
+    };
+    $qualified=$error(1062,"Duplicate entry 'owner' for key 'admin_users.uq_admin_users_username'");
+    $same(true,MySqlError::isDuplicateKey($qualified,'uq_admin_users_username'));
+    $same(false,MySqlError::isDuplicateKey($qualified,'uq_residents_phone_norm'));
+    $same(false,MySqlError::isDuplicateKey($error(1062,"Duplicate entry 'owner' for key 'uq_admin_users_username_shadow'"),'uq_admin_users_username'));
+    $same(false,MySqlError::isDuplicateKey($error(1452,'Cannot add or update a child row: a foreign key constraint fails'),'uq_admin_users_username'));
+    $same(false,MySqlError::isDuplicateKey($error(3819,"Check constraint 'chk_admin_users_role' is violated"),'uq_admin_users_username'));
+    $same(false,MySqlError::isDuplicateKey($error(1062,"Duplicate entry 'uq_admin_users_username' for key 'uq_unexpected_new_guard'"),'uq_admin_users_username'));
+});
+$test('identity and payment services only translate their expected duplicate keys',function()use($same):void{
+    foreach([
+        'src/Domain/AdminUserService.php'=>['uq_admin_users_username'],
+        'src/Domain/ResidentService.php'=>['uq_residents_phone_norm'],
+        'src/Domain/PaymentService.php'=>['uq_payments_slip_hmac','uq_payments_one_active_per_bill','uq_payments_transaction_ref'],
+    ]as$file=>$expectedKeys){
+        $source=file_get_contents(dirname(__DIR__).'/'.$file);
+        if(!is_string($source))throw new RuntimeException('cannot read '.$file);
+        $same(false,str_contains($source,"getCode()==='23000'"));
+        foreach($expectedKeys as$key)$same(true,str_contains($source,"'{$key}'"));
+    }
+});
+$test('LINE binding duplicate races are scoped to their exact unique keys',function()use($same):void{
+    $source=file_get_contents(dirname(__DIR__).'/src/Domain/LineBindingService.php');
+    if(!is_string($source))throw new RuntimeException('cannot read LineBindingService');
+    $same(true,str_contains($source,"MySqlError::isDuplicateKey(\$error, 'uq_line_link_codes_code_hash')"));
+    $same(true,str_contains($source,"MySqlError::isDuplicateKey(\$error, 'uq_residents_line_user_id')"));
+    $same(2,substr_count($source,'MySqlError::isDuplicateKey('));
+    $same(false,str_contains($source,'errorInfo[1]'));
+});
 $test('PromptPay phone CRC vector',function()use($same):void{$same('00020101021229370016A000000677010111011300668123456785802TH530376454071234.566304D937',PromptPayService::payload('0812345678','1234.56'));});
 $test('PromptPay tax ID CRC vector',function()use($same):void{$same('00020101021229370016A000000677010111021312345678901235802TH530376454041.006304304C',PromptPayService::payload('1234567890123','1.00'));});
 $test('PromptPay connection test returns a bounded random live-account QR without payment side effects',function()use($same,$app):void{
@@ -495,6 +676,28 @@ $test('provider multipart filenames are derived from verified MIME types',functi
     $same(false,str_contains($source,"new \\CURLFile(\$path,\$mime,'slip')"));
 });
 $test('SlipOK bank delay and receiver configuration remain retryable',function()use($same):void{$same(true,SlipVerifier::isTransientProviderError('slipok',1009,400));$same(true,SlipVerifier::isTransientProviderError('slipok',1010,400));$same(true,SlipVerifier::isTransientProviderError('slipok',1014,400));$same(false,SlipVerifier::isTransientProviderError('slipok',1007,400));$same(false,SlipVerifier::isTransientProviderError('slipok',1011,400));$same(false,SlipVerifier::isTransientProviderError('slipok',1013,400));});
+$test('slip provider and cURL diagnostics never become public payment reasons',function()use($same,$app):void{
+    $service=new SlipVerifier($app);
+    $providerReason=new ReflectionMethod(SlipVerifier::class,'providerReason');
+    $diagnostic='SSL certificate problem at C:\\private\\ca.pem for internal-proxy.example';
+    $same('EasySlip rejected the slip',$providerReason->invoke($service,['message'=>$diagnostic],'EasySlip rejected the slip'));
+    $same('SlipOK rejected the slip',$providerReason->invoke($service,['error'=>['message'=>$diagnostic]],'SlipOK rejected the slip'));
+
+    $source=file_get_contents(dirname(__DIR__).'/src/Integration/SlipVerifier.php');
+    if(!is_string($source))throw new RuntimeException('cannot read SlipVerifier');
+    $verifyStart=strpos($source,'public function verify(');
+    $verifyEnd=strpos($source,'private function slipOk(',$verifyStart===false?0:$verifyStart);
+    $requestStart=strpos($source,'private function request(');
+    $requestEnd=strpos($source,'private function auditPayload(',$requestStart===false?0:$requestStart);
+    if($verifyStart===false||$verifyEnd===false||$requestStart===false||$requestEnd===false)throw new RuntimeException('cannot isolate slip verification error paths');
+    $verify=substr($source,$verifyStart,$verifyEnd-$verifyStart);
+    $request=substr($source,$requestStart,$requestEnd-$requestStart);
+    $same(1,preg_match('/catch\(\\\\Throwable\)\{return \$this->pending\(\$provider,\'[^\']+\',\[\]\);\}/',$verify));
+    $same(false,str_contains($verify,'getMessage('));
+    $same(false,str_contains($source,'Provider unavailable:'));
+    $same(false,str_contains($request,'curl_error('));
+    $same(true,str_contains($request,'curl_errno($ch)'));
+});
 $test('stored slip retry verifies MIME dimensions and HMAC',function()use($same,$throws,$app):void{
     $year=$app->config->root.'/storage/private/slips/2099';$directory=$year.'/01';$yearExisted=is_dir($year);$directoryExisted=is_dir($directory);
     if(!is_dir($directory)&&!mkdir($directory,0700,true)&&!is_dir($directory))throw new RuntimeException('cannot create slip test directory');
@@ -563,6 +766,24 @@ $test('missing or malformed provider time remains retryable',function()use($same
 $test('invalid boolean configuration fails closed',function()use($app):void{putenv('TEST_INVALID_BOOLEAN=treu');try{$app->config->bool('TEST_INVALID_BOOLEAN');throw new RuntimeException('invalid boolean was accepted');}catch(RuntimeException $error){if($error->getMessage()==='invalid boolean was accepted')throw $error;}finally{putenv('TEST_INVALID_BOOLEAN');}});
 $test('billing amounts respect DECIMAL(14,2) bounds',function()use($same,$throws):void{$multiply=new ReflectionMethod(BillingService::class,'multiplyMoney');$sum=new ReflectionMethod(BillingService::class,'sumMoney');$max=99_999_999_999_999;$same($max,$multiply->invoke(null,$max,100));$same($max,$sum->invoke(null,$max-1,1));$throws(fn()=>$multiply->invoke(null,$max,101),'AMOUNT_OVERFLOW');$throws(fn()=>$sum->invoke(null,$max,1),'AMOUNT_OVERFLOW');});
 $test('billing preview token binds exact values and expiry',function()use($app,$throws):void{$service=new BillingService($app);$sign=new ReflectionMethod(BillingService::class,'previewToken');$verify=new ReflectionMethod(BillingService::class,'assertPreviewToken');$preview=['period'=>'2026-07','due_date'=>'2026-07-10','bills'=>[['room_id'=>1,'total_amount'=>'1234.56']],'issues'=>[]];$token=$sign->invoke($service,$preview,time()+60);$verify->invoke($service,$token,$preview);$changed=$preview;$changed['bills'][0]['total_amount']='1234.57';$throws(fn()=>$verify->invoke($service,$token,$changed),'BILL_PREVIEW_CHANGED');$expired=$sign->invoke($service,$preview,time()-1);$throws(fn()=>$verify->invoke($service,$expired,$preview),'BILL_PREVIEW_EXPIRED');});
+$test('monthly automation accepts only a completed period and stays dry-run by default',function()use($same,$throws,$app):void{
+    $guard=new ReflectionMethod(BillingService::class,'assertClosedBillingPeriod');
+    $now=new DateTimeImmutable('2026-07-15T12:00:00+07:00');
+    $guard->invoke($app->billing(),'2026-06',$now);
+    $throws(fn()=>$guard->invoke($app->billing(),'2026-07',$now),'BILL_PERIOD_NOT_CLOSED');
+    $throws(fn()=>$guard->invoke($app->billing(),'2026-08',$now),'BILL_PERIOD_NOT_CLOSED');
+    $script=file_get_contents(dirname(__DIR__).'/scripts/generate_monthly_bills.php');
+    if(!is_string($script))throw new RuntimeException('cannot read monthly billing CLI');
+    $same(true,str_contains($script,"\$apply = false;"));
+    $same(true,str_contains($script,"if (!\$apply)"));
+    $same(true,str_contains($script,'generateClosedPeriod('));
+    $same(true,str_contains($script,"'bill.monthly_generate'"));
+    $billing=file_get_contents(dirname(__DIR__).'/src/Domain/BillingService.php');
+    if(!is_string($billing))throw new RuntimeException('cannot read billing service');
+    $same(true,str_contains($billing,'AND NOT EXISTS ('));
+    $same(true,str_contains($billing,'WHERE b.occupancy_id=o.id'));
+    $same(true,str_contains($billing,"'BILL_AUTOMATION_BLOCKED'"));
+});
 $test('overlapping occupancies are excluded from billing',function()use($same):void{$partition=new ReflectionMethod(BillingService::class,'partitionOccupancies');$result=$partition->invoke(null,[['occupancy_id'=>1,'room_id'=>10,'room_code'=>'101'],['occupancy_id'=>2,'room_id'=>10,'room_code'=>'101'],['occupancy_id'=>3,'room_id'=>20,'room_code'=>'201']]);$same([3],array_column($result['occupancies'],'occupancy_id'));$same(1,count($result['issues']));$same('AMBIGUOUS_OCCUPANCY',$result['issues'][0]['code']);$same([1,2],$result['issues'][0]['occupancy_ids']);});
 $test('audit UTF-8 truncation preserves valid characters',function()use($same):void{$cut=new ReflectionMethod(AuditLogger::class,'utf8Cut');$value=str_repeat('ก',200)."\xFF";$result=$cut->invoke(null,$value,500);$same(1,preg_match('//u',$result));$same(true,strlen($result)<=500);});
 
@@ -612,7 +833,7 @@ $test('production APP_KEY requires random 32-byte key material',function()use($s
     try{Config::validatedAppKey(str_repeat('Ab3!',300),true);throw new RuntimeException('oversized APP_KEY was accepted');}
     catch(RuntimeException $error){if($error->getMessage()==='oversized APP_KEY was accepted')throw $error;}
 });
-$test('admin rehash and phone-only resident login use layered throttling',function()use($same,$app):void{
+$test('admin rehash and credential-backed resident login use layered throttling',function()use($same,$app):void{
     $source=file_get_contents(dirname(__DIR__).'/src/Domain/AuthService.php');if(!is_string($source))throw new RuntimeException('cannot read AuthService');
     $same(1,preg_match('/UPDATE admin_users SET password_hash=\?,updated_at=UTC_TIMESTAMP\(\) WHERE id=\? AND password_hash=\? AND auth_version=\?/',$source));
     $same(true,str_contains($source,'(!$accountAllowed&&!$trustedDevice)'));
@@ -627,17 +848,20 @@ $test('admin rehash and phone-only resident login use layered throttling',functi
     $residentStart=strpos($source,'public function residentLogin');$residentEnd=strpos($source,'public function logout',$residentStart===false?0:$residentStart);
     if($residentStart===false||$residentEnd===false)throw new RuntimeException('cannot isolate resident login');
     $residentBlock=substr($source,$residentStart,$residentEnd-$residentStart);
-    $same(true,str_contains($residentBlock,"Validator::only(\$input, ['phone'])"));
+    $same(true,str_contains($residentBlock,"Validator::only(\$input, ['phone','credential','new_password'])"));
     $same(true,str_contains($residentBlock,"'resident-login-ip-daily'"));
-    $same(true,str_contains($residentBlock,"'auth_method' => 'phone_only'"));
-    $same(true,str_contains($residentBlock,"'assurance' => 'low'"));
+    $same(true,str_contains($residentBlock,"'auth_method' => \$authMethod"));
+    $same(true,str_contains($residentBlock,"'assurance' => 'high'"));
     $same(true,str_contains($residentBlock,'writeStrict'));
     $same(true,str_contains($residentBlock,"JOIN occupancies o ON o.resident_id=r.id AND o.status='active'"));
     $same(true,str_contains($residentBlock,'JOIN rooms rm ON rm.id=o.room_id AND rm.deleted_at IS NULL'));
     $same(false,str_contains($residentBlock,'pin_hash'));
     $same(false,str_contains($residentBlock,'trustedDevice'));
-    $same(false,str_contains($residentBlock,"limiter()->clear('resident-login"));
+    $same(true,str_contains($residentBlock,"limiter()->clear('resident-login"));
     $same(false,str_contains($residentBlock,"rememberLoginDevice('resident'"));
+    $same(true,str_contains($residentBlock,'access_password_hash'));
+    $same(true,str_contains($residentBlock,'activation_code_hash=NULL'));
+    $same(true,str_contains($residentBlock,'auth_version=auth_version+1'));
     $auth=new Dormitory\Domain\AuthService($app);$create=new ReflectionMethod($auth,'createLoginDeviceToken');$valid=new ReflectionMethod($auth,'validLoginDeviceToken');$now=time();
     $verifyCredential=new ReflectionMethod($auth,'verifyCredential');$credential='Timing-safe-test-password-48!';$credentialHash=Password::hash($credential);
     $same(true,$verifyCredential->invoke($auth,$credential,$credentialHash));
@@ -658,6 +882,43 @@ $test('admin rehash and phone-only resident login use layered throttling',functi
     $same(true,str_contains($limiterSource,"CASE WHEN hits<=1 THEN '1970-01-01 00:00:00.000000'"));
     $same(true,str_contains($limiterSource,'blocked_until IS NULL AND hits>0'));
     $same(true,str_contains($limiterSource,"if(!\$pdo->inTransaction())throw new \\LogicException"));
+});
+$test('resident activation codes are deterministic, high entropy, expiring and stored only as hashes',function()use($same,$app):void{
+    $issued=ResidentAccessCredential::issue($app->config,17,4);
+    $same(1,preg_match('/^[0-9A-HJKMNP-TV-Z]{5}(?:-[0-9A-HJKMNP-TV-Z]{5}){3}$/D',$issued['code']));
+    $same(64,strlen($issued['hash']));
+    $same(true,ResidentAccessCredential::verify($app->config,17,4,$issued['code'],$issued['hash']));
+    $same(true,ResidentAccessCredential::verify($app->config,17,4,strtolower(str_replace('-',' ',$issued['code'])),$issued['hash']));
+    $same(false,ResidentAccessCredential::verify($app->config,17,5,$issued['code'],$issued['hash']));
+    $same(false,ResidentAccessCredential::verify($app->config,17,4,'00000-00000-00000-00000',$issued['hash']));
+    $same($issued['code'],ResidentAccessCredential::restore($app->config,17,4,$issued['hash']));
+    $same(604800,ResidentAccessCredential::ttlSeconds($app->config));
+
+    $booking=file_get_contents(dirname(__DIR__).'/src/Domain/BookingService.php');
+    $migration=file_get_contents(dirname(__DIR__).'/database/migrations/008_resident_access_credentials.sql');
+    if(!is_string($booking)||!is_string($migration))throw new RuntimeException('cannot read resident credential sources');
+    $same(true,str_contains($booking,'ResidentAccessCredential::issue'));
+    $same(true,str_contains($booking,'access_password_hash=NULL'));
+    $same(true,str_contains($booking,"'activation_code'=>\$activation['code']"));
+    foreach(['access_password_hash','activation_code_hash','activation_expires_at','activation_consumed_at']as$column)$same(true,str_contains($migration,$column));
+    $same(false,str_contains($migration,'activation_code_plain'));
+});
+$test('occupancy meter migration stops on active opening-reading gaps',function()use($same):void{
+    $migration=file_get_contents(dirname(__DIR__).'/database/migrations/009_occupancy_meter_baselines.sql');
+    if(!is_string($migration))throw new RuntimeException('cannot read occupancy meter migration');
+    $same(true,str_contains($migration,'@dormitory_009_active_opening_gaps'));
+    $same(true,str_contains($migration,"WHERE status = 'active'"));
+    $same(true,str_contains($migration,'opening_water_reading IS NULL'));
+    $same(true,str_contains($migration,'opening_electric_reading IS NULL'));
+    $same(true,str_contains($migration,'DORMITORY_009_REPAIR_ACTIVE_OPENING_READINGS_BEFORE_RERUN'));
+    $same(true,str_contains($migration,'DORMITORY_009_REPAIR_OCCUPANCY_PERIOD_OVERLAPS_BEFORE_RERUN'));
+    $same(true,str_contains($migration,'DORMITORY_009_REPAIR_RESIDENT_OCCUPANCY_STATES_BEFORE_RERUN'));
+    $same(true,str_contains($migration,'DORMITORY_009_REPAIR_METER_OCCUPANCY_LINKS_BEFORE_RERUN'));
+    $same(true,str_contains($migration,'DORMITORY_009_REPAIR_METER_CHAIN_BEFORE_RERUN'));
+    $same(true,str_contains($migration,'prior_row.period = DATE_SUB(current_row.period, INTERVAL 1 MONTH)'));
+    $same(true,str_contains($migration,"second_row.id > first_row.id"));
+    $same(true,str_contains($migration,"linked_booking.status <> 'moved_in'"));
+    $same(true,str_contains($migration,"status = ''ended''"));
 });
 $test('direct admin resident check-in is authenticated, rate-limited, audited, and transactionally routed',function()use($same,$app):void{
     $routesProperty=new ReflectionProperty(Dormitory\Http\Router::class,'routes');
@@ -691,7 +952,9 @@ $test('direct resident UI keeps one idempotency key, lists only available rooms,
         'name="full_name"','name="phone"','name="email"','name="reuse_resident_id" type="checkbox" disabled',
         'id="resident-create-reuse-field" hidden','id="resident-create-error" role="alert" hidden',
     ]as$surface)$same(true,str_contains($template,$surface));
-    $same(true,str_contains($template,'ผู้พักเข้าสู่ระบบด้วยเบอร์โทร'));
+    $same(true,str_contains($template,'activation code'));
+    $same(true,str_contains($template,'name="opening_water_reading"'));
+    $same(true,str_contains($template,'name="opening_electric_reading"'));
     $same(false,str_contains(substr($template,strpos($template,'id="resident-create-dialog"'),strpos($template,'id="resident-edit-dialog"')-strpos($template,'id="resident-create-dialog"')),'PIN'));
 
     $populateStart=strpos($js,'function populateResidentCreateRooms');$populateEnd=strpos($js,'async function openResidentCreateForm',$populateStart===false?0:$populateStart);
@@ -709,6 +972,7 @@ $test('direct resident UI keeps one idempotency key, lists only available rooms,
     $same(true,str_contains($js,"actionButton('เพิ่มผู้พัก', 'add-resident-to-room'"));
     $same(true,str_contains($js,"if (room.status === 'available') actions.push"));
     $same(true,str_contains($js,"button.dataset.action === 'add-resident-to-room'"));
+    foreach(['resident.access_active === true','resident.activation_pending === true','ต้องออกคีย์']as$accessState)$same(true,str_contains($js,$accessState));
 
     $submitStart=strpos($js,"\$('#resident-create-form').addEventListener('submit'");
     $submitEnd=strpos($js,"\$('#resident-rows').addEventListener('click'",$submitStart===false?0:$submitStart);
@@ -729,7 +993,11 @@ $test('direct resident UI keeps one idempotency key, lists only available rooms,
 });
 $test('direct admin resident check-in validates the complete request before database access',function()use($same,$throws,$throwsHttp,$app):void{
     $service=$app->bookings();$today=(new DateTimeImmutable('today',new DateTimeZone('Asia/Bangkok')))->format('Y-m-d');
-    $valid=['room_id'=>1,'full_name'=>'Direct Resident','phone'=>'0812345678','move_in_date'=>$today,'idempotency_key'=>'admin-checkin-0001'];
+    $valid=[
+        'room_id'=>1,'full_name'=>'Direct Resident','phone'=>'0812345678',
+        'move_in_date'=>$today,'opening_water_reading'=>'0.00',
+        'opening_electric_reading'=>'0.00','idempotency_key'=>'admin-checkin-0001',
+    ];
     $throws(fn()=>$service->createAdminResident(1,$valid+['unexpected'=>true]),'UNKNOWN_FIELDS');
     $throws(fn()=>$service->createAdminResident(1,array_replace($valid,['room_id'=>0])),'VALIDATION_ERROR');
     $throws(fn()=>$service->createAdminResident(1,array_replace($valid,['full_name'=>''])),'VALIDATION_ERROR');
@@ -753,18 +1021,20 @@ $test('direct admin resident check-in validates the complete request before data
     }
 
     $reference=new ReflectionMethod($service,'administrativeReference');
-    $arguments=['admin-checkin-0001',1,'Direct Resident','0812345678',null,false,$today,null];
+    $arguments=['admin-checkin-0001',1,'Direct Resident','0812345678',null,false,$today,null,'0.00','0.00'];
     $base=$reference->invoke($service,...$arguments);$same(1,preg_match('/^ADM-[A-F0-9]{32}$/D',$base));
     $same($base,$reference->invoke($service,...$arguments));
     foreach([
-        ['admin-checkin-0002',1,'Direct Resident','0812345678',null,false,$today,null],
-        ['admin-checkin-0001',2,'Direct Resident','0812345678',null,false,$today,null],
-        ['admin-checkin-0001',1,'Another Resident','0812345678',null,false,$today,null],
-        ['admin-checkin-0001',1,'Direct Resident','0899999999',null,false,$today,null],
-        ['admin-checkin-0001',1,'Direct Resident','0812345678',null,true,$today,null],
-        ['admin-checkin-0001',1,'Direct Resident','0812345678','qa@example.com',true,$today,null],
-        ['admin-checkin-0001',1,'Direct Resident','0812345678',null,false,'2026-01-01',null],
-        ['admin-checkin-0001',1,'Direct Resident','0812345678',null,false,$today,99],
+        ['admin-checkin-0002',1,'Direct Resident','0812345678',null,false,$today,null,'0.00','0.00'],
+        ['admin-checkin-0001',2,'Direct Resident','0812345678',null,false,$today,null,'0.00','0.00'],
+        ['admin-checkin-0001',1,'Another Resident','0812345678',null,false,$today,null,'0.00','0.00'],
+        ['admin-checkin-0001',1,'Direct Resident','0899999999',null,false,$today,null,'0.00','0.00'],
+        ['admin-checkin-0001',1,'Direct Resident','0812345678',null,true,$today,null,'0.00','0.00'],
+        ['admin-checkin-0001',1,'Direct Resident','0812345678','qa@example.com',true,$today,null,'0.00','0.00'],
+        ['admin-checkin-0001',1,'Direct Resident','0812345678',null,false,'2026-01-01',null,'0.00','0.00'],
+        ['admin-checkin-0001',1,'Direct Resident','0812345678',null,false,$today,99,'0.00','0.00'],
+        ['admin-checkin-0001',1,'Direct Resident','0812345678',null,false,$today,null,'1.00','0.00'],
+        ['admin-checkin-0001',1,'Direct Resident','0812345678',null,false,$today,null,'0.00','1.00'],
     ]as$changed)$same(true,$base!==$reference->invoke($service,...$changed));
 });
 $test('direct admin resident check-in locks room first and replays only the canonical committed result',function()use($same):void{
@@ -772,7 +1042,7 @@ $test('direct admin resident check-in locks room first and replays only the cano
     $start=strpos($source,'public function createAdminResident');$end=strpos($source,'public function moveIn(',$start===false?0:$start);
     if($start===false||$end===false)throw new RuntimeException('cannot isolate direct resident service');
     $create=substr($source,$start,$end-$start);
-    $same(true,str_contains($create,"Validator::only(\$input,['room_id','full_name','phone','email','move_in_date','idempotency_key','reuse_resident_id'])"));
+    $same(true,str_contains($create,"'opening_water_reading','opening_electric_reading'"));
     $same(true,str_contains($create,"preg_match('/^[A-Za-z0-9_-]{16,64}$/',\$idempotency)"));
     $same(true,str_contains($create,'$this->app->database()->transaction(function(PDO $pdo)'));
 
@@ -784,17 +1054,21 @@ $test('direct admin resident check-in locks room first and replays only the cano
     $same(true,$roomLock!==false&&$keyRead!==false&&$firstFingerprint!==false&&$bookingLock!==false&&$secondFingerprint!==false
         &&$roomLock<$keyRead&&$keyRead<$firstFingerprint&&$firstFingerprint<$bookingLock&&$bookingLock<$secondFingerprint);
     $same(true,substr_count($create,"'IDEMPOTENCY_KEY_REUSED'")>=2);
-    $same(true,str_contains($create,'SELECT id,resident_id,room_id,move_in_date FROM occupancies WHERE booking_id=? LIMIT 1'));
+    $same(true,str_contains($create,'opening_water_reading,opening_electric_reading'));
     $same(true,str_contains($create,"'idempotent_replay'=>true"));
+    $same(true,str_contains($create,'$this->moveInRequestHash('));
+    $same(true,str_contains($create,'?($emailProvided||$reuseResidentIdProvided)'));
+    $same(true,str_contains($create,"'MOVE_IN_ALREADY_COMPLETED'"));
 
     $occupied=strpos($create,"SELECT id FROM occupancies WHERE room_id=? AND status='active' LIMIT 1 FOR UPDATE");
     $reserved=strpos($create,"SELECT id FROM bookings WHERE room_id=? AND status IN ('pending','confirmed') LIMIT 1");
     $activePhone=strpos($create,'SELECT id FROM bookings WHERE active_phone_norm=? LIMIT 1');
-    $insert=strpos($create,'INSERT INTO bookings (reference_no,room_id,full_name,phone_norm,booked_monthly_rent,status,idempotency_key,confirmed_by');
+    $insert=strpos($create,'INSERT INTO bookings');
+    $confirm=strpos($create,"SET status='confirmed'",$insert===false?0:$insert);
     $moveIn=strpos($create,'$this->moveInWithPolicy');
-    $same(true,$occupied!==false&&$reserved!==false&&$activePhone!==false&&$insert!==false&&$moveIn!==false
-        &&$roomLock<$occupied&&$occupied<$reserved&&$reserved<$activePhone&&$activePhone<$insert&&$insert<$moveIn);
-    $same(true,str_contains($create,"VALUES (?,?,?,?,?,'confirmed',?,?,UTC_TIMESTAMP()"));
+    $same(true,$occupied!==false&&$reserved!==false&&$activePhone!==false&&$insert!==false&&$confirm!==false&&$moveIn!==false
+        &&$roomLock<$occupied&&$occupied<$reserved&&$reserved<$activePhone&&$activePhone<$insert&&$insert<$confirm&&$confirm<$moveIn);
+    $same(true,str_contains($create,"VALUES (?,?,?,?,?,'pending',?,UTC_TIMESTAMP(),UTC_TIMESTAMP())"));
     $same(true,str_contains($create,"'uq_bookings_one_active_per_phone'"));
     $same(true,str_contains($create,"'uq_bookings_one_active_per_room'"));
     $same(true,str_contains($create,"],true)"));
@@ -810,6 +1084,15 @@ $test('direct admin resident check-in locks room first and replays only the cano
     $same(true,str_contains($source,'if($reuseResidentId!==$residentId)'));
     $same(true,str_contains($source,"'RESIDENT_REUSE_CONFIRMATION_REQUIRED'"));
     $same(true,str_contains($source,"SELECT id FROM occupancies WHERE resident_id=? AND status='active' LIMIT 1 FOR UPDATE"));
+    $roomLockGlobal=strpos($source,'SELECT id,deleted_at FROM rooms WHERE id=? FOR UPDATE');
+    $meterConflict=strpos($source,'FROM meter_readings',$roomLockGlobal===false?0:$roomLockGlobal);
+    $meterConflictCode=strpos($source,"'MOVE_IN_METER_PERIOD_CONFLICT'",$meterConflict===false?0:$meterConflict);
+    $same(true,$roomLockGlobal!==false&&$meterConflict!==false&&$meterConflictCode!==false
+        &&$roomLockGlobal<$meterConflict&&$meterConflict<$meterConflictCode);
+    $client=file_get_contents(dirname(__DIR__).'/public/assets/js/app.js');
+    if(!is_string($client))throw new RuntimeException('cannot read client error mapping');
+    $same(true,str_contains($client,'MOVE_IN_METER_PERIOD_CONFLICT:'));
+    $same(true,str_contains($client,'MOVE_IN_PERIOD_CONFLICT:'));
     $residentBranch=strpos($source,'try { if ($resident) {');
     $activeResidentGuard=strpos($source,"SELECT id FROM occupancies WHERE resident_id=? AND status='active' LIMIT 1 FOR UPDATE",$residentBranch===false?0:$residentBranch);
     $reuseGuard=strpos($source,'if($reuseResidentId!==$residentId)',$residentBranch===false?0:$residentBranch);
@@ -915,6 +1198,9 @@ $test('booking holds use the database clock and inactive replays fail closed',fu
     $moveInBookingLock=strpos($moveInBlock,'SELECT * FROM bookings WHERE id=? FOR UPDATE');
     $same(true,$moveInLookup!==false&&$moveInRoomLock!==false&&$moveInBookingLock!==false
         &&$moveInLookup<$moveInRoomLock&&$moveInRoomLock<$moveInBookingLock);
+    $moveInTransition=strpos($moveInBlock,"SET status='moved_in'");
+    $occupancyInsert=strpos($moveInBlock,'INSERT INTO occupancies',$moveInTransition===false?0:$moveInTransition);
+    $same(true,$moveInTransition!==false&&$occupancyInsert!==false&&$moveInTransition<$occupancyInsert);
     $transitionEnd=strpos($source,'private function map',$transitionStart);
     if($transitionEnd===false)throw new RuntimeException('cannot isolate booking transition');
     $transitionBlock=substr($source,$transitionStart,$transitionEnd-$transitionStart);
@@ -982,7 +1268,8 @@ $test('resident lifecycle blocks unbilled months and same-period re-entry',funct
     $laterBillGuard=strpos($resident,'SELECT id,bill_no,period FROM bills WHERE occupancy_id=? AND period>?');
     $same(true,$meterHistoryGuard!==false&&$laterBillGuard!==false&&$meterHistoryGuard<$laterBillGuard);
     $same(true,str_contains($resident,'self::billingPeriods($firstPeriod,$period)'));
-    $same(true,str_contains($resident,'active=0,line_user_id=NULL,auth_version=auth_version+1'));
+    $same(true,str_contains($resident,'SET active=0,line_user_id=NULL,access_password_hash=NULL'));
+    $same(true,str_contains($resident,'activation_consumed_at=NULL,auth_version=auth_version+1'));
     $same(true,str_contains($resident,"'_line_unlinked_audit'"));
     $routes=file_get_contents(dirname(__DIR__).'/src/Http/Routes.php');if(!is_string($routes))throw new RuntimeException('cannot read Routes');
     $same(true,str_contains($routes,"'resident.line_unlinked','resident',\$target,\$lineAudit"));
@@ -1012,6 +1299,85 @@ $test('room optional fields and overdue display status are deterministic',functi
     $same(true,str_contains($rooms,"\$data['description'] ??= null"));$same(true,str_contains($rooms,"\$data['image_key'] ??= null"));
     $display=new ReflectionMethod(BillingService::class,'displayStatus');$now=new DateTimeImmutable('2026-07-18T12:00:00Z');
     $same('overdue',$display->invoke(null,'pending','2026-07-17',$now));$same('pending',$display->invoke(null,'pending','2026-07-18',$now));$same('paid',$display->invoke(null,'paid','2026-07-01',$now));
+});
+$test('exact meter replay is a provenance-preserving no-op',function()use($same):void{
+    $source=file_get_contents(dirname(__DIR__).'/src/Domain/MeterService.php');
+    if(!is_string($source))throw new RuntimeException('cannot read MeterService');
+    $loopStart=strpos($source,'foreach($prepared as$type=>$reading)');
+    $loopEnd=strpos($source,"\$result['large_usage_confirmed']",$loopStart===false?0:$loopStart);
+    if($loopStart===false||$loopEnd===false)throw new RuntimeException('cannot isolate meter persistence loop');
+    $loop=substr($source,$loopStart,$loopEnd-$loopStart);
+    $unchanged=strpos($loop,"\$unchanged=\$reading['id']!==null&&\$reading['old_current_scaled']===\$currentScaled");
+    $guard=strpos($loop,'if(!$unchanged){');
+    $update=strpos($loop,'UPDATE meter_readings SET occupancy_id=?,current_reading=?,units_used=?,recorded_by=?,updated_at=UTC_TIMESTAMP()');
+    $same(true,$unchanged!==false&&$guard!==false&&$update!==false&&$unchanged<$guard&&$guard<$update);
+    $same(1,substr_count($loop,'UPDATE meter_readings SET'));
+    $same(1,preg_match('/if\s*\(!\$unchanged\)\s*\{\s*\$update\s*=\s*\$pdo->prepare\(\'UPDATE meter_readings SET[^\']*recorded_by=\?,updated_at=UTC_TIMESTAMP\(\)[^\']*\'\);/s',$loop));
+    $same(true,str_contains($loop,"\$result['unchanged_meter_types'][]=\$type"));
+});
+$test('move-in replay is bound to a canonical immutable request digest',function()use($same,$app):void{
+    $root=dirname(__DIR__);
+    $source=file_get_contents(dirname(__DIR__).'/src/Domain/BookingService.php');
+    $schema=file_get_contents($root.'/database/schema.sql');
+    $migration=file_get_contents($root.'/database/migrations/012_move_in_request_hash.sql');
+    if(!is_string($source)||!is_string($schema)||!is_string($migration))throw new RuntimeException('cannot read move-in replay sources');
+
+    $digest=new ReflectionMethod($app->bookings(),'moveInRequestHash');
+    $arguments=[41,'BK-MOVE-IN-HASH-0001',true,'original@example.test',false,null,'2026-08-01','10.00','20.00'];
+    $base=$digest->invoke($app->bookings(),...$arguments);
+    $same(1,preg_match('/^[0-9a-f]{64}$/D',$base));
+    $same($base,$digest->invoke($app->bookings(),...$arguments));
+    foreach([
+        [42,'BK-MOVE-IN-HASH-0001',true,'original@example.test',false,null,'2026-08-01','10.00','20.00'],
+        [41,'BK-MOVE-IN-HASH-0002',true,'original@example.test',false,null,'2026-08-01','10.00','20.00'],
+        [41,'BK-MOVE-IN-HASH-0001',false,null,false,null,'2026-08-01','10.00','20.00'],
+        [41,'BK-MOVE-IN-HASH-0001',true,null,false,null,'2026-08-01','10.00','20.00'],
+        [41,'BK-MOVE-IN-HASH-0001',true,'changed@example.test',false,null,'2026-08-01','10.00','20.00'],
+        [41,'BK-MOVE-IN-HASH-0001',true,'original@example.test',true,77,'2026-08-01','10.00','20.00'],
+        [41,'BK-MOVE-IN-HASH-0001',true,'original@example.test',false,null,'2026-08-02','10.00','20.00'],
+        [41,'BK-MOVE-IN-HASH-0001',true,'original@example.test',false,null,'2026-08-01','11.00','20.00'],
+        [41,'BK-MOVE-IN-HASH-0001',true,'original@example.test',false,null,'2026-08-01','10.00','21.00'],
+    ]as$changed)$same(true,$base!==$digest->invoke($app->bookings(),...$changed));
+
+    $methodStart=strpos($source,'private function moveInWithPolicy(');
+    $branchStart=strpos($source,"if(\$booking['status']==='moved_in'){",$methodStart===false?0:$methodStart);
+    $branchEnd=strpos($source,"if (\$booking['status'] !== 'confirmed')",$branchStart===false?0:$branchStart);
+    if($methodStart===false||$branchStart===false||$branchEnd===false)throw new RuntimeException('cannot isolate move-in replay branch');
+    $branch=substr($source,$branchStart,$branchEnd-$branchStart);
+    $hashGuard=strpos($branch,'hash_equals($storedRequestHash,$moveInRequestHash)');
+    $legacyGuard=strpos($branch,'?($emailProvided||$reuseResidentIdProvided)');
+    $conflict=strpos($branch,"'MOVE_IN_ALREADY_COMPLETED'");
+    $replay=strpos($branch,"'idempotent_replay'=>true");
+    $same(false,str_contains($branch,'JOIN residents'));
+    $same(false,str_contains($branch,'resident_email'));
+    $same(true,$hashGuard!==false&&$legacyGuard!==false&&$conflict!==false&&$replay!==false
+        &&$legacyGuard<$hashGuard&&$hashGuard<$conflict&&$conflict<$replay);
+    $same(true,str_contains($source,"move_in_request_hash=?,updated_at=UTC_TIMESTAMP()"));
+    foreach([
+        "'email_provided'=>\$emailProvided",
+        "'reuse_resident_id_provided'=>\$reuseResidentIdProvided",
+        "'move_in_date'=>\$moveIn",
+        "'opening_water_reading'=>\$openingWater",
+        "'opening_electric_reading'=>\$openingElectric",
+        '"dormflow:move-in:v1\\0".$canonical',
+    ]as$field)$same(true,str_contains($source,$field));
+
+    foreach([
+        'move_in_request_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL',
+        'CONSTRAINT chk_bookings_move_in_request_hash CHECK',
+        "status = 'moved_in'",
+        "move_in_request_hash REGEXP '^[0-9a-f]{64}$'",
+        'OLD.move_in_request_hash <=> NEW.move_in_request_hash',
+    ]as$guard)$same(true,str_contains($schema,$guard));
+    foreach([
+        'DORMITORY_012_IMPORT_PRIOR_MIGRATIONS_FIRST',
+        'DORMITORY_012_INVALID_MOVE_IN_HASH_COLUMN',
+        'DORMITORY_012_INVALID_MOVE_IN_HASH_DATA',
+        'ALTER TABLE bookings DROP CHECK chk_bookings_move_in_request_hash',
+        'DORMITORY_012_MOVE_IN_HASH_POSTCONDITION_FAILED',
+        'DROP TRIGGER IF EXISTS trg_bookings_identity_immutable',
+        'DORMITORY_012_TRIGGER_POSTCONDITION_FAILED',
+    ]as$guard)$same(true,str_contains($migration,$guard));
 });
 $test('meter and billing dates cannot create irreversible future records',function()use($same,$app):void{
     $timezone=new DateTimeZone((string)$app->config->get('APP_TIMEZONE','Asia/Bangkok'));$today=new DateTimeImmutable('today',$timezone);
@@ -1047,23 +1413,44 @@ $test('meter and billing dates cannot create irreversible future records',functi
     $routes=file_get_contents(dirname(__DIR__).'/src/Http/Routes.php');if(!is_string($routes))throw new RuntimeException('cannot read routes');
     $same(true,str_contains($routes,"'appTimezone'=>(string)\$app->config->get('APP_TIMEZONE','Asia/Bangkok')"));
 });
-$test('LINE bill delivery requires an authenticated one-time-code link flow',function()use($same,$app):void{
+$test('LINE bill delivery supports hashed self-service binding codes and verified recipients',function()use($same,$app):void{
     $routes=new ReflectionProperty(Dormitory\Http\Router::class,'routes');$registered=$routes->getValue(Dormitory\Http\Routes::build($app));$paths=[];
     foreach($registered as$route){if(str_contains($route['regex'],'profile/line'))$paths[]=$route['method'].':'.$route['regex'];}
-    $same(3,count($paths));
-    $resident=file_get_contents(dirname(__DIR__).'/src/Domain/ResidentService.php');$booking=file_get_contents(dirname(__DIR__).'/src/Domain/BookingService.php');
-    if(!is_string($resident)||!is_string($booking))throw new RuntimeException('cannot read LINE binding sources');
+    $same(2,count($paths));
+    $resident=file_get_contents(dirname(__DIR__).'/src/Domain/ResidentService.php');$booking=file_get_contents(dirname(__DIR__).'/src/Domain/BookingService.php');$binding=file_get_contents(dirname(__DIR__).'/src/Domain/LineBindingService.php');
+    if(!is_string($resident)||!is_string($booking)||!is_string($binding))throw new RuntimeException('cannot read LINE binding sources');
     $same(1,preg_match("/updateProfile.*?Validator::only\\(\\\$input,\\['full_name','email'\\]\\)/s",$resident));
-    $same(1,preg_match("/moveIn.*?Validator::only\\(\\\$input, \\['email','move_in_date','reuse_resident_id'\\]\\)/s",$booking));
-    $same(true,str_contains($resident,'lineLinkDigest'));
-    $same(true,str_contains($resident,"Validator::only(\$input,['line_user_id'])"));
+    $same(1,preg_match("/moveIn.*?Validator::only\\(\\\$input,\\[.*?'email','move_in_date','reuse_resident_id'.*?'opening_water_reading','opening_electric_reading'.*?\\]\\)/s",$booking));
     $same(true,str_contains($resident,"Validator::only(\$input,[])"));
     $same(false,str_contains($resident,'current_pin'));
+    $same(true,str_contains($binding,'private const CODE_BYTES = 16'));
+    $same(true,str_contains($binding,'int $expectedAuthVersion'));
+    $same(true,str_contains($binding,"'RESIDENT_SESSION_STALE'"));
+    $same(true,str_contains($binding,"private const CODE_PATTERN = '/^BIND-[A-F0-9]{32}$/D'"));
+    $same(true,str_contains($binding,'strtoupper(bin2hex(random_bytes(self::CODE_BYTES)))'));
+    $same(true,str_contains($binding,"hash_hmac('sha256'"));
+    $same(true,str_contains($binding,'line-bind-code\\0'));
+    $same(true,str_contains($binding,'SELECT resident_id FROM line_link_codes WHERE code_hash=?'));
+    $same(true,str_contains($binding,'public function consumeSerialized'));
+    $same(true,str_contains($binding,'withLineBindingLock'));
+    $same(false,str_contains($binding,"(string) \$error->getCode() === '23000'"));
+    $same(false,str_contains($binding,'INSERT INTO line_link_codes (code,'));
     $notification=file_get_contents(dirname(__DIR__).'/src/Domain/NotificationService.php');if(!is_string($notification))throw new RuntimeException('cannot read NotificationService');
     $same(true,str_contains($notification,'isLineBindingVerified'));
     $same(true,str_contains($notification,"resident.line_link_verified','resident.line_unlinked"));
     $routesSource=file_get_contents(dirname(__DIR__).'/src/Http/Routes.php');if(!is_string($routesSource))throw new RuntimeException('cannot read Routes');
-    $same(true,str_contains($routesSource,'line_user_id_hash'));
+    $same(true,str_contains($routesSource,"'/api/resident/profile/line/code'"));
+    $same(true,str_contains($routesSource,"'resident.line_link_code_issued'"));
+    $same(true,str_contains($routesSource,"lineBindings()->issue(\$residentId,(int)\$actor['auth_version'])"));
+    $same(true,str_contains($resident,'$this->app->lineBindings()->revokePending($id)'));
+    $reissueStart=strpos($routesSource,"'/api/admin/residents/{id}/access/reissue'");
+    $reissueEnd=strpos($routesSource,"'/api/admin/residents/{id}/move-out'",$reissueStart===false?0:$reissueStart);
+    if($reissueStart===false||$reissueEnd===false)throw new RuntimeException('cannot isolate resident access reissue route');
+    $reissueRoute=substr($routesSource,$reissueStart,$reissueEnd-$reissueStart);
+    $same(true,str_contains($reissueRoute,'$app->notifications()->withLineBindingLock($target'));
+    $same(true,str_contains($routesSource,'clearLineLinkChallenge'));
+    $same(false,str_contains($routesSource,"'/api/resident/profile/line/start'"));
+    $same(false,str_contains($routesSource,"'/api/resident/profile/line/confirm'"));
 });
 $test('LINE outbox retries preserve identity, payload bytes, and retry UUID',function()use($same,$app):void{
     $service=$app->notifications();
@@ -1103,21 +1490,28 @@ $test('LINE outbox retries preserve identity, payload bytes, and retry UUID',fun
     $same(true,str_contains($source,"\$existing['status']==='pending'&&(int)\$existing['attempts']===0"));
     $same(true,str_contains($source,"line_request_id=NULL,line_accepted_request_id=NULL"));
     $same(true,str_contains($source,'created_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP()'));
-    $same(true,str_contains($source,'n.recipient,n.payload'));
+    $same(true,str_contains($source,'SELECT id,resident_id,retry_key,attempts,recipient,payload'));
     $same(true,str_contains($source,'retry_generation_expired'));
 });
 $test('LINE delivery response classification is fail closed and provider IDs are retained',function()use($same):void{
     $source=file_get_contents(dirname(__DIR__).'/src/Domain/NotificationService.php');
     if(!is_string($source))throw new RuntimeException('cannot read NotificationService');
-    $accepted=strpos($source,'if(($status>=200&&$status<300)||$status===409)return');
+    $accepted=strpos($source,'if($status>=200&&$status<300)');
+    $conflict=strpos($source,'if($status===409)');
     $retryable=strpos($source,'if($status>=500&&$status<=599)throw new LineDeliveryException');
     $terminal=strpos($source,"throw new LineDeliveryException('LINE API rejected the request");
-    if($accepted===false||$retryable===false||$terminal===false||!($accepted<$retryable&&$retryable<$terminal))throw new RuntimeException('LINE HTTP outcome order is unsafe');
+    if($accepted===false||$conflict===false||$retryable===false||$terminal===false
+        ||!($accepted<$conflict&&$conflict<$retryable&&$retryable<$terminal)){
+        throw new RuntimeException('LINE HTTP outcome order is unsafe');
+    }
+    $same(true,str_contains($source,'LINE retry conflict did not include an accepted request ID'));
     $same(true,str_contains($source,"['x-line-request-id','x-line-accepted-request-id']"));
     $same(true,str_contains($source,"preg_match('/^[\\x21-\\x7E]+$/D',\$value)===1"));
     $same(true,str_contains($source,"'request_id'=>\$providerHeaders['x-line-request-id']??null"));
     $same(true,str_contains($source,"'accepted_request_id'=>\$providerHeaders['x-line-accepted-request-id']??null"));
     $same(true,str_contains($source,"new LineDeliveryException('LINE network request failed"));
+    $same(true,str_contains($source,'in_array($status,[408,429],true)'));
+    $same(true,str_contains($source,"SUM(n.status='failed' AND b.status='pending')"));
     $same(false,str_contains($source,"if(\$status>=400&&\$status<500)throw new LineDeliveryException('LINE API rejected the request (HTTP '.\$status.')',true"));
 });
 $test('signed LINE webhook binds the exact raw body and strict direct-user IDs',function()use($same,$throwsHttp,$app):void{
@@ -1141,9 +1535,9 @@ $test('signed LINE webhook binds the exact raw body and strict direct-user IDs',
         'message'=>['type'=>'text','id'=>'123','text'=>'เลข LINE ของฉันคืออะไร'],
     ];
     $candidate=$candidateMethod->invoke($service,$event);
-    $same(['event_id','event_type','line_user_id','reply_token'],array_keys($candidate));
-    $same($lineUserId,$candidate['line_user_id']);$same('message',$candidate['event_type']);
-    $follow=$event;$follow['type']='follow';unset($follow['message']);$same('follow',$candidateMethod->invoke($service,$follow)['event_type']);
+    $same(['event_id','event_type','line_user_id','reply_token','message_text'],array_keys($candidate));
+    $same($lineUserId,$candidate['line_user_id']);$same('message',$candidate['event_type']);$same($event['message']['text'],$candidate['message_text']);
+    $follow=$event;$follow['type']='follow';unset($follow['message']);$followCandidate=$candidateMethod->invoke($service,$follow);$same('follow',$followCandidate['event_type']);$same(null,$followCandidate['message_text']);
     $invalid=[];
     $copy=$event;$copy['source']['userId']='U0123456789abcdef0123456789abcdeF';$invalid[]=$copy;
     $copy=$event;$copy['source']['userId']='U0123456789abcdef0123456789abcde';$invalid[]=$copy;
@@ -1157,8 +1551,92 @@ $test('signed LINE webhook binds the exact raw body and strict direct-user IDs',
     $source=file_get_contents(dirname(__DIR__).'/src/Domain/LineWebhookService.php');
     if(!is_string($source))throw new RuntimeException('cannot read LineWebhookService');
     $same(true,str_contains($source,"return 'token_unavailable'"));
-    $same(true,str_contains($source,"action IN ('line.webhook_user_id_replied','line.webhook_reply_token_unavailable')"));
+    $same(true,str_contains($source,"action IN ('line.webhook_user_id_replied','line.webhook_reply_sent','line.webhook_reply_token_unavailable','line.webhook_reply_suppressed')"));
     $same(true,str_contains($source,"'line_user_id_hash' => \$this->identityHash"));
+    $same(true,str_contains($source,'lineBindings()->consumeSerialized'));
+    $same(false,str_contains($source,'LINE User ID ของคุณคือ'));
+    $replyTextMethod=new ReflectionMethod(LineWebhookService::class,'replyTextForCandidate');
+    $instructions=$replyTextMethod->invoke($service,$request,$followCandidate);
+    $same('instructions',$instructions['outcome']);$same(false,str_contains($instructions['text'],$lineUserId));
+    $malformedCandidate=$candidate;$malformedCandidate['message_text']='BIND-1234';
+    $same('invalid_code',$replyTextMethod->invoke($service,$request,$malformedCandidate)['outcome']);
+
+    $identityHash=new ReflectionMethod(LineWebhookService::class,'identityHash');
+    $hashed=$identityHash->invoke($service,$lineUserId);
+    $same(64,strlen($hashed));$same(1,preg_match('/^[a-f0-9]{64}$/D',$hashed));$same(false,$hashed===$lineUserId);
+    $same($hashed,$identityHash->invoke($service,$lineUserId));
+    $same(false,$hashed===$identityHash->invoke($service,'Uffffffffffffffffffffffffffffffff'));
+
+    $categoryMethod=new ReflectionMethod(LineWebhookService::class,'replyCategory');
+    $bindCandidate=$candidate;$bindCandidate['message_text']='BIND-'.str_repeat('A',32);
+    $same('bind',$categoryMethod->invoke(null,$bindCandidate));
+    $same('instructions',$categoryMethod->invoke(null,$candidate));
+    $same('instructions',$categoryMethod->invoke(null,$malformedCandidate));
+});
+$test('LINE webhook throttling is hashed, split by purpose, terminal for instructions and retryable for valid BIND codes',function()use($same):void{
+    $source=file_get_contents(dirname(__DIR__).'/src/Domain/LineWebhookService.php');
+    if(!is_string($source))throw new RuntimeException('cannot read LineWebhookService');
+    foreach([
+        'line-webhook-instruction-user','line-webhook-instruction-global',
+        'line-webhook-bind-user','line-webhook-bind-global',
+    ]as$scope)$same(true,str_contains($source,$scope));
+    $same(true,str_contains($source,"\$identity = \$this->identityHash(\$candidate['line_user_id'])"));
+    $same(true,str_contains($source,"limiter()->hit(\$user[0], \$identity"));
+    $same(false,str_contains($source,"limiter()->hit(\$user[0], \$candidate['line_user_id']"));
+    $same(true,str_contains($source,"'line.webhook_reply_suppressed'"));
+    $same(true,str_contains($source,"'rate_limit_scope' => \$allowance"));
+
+    $handleStart=strpos($source,'public function handle(');
+    $handleEnd=strpos($source,'private function assertSignature(',$handleStart===false?0:$handleStart);
+    if($handleStart===false||$handleEnd===false)throw new RuntimeException('cannot isolate LINE webhook handler');
+    $handle=substr($source,$handleStart,$handleEnd-$handleStart);
+    $cap=strpos($handle,'if (!self::canStartReply($deadlineNanoseconds, $replyAttempts))');
+    $allowance=strpos($handle,'$allowance = $this->consumeReplyAllowance',$cap===false?0:$cap);
+    $bindBranch=strpos($handle,"if (\$category === 'bind')",$allowance===false?0:$allowance);
+    $bindDeferred=strpos($handle,"return 'deferred';",$bindBranch===false?0:$bindBranch);
+    $suppressedAudit=strpos($handle,"'line.webhook_reply_suppressed'",$bindDeferred===false?0:$bindDeferred);
+    $suppressedReturn=strpos($handle,"return 'suppressed';",$suppressedAudit===false?0:$suppressedAudit);
+    $providerCall=strpos($handle,'$replyDisposition = $this->replyWithText',$suppressedReturn===false?0:$suppressedReturn);
+    $providerDeferred=strpos($handle,"if (\$replyDisposition === 'deferred')",$providerCall===false?0:$providerCall);
+    $terminalAudit=strpos($handle,'$this->writeEventAudit(',$providerDeferred===false?0:$providerDeferred);
+    $deferCount=strpos($handle,'$deferred++;',$terminalAudit===false?0:$terminalAudit);
+    $throw=strpos($handle,"'LINE_WEBHOOK_BATCH_DEFERRED'");
+    $return=strrpos($handle,'return $result;');
+    $same(true,$cap!==false&&$allowance!==false&&$bindBranch!==false&&$bindDeferred!==false
+        &&$suppressedAudit!==false&&$suppressedReturn!==false&&$providerCall!==false&&$providerDeferred!==false
+        &&$terminalAudit!==false&&$deferCount!==false&&$throw!==false&&$return!==false
+        &&$cap<$allowance&&$allowance<$bindBranch&&$bindBranch<$bindDeferred
+        &&$bindDeferred<$suppressedAudit&&$suppressedAudit<$suppressedReturn
+        &&$suppressedReturn<$providerCall&&$providerCall<$providerDeferred
+        &&$providerDeferred<$terminalAudit&&$terminalAudit<$deferCount&&$deferCount<$throw&&$throw<$return);
+    $same(true,str_contains($handle,"elseif (\$disposition === 'deferred')"));
+    $same(true,str_contains($handle,"throw new HttpException(\n                503,"));
+    $same(true,str_contains($handle,"['deferred_events' => \$deferred]"));
+});
+$test('LINE webhook outbound work has a monotonic deadline and a two-call budget',function()use($same):void{
+    $serviceReflection=new ReflectionClass(LineWebhookService::class);
+    $same(2,$serviceReflection->getConstant('MAX_REPLIES'));
+
+    $remaining=new ReflectionMethod(LineWebhookService::class,'remainingMilliseconds');
+    $same(1500,$remaining->invoke(null,2_500_000_000,1_000_000_000));
+    $same(0,$remaining->invoke(null,1_000_000_000,1_000_000_000));
+    $same(0,$remaining->invoke(null,999_000_000,1_000_000_000));
+
+    $canStart=new ReflectionMethod(LineWebhookService::class,'canStartReply');
+    $same(true,$canStart->invoke(null,2_500_000_000,0,1_000_000_000));
+    $same(false,$canStart->invoke(null,2_500_000_000,2,1_000_000_000));
+    $same(false,$canStart->invoke(null,2_249_000_000,0,1_000_000_000));
+
+    $source=file_get_contents(dirname(__DIR__).'/src/Domain/LineWebhookService.php');
+    if(!is_string($source))throw new RuntimeException('cannot read LineWebhookService');
+    $same(true,str_contains($source,'hrtime(true)'));
+    $same(true,str_contains($source,'CURLOPT_CONNECTTIMEOUT_MS'));
+    $same(true,str_contains($source,'CURLOPT_TIMEOUT_MS'));
+    $same(false,str_contains($source,'CURLOPT_TIMEOUT => 8'));
+    $body=strpos($source,'$body = json_encode([');
+    $deadlineCheck=strpos($source,'if ($remainingMilliseconds < self::MIN_REPLY_START_MILLISECONDS)',$body===false?0:$body);
+    $curlStart=strpos($source,'$ch = curl_init(self::REPLY_ENDPOINT)',$deadlineCheck===false?0:$deadlineCheck);
+    $same(true,$body!==false&&$deadlineCheck!==false&&$curlStart!==false&&$body<$deadlineCheck&&$deadlineCheck<$curlStart);
 });
 $test('Railway proxy trust requires runtime identity, edge request ID, and an internal peer',function()use($same,$app):void{
     $keys=['RAILWAY_PROJECT_ID','RAILWAY_ENVIRONMENT_ID','RAILWAY_SERVICE_ID','TRUSTED_PROXIES'];$before=[];
@@ -1244,22 +1722,35 @@ $test('canonical slip HMAC provides safe upload idempotency',function()use($same
     $same(1,preg_match('/UNIQUE KEY\s+uq_payments_slip_hmac\s*\(slip_hmac\)/i',$schema));
 });
 $test('LINE and slip safety states are wired through UI, routes, and schema',function()use($same,$app):void{
-    $root=dirname(__DIR__);$js=file_get_contents($root.'/public/assets/js/app.js');$admin=file_get_contents($root.'/templates/admin/console.php');$schema=file_get_contents($root.'/database/schema.sql');$migration=file_get_contents($root.'/database/migrations/004_line_webhook.sql');
-    if(!is_string($js)||!is_string($admin)||!is_string($schema)||!is_string($migration))throw new RuntimeException('cannot read LINE UI/schema sources');
-    $lineStart=strpos($js,"lineStartForm.addEventListener('submit'");$lineConfirm=strpos($js,"lineConfirmForm.addEventListener('submit'",$lineStart?:0);$lineStartSource=substr($js,(int)$lineStart,(int)$lineConfirm-(int)$lineStart);
-    $same(true,str_contains($lineStartSource,"'LINE_DELIVERY_REJECTED'"));
-    $same(false,str_contains($lineStartSource,"'LINE_DELIVERY_TEMPORARY'"));
+    $root=dirname(__DIR__);$js=file_get_contents($root.'/public/assets/js/app.js');$admin=file_get_contents($root.'/templates/admin/console.php');$residentPortal=file_get_contents($root.'/templates/resident/portal.php');$settingsService=file_get_contents($root.'/src/Domain/SystemSettingsService.php');$schema=file_get_contents($root.'/database/schema.sql');$migration=file_get_contents($root.'/database/migrations/004_line_webhook.sql');$bindingMigration=file_get_contents($root.'/database/migrations/010_line_self_service_binding.sql');$friendMigration=file_get_contents($root.'/database/migrations/011_line_add_friend_identity.sql');
+    if(!is_string($js)||!is_string($admin)||!is_string($residentPortal)||!is_string($settingsService)||!is_string($schema)||!is_string($migration)||!is_string($bindingMigration)||!is_string($friendMigration))throw new RuntimeException('cannot read LINE UI/schema sources');
+    $lineStart=strpos($js,"lineStartForm.addEventListener('submit'");$lineCopy=strpos($js,"lineCodeCopyButton.addEventListener('click'",$lineStart?:0);$lineStartSource=substr($js,(int)$lineStart,(int)$lineCopy-(int)$lineStart);
+    $same(true,str_contains($lineStartSource,"'/api/resident/profile/line/code'"));
+    $same(true,str_contains($lineStartSource,'/^BIND-[A-F0-9]{32}$/'));
+    $same(true,substr_count($js,"raw.replace(' ', 'T')")>=2);
+    $same(true,str_contains($js,'navigator.clipboard.writeText(code)'));
+    $same(false,str_contains($residentPortal,'name="line_user_id"'));
+    $same(false,str_contains($residentPortal,'resident-line-confirm-form'));
+    $same(true,str_contains($residentPortal,'id="confirm-dialog"'));
+    $same(1,substr_count($js,'async function confirmAction('));
+    $same(true,strpos($js,'async function confirmAction(')<strpos($js,'function initResidentPortal()'));
     $same(true,str_contains($js,"sent: 'LINE รับคำขอแล้ว'"));
     $same(true,str_contains($js,"? 'โควตาไม่จำกัด'"));
     $same(true,str_contains($js,"integrations.line_webhook_url"));
     $same(true,str_contains($js,'เปิด Use webhook และ Webhook redelivery แล้วกด Verify'));
     $same(false,str_contains($js,'Webhook พร้อมใช้งาน'));
     $same(true,str_contains($admin,'name="line_channel_secret" type="password"'));
+    $same(true,str_contains($admin,'name="line_basic_id"'));
     $same(true,str_contains($admin,'data-line-webhook-url readonly'));
+    $same(false,str_contains($settingsService,'curl_error('));
+    foreach(['curlFailureMessage','CURLE_OPERATION_TIMEDOUT','CURLE_SSL_CACERT','ตรวจ CA certificate ของเซิร์ฟเวอร์']as$item)$same(true,str_contains($settingsService,$item));
 
     $same(1,preg_match('/line_user_id VARCHAR\(33\).*?CHECK\s*\(\s*line_user_id IS NULL OR line_user_id REGEXP \'\^U\[0-9a-f\]\{32\}\$\'\s*\)/s',$schema));
     $same(1,preg_match('/recipient VARCHAR\(33\).*?CHECK\s*\(\s*recipient REGEXP \'\^U\[0-9a-f\]\{32\}\$\'\s*\)/s',$schema));
     foreach(['line_channel_secret_enc','line_request_id','line_accepted_request_id']as$column){$same(true,str_contains($schema,$column));$same(true,str_contains($migration,$column));}
+    foreach(['line_link_codes','code_hash','pending_resident_id','uq_line_link_codes_pending_resident']as$item){$same(true,str_contains($schema,$item));$same(true,str_contains($bindingMigration,$item));}
+    foreach(['line_basic_id','chk_integration_settings_line_basic_id']as$item){$same(true,str_contains($schema,$item));$same(true,str_contains($friendMigration,$item));}
+    $same(false,str_contains($schema,'line_link_codes (code'));
     $same(true,str_contains($migration,'@dormitory_004_invalid_line_ids'));
     $same(true,str_contains($migration,"line_user_id NOT REGEXP '^U[0-9a-f]{32}$'"));
     $same(true,str_contains($migration,"recipient NOT REGEXP '^U[0-9a-f]{32}$'"));
@@ -1276,7 +1767,8 @@ $test('runtime readiness rejects legacy PIN schemas and incomplete unique guards
     $root=dirname(__DIR__);
     $health=file_get_contents($root.'/public/healthz.php');
     $bootstrap=file_get_contents($root.'/scripts/bootstrap_database.sh');
-    if(!is_string($health)||!is_string($bootstrap))throw new RuntimeException('cannot read schema readiness sources');
+    $requirements=file_get_contents($root.'/scripts/check_requirements.php');
+    if(!is_string($health)||!is_string($bootstrap)||!is_string($requirements))throw new RuntimeException('cannot read schema readiness sources');
     foreach([
         'booked_monthly_rent','active_phone_norm','resident_name_snapshot','room_code_snapshot',
         'verification_lease_until','verification_token','verification_attempts','active_bill_id',
@@ -1296,6 +1788,39 @@ $test('runtime readiness rejects legacy PIN schemas and incomplete unique guards
     $same(true,str_contains($health,"\$indexRow['SUB_PART']"));
     $same(true,str_contains($health,"\$indexRow['SEQ_IN_INDEX']"));
     $same(true,str_contains($bootstrap,"index_name <> 'PRIMARY' AND non_unique = 0"));
+    foreach([
+        '$invalidMeterOccupancyLinks',
+        '$invalidMeterChains',
+        '$invalidFinancialRelationships',
+        '$activeResidentsWithoutCredential',
+        '$overlappingOccupancyMonths',
+        '$invalidResidentOccupancyStates',
+        'prior_row.period=DATE_SUB(current_row.period,INTERVAL 1 MONTH)',
+        'occupancy ของห้องหรือ resident เดียวกันทับรอบเดือน',
+        'second_row.resident_id=first_row.resident_id',
+        "moved_booking.status='moved_in'",
+        'moved_occupancy.id IS NULL',
+        'linked_booking.booked_monthly_rent<=>occupancy_row.monthly_rent',
+        "CONCAT('bill-payment:',paid_bill.id)",
+        "CONCAT('notification:',notification_row.id)",
+        'payment_row.amount<=>payment_bill.total_amount',
+        'bill_water.occupancy_id=bill_row.occupancy_id',
+        'resident/occupancy/room/booking lifecycle state',
+        'ความสัมพันธ์ occupancy/bill/items/payment/notification',
+        'meter chain ขาดเดือนหรือ previous reading',
+        'active residents ไม่มี password หรือ activation key',
+    ]as$guard)$same(true,str_contains($requirements,$guard));
+    $same(true,str_contains($requirements,"addResult(\$errors,'data readiness ไม่ผ่าน: active residents"));
+    foreach([
+        'action_statement',
+        'normalizeTriggerAction',
+        'expectedTriggerActions',
+        'event/timing/body',
+        'triggers 19 รายการ',
+    ]as$bodyAuditGuard)$same(true,str_contains($requirements,$bodyAuditGuard));
+    $same(true,str_contains($bootstrap,'actual_trigger_count" == 19'));
+    $same(true,str_contains($bootstrap,'trg_bookings_insert_guard|BEFORE|INSERT|bookings'));
+    $same(true,str_contains($bootstrap,'trg_occupancies_relationship_guard|BEFORE|INSERT|occupancies'));
 });
 $test('runtime readiness validates complete generated uniqueness definitions',function()use($same):void{
     $root=dirname(__DIR__);
@@ -1337,16 +1862,490 @@ $test('runtime readiness validates complete generated uniqueness definitions',fu
     $same(true,str_contains($requirements,'array_diff('));
     $same(true,str_contains($requirements,'schema ขาดหรือมีนิยาม generated uniqueness guards ไม่ถูกต้อง'));
 });
+$test('database CLI scripts enforce fail-closed TLS identity verification',function()use($same):void{
+    $root=dirname(__DIR__);
+    $bootstrap=file_get_contents($root.'/scripts/bootstrap_database.sh');
+    $provision=file_get_contents($root.'/scripts/provision_runtime_db_user.sh');
+    $requirements=file_get_contents($root.'/scripts/check_requirements.php');
+    if(!is_string($bootstrap)||!is_string($provision)||!is_string($requirements))throw new RuntimeException('cannot read database CLI scripts');
+    foreach([$bootstrap,$provision]as$script){
+        $same(true,str_contains($script,'local db_ssl_value="${DB_SSL-false}"'));
+        $same(true,str_contains($script,'mysql --no-defaults --help 2>&1'));
+        $same(true,str_contains($script,'"$DB_SSL_CA" == /*'));
+        $same(true,str_contains($script,'-f "$DB_SSL_CA"'));
+        $same(true,str_contains($script,'-r "$DB_SSL_CA"'));
+        $same(true,str_contains($script,'--ssl-mode=VERIFY_IDENTITY'));
+        $same(true,str_contains($script,'--ssl-verify-server-cert'));
+        $same(true,str_contains($script,'refusing to connect'));
+    }
+    $same(true,str_contains($bootstrap,'mysql_args+=("${mysql_tls_args[@]}")'));
+    $same(true,str_contains($provision,'dba_args+=("${mysql_tls_args[@]}")'));
+    $same(true,str_contains($provision,'runtime_args+=("${mysql_tls_args[@]}")'));
+    $same(true,str_contains($provision,"runtime_account_tls_clause='REQUIRE SSL'"));
+    $same(true,str_contains($requirements,"!defined('PDO::MYSQL_ATTR_SSL_CA')"));
+    $same(true,str_contains($requirements,"!defined('PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT')"));
+    $constantGuard=strpos($requirements,"!defined('PDO::MYSQL_ATTR_SSL_CA')");
+    $pdoConnect=strpos($requirements,'$pdo = new PDO(');
+    $same(true,$constantGuard!==false&&$pdoConnect!==false&&$constantGuard<$pdoConnect);
+    $createUser=strpos($provision,"CREATE USER '\${DB_USERNAME}'@'%'");
+    $identifiedBy=strpos($provision,"IDENTIFIED BY '\${DB_PASSWORD}'",$createUser===false?0:$createUser);
+    $requireSsl=strpos($provision,'${runtime_account_tls_clause}',$identifiedBy===false?0:$identifiedBy);
+    $passwordExpiry=strpos($provision,'PASSWORD EXPIRE NEVER',$requireSsl===false?0:$requireSsl);
+    $accountUnlock=strpos($provision,'ACCOUNT UNLOCK',$passwordExpiry===false?0:$passwordExpiry);
+    $same(true,$createUser!==false&&$identifiedBy!==false&&$requireSsl!==false
+        &&$passwordExpiry!==false&&$accountUnlock!==false
+        &&$createUser<$identifiedBy&&$identifiedBy<$requireSsl
+        &&$requireSsl<$passwordExpiry&&$passwordExpiry<$accountUnlock);
+});
 $test('container runtime command dispatches by fail-closed role',function()use($same):void{
-    $script=file_get_contents(dirname(__DIR__).'/scripts/start-runtime.sh');$docker=file_get_contents(dirname(__DIR__).'/Dockerfile');
-    if(!is_string($script)||!is_string($docker))throw new RuntimeException('cannot read runtime dispatch sources');
+    $root=dirname(__DIR__);
+    $script=file_get_contents($root.'/scripts/start-runtime.sh');
+    $docker=file_get_contents($root.'/Dockerfile');
+    $monthly=file_get_contents($root.'/scripts/run_monthly_billing.sh');
+    $provision=file_get_contents($root.'/scripts/provision_runtime_db_user.sh');
+    $setup=file_get_contents($root.'/scripts/setup-database.sh');
+    $workflow=file_get_contents($root.'/.github/workflows/ci.yml');
+    if(!is_string($script)||!is_string($docker)||!is_string($monthly)||!is_string($provision)||!is_string($setup)||!is_string($workflow))throw new RuntimeException('cannot read runtime dispatch sources');
     foreach(['web)','worker)','job)']as$case)$same(true,str_contains($script,$case));
     $same(true,str_contains($script,'role=${RUNTIME_ROLE:-}'));
     $same(false,str_contains($script,'RUNTIME_ROLE:-web'));
     $same(true,str_contains($docker,'CMD ["/var/www/html/scripts/start-runtime.sh"]'));
+    $same(true,str_contains($docker,'/var/www/html/scripts/run_monthly_billing.sh'));
+    $same(true,str_contains($monthly,'exec gosu www-data:www-data sh "$script_directory/run_monthly_billing.sh" "$@"'));
+    $same(true,str_contains($setup,'database setup requires RUNTIME_ROLE=job'));
+    $roleGuard=strpos($setup,'RUNTIME_ROLE:-');
+    $bootstrapCall=strpos($setup,'bootstrap_database.sh');
+    $same(true,$roleGuard!==false&&$bootstrapCall!==false&&$roleGuard<$bootstrapCall);
+    $same(true,str_contains($provision,"[[ \"\$readiness\" == '16|1|1' ]]"));
+    $same(false,str_contains($provision,"[[ \"\$readiness\" == '15|1|1' ]]"));
+    $same(true,str_contains($workflow,"[ \"\$install_shape\" = '16|19|86' ]"));
+    $same(false,str_contains($workflow,"[ \"\$install_shape\" = '15|19|80' ]"));
     $checker=file_get_contents(dirname(__DIR__).'/scripts/check_requirements.php');if(!is_string($checker))throw new RuntimeException('cannot read requirement checker');
     $same(true,str_contains($checker,"\$runtimeRole=(string)envValue(\$env,'RUNTIME_ROLE','all')"));
     $same(false,str_contains($checker,'$runtimeRole=strtolower'));
+});
+$test('public and resident UX keeps mutation, LINE, dialog, and recovery guards',function()use($same):void{
+    $root=dirname(__DIR__);
+    $js=file_get_contents($root.'/public/assets/js/app.js');
+    $public=file_get_contents($root.'/templates/public/home.php');
+    $portal=file_get_contents($root.'/templates/resident/portal.php');
+    if(!is_string($js)||!is_string($public)||!is_string($portal))throw new RuntimeException('cannot read public/resident UX sources');
+
+    foreach(['id="booking-success-room"','id="booking-success-phone"']as$surface)$same(true,str_contains($public,$surface));
+    foreach(['maskBookingPhone','booking-success-room','booking-success-phone']as$behavior)$same(true,str_contains($js,$behavior));
+    $bookingStart=strpos($js,"bookingForm.addEventListener('submit'");
+    $bookingEnd=strpos($js,'function initLogin(',$bookingStart===false?0:$bookingStart);
+    if($bookingStart===false||$bookingEnd===false)throw new RuntimeException('cannot isolate public booking submission');
+    $booking=substr($js,$bookingStart,$bookingEnd-$bookingStart);
+    $lock=strpos($booking,'setDialogBusy(bookingDialog, true)');
+    $request=strpos($booking,"api('/api/public/bookings'");
+    $unlock=strpos($booking,'setDialogBusy(bookingDialog, false)');
+    $same(true,$lock!==false&&$request!==false&&$unlock!==false&&$lock<$request&&$request<$unlock);
+    $same(true,str_contains($booking,'} finally {'));
+
+    $setupStart=strpos($js,'function setupCommonInteractions()');
+    $setupEnd=strpos($js,'function initPublicRooms()',$setupStart===false?0:$setupStart);
+    if($setupStart===false||$setupEnd===false)throw new RuntimeException('cannot isolate common dialog interactions');
+    $setup=substr($js,$setupStart,$setupEnd-$setupStart);
+    $same(true,str_contains($js,'function dialogCloseBlocked(dialog, trigger = null)'));
+    $same(true,str_contains($js,'function setDialogBusy(dialog, busy)'));
+    $same(true,str_contains($setup,'if (dialogCloseBlocked(dialog)) event.preventDefault();'));
+    $same(false,str_contains($setup,"if (dialog.querySelector('form')) dialog.addEventListener('cancel'"));
+
+    $same(0,preg_match('/id="resident-line-code-expiry"[^>]*aria-live/',$portal));
+    foreach(['lineStartForm.hidden = true','const hasActiveCode = state.lineCodeExpiresAt > Date.now()']as$guard)$same(true,str_contains($js,$guard));
+    foreach(['id="resident-bills-empty-title"','id="resident-bills-empty-copy"','id="resident-bill-loading-message"','id="resident-bill-detail-retry"']as$surface)$same(true,str_contains($portal,$surface));
+    foreach(['ไม่มีบิลรอชำระ','ยังไม่มีบิลที่ชำระแล้ว','billDetailRetryButton.addEventListener']as$behavior)$same(true,str_contains($js,$behavior));
+    $same(1,preg_match('/id="resident-bill-loading"[^>]*role="status"/',$portal));
+    $same(true,str_contains($js,"billDetailLoading.setAttribute('role', 'alert')"));
+    $same(true,str_contains($js,"canvas.setAttribute('role', 'img')"));
+    $same(true,str_contains($js,"message.setAttribute('role', 'alert')"));
+    $same(true,str_contains($js,'qrStage.replaceChildren(message)'));
+});
+
+$test('public LINE contact exposes only a strictly validated public identity',function()use($same):void{
+    $root=dirname(__DIR__);
+    $settings=file_get_contents($root.'/src/Domain/SystemSettingsService.php');
+    $routes=file_get_contents($root.'/src/Http/Routes.php');
+    $js=file_get_contents($root.'/public/assets/js/app.js');
+    $public=file_get_contents($root.'/templates/public/home.php');
+    $residentLogin=file_get_contents($root.'/templates/resident/login.php');
+    if(!is_string($settings)||!is_string($routes)||!is_string($js)||!is_string($public)||!is_string($residentLogin))throw new RuntimeException('cannot read public LINE contact sources');
+
+    $contactStart=strpos($settings,'public function publicContact(): array');
+    $contactEnd=$contactStart===false?false:strpos($settings,'/**',$contactStart+strlen('public function publicContact(): array'));
+    if($contactStart===false||$contactEnd===false)throw new RuntimeException('cannot isolate public contact method');
+    $contact=substr($settings,$contactStart,$contactEnd-$contactStart);
+    $same(true,str_contains($contact,'SELECT line_basic_id FROM integration_settings WHERE id=1'));
+    $same(false,str_contains($contact,'SELECT *'));
+    foreach(['line_channel_access_token','line_channel_secret','promptpay_target','payment_receiver_account_tail','slipok_api_key','easyslip_api_key']as$privateField)$same(false,str_contains($contact,$privateField));
+    $same(true,str_contains($contact,'/^@[A-Za-z0-9._-]{1,32}$/D'));
+    $same(true,str_contains($contact,"'line_add_friend_url' => 'https://line.me/R/ti/p/' . \$lineBasicId"));
+    $same(true,str_contains($routes,"'/api/public/contact'"));
+    $same(true,str_contains($routes,'Response::json($app->settings()->publicContact())'));
+
+    $supportStart=strpos($js,'async function loadPublicSupport()');
+    $supportEnd=$supportStart===false?false:strpos($js,'function initPublicRooms()',$supportStart);
+    if($supportStart===false||$supportEnd===false)throw new RuntimeException('cannot isolate public support loader');
+    $support=substr($js,$supportStart,$supportEnd-$supportStart);
+    $same(true,str_contains($support,'/^https:\/\/line\.me\/R\/ti\/p\/@[A-Za-z0-9._-]{1,32}$/'));
+    $same(true,str_contains($support,'if (!url) return;'));
+    $same(true,str_contains($support,'link.href = url'));
+    foreach([$public,$residentLogin]as$template){
+        $attribute=strpos($template,'data-public-support-line');
+        $open=$attribute===false?false:strrpos(substr($template,0,$attribute),'<a');
+        $close=$attribute===false?false:strpos($template,'>',$attribute);
+        if($attribute===false||$open===false||$close===false)throw new RuntimeException('cannot isolate public support link');
+        $link=substr($template,$open,$close-$open+1);
+        foreach(['target="_blank"','rel="noopener noreferrer"','hidden']as$guard)$same(true,str_contains($link,$guard));
+    }
+});
+
+$test('resident payment UI locks slip mutation and rejects stale verifying refreshes',function()use($same):void{
+    $js=file_get_contents(dirname(__DIR__).'/public/assets/js/app.js');
+    if(!is_string($js))throw new RuntimeException('cannot read resident payment UI source');
+
+    $slipStart=strpos($js,"$('#resident-slip-form').addEventListener('submit'");
+    $slipEnd=$slipStart===false?false:strpos($js,'const initialHash = location.hash',$slipStart);
+    if($slipStart===false||$slipEnd===false)throw new RuntimeException('cannot isolate slip submission');
+    $slip=substr($js,$slipStart,$slipEnd-$slipStart);
+    $slipLock=strpos($slip,'setDialogBusy(billDialog, true)');
+    $slipRequest=strpos($slip,'/slip`');
+    $slipUnlock=strpos($slip,'finally { setBusy(button, false); setDialogBusy(billDialog, false); }');
+    $same(true,$slipLock!==false&&$slipRequest!==false&&$slipUnlock!==false&&$slipLock<$slipRequest&&$slipRequest<$slipUnlock);
+
+    $pollStart=strpos($js,'async function refreshVerifyingBills(force = false)');
+    $pollEnd=$pollStart===false?false:strpos($js,'function appendBreakdown(',$pollStart);
+    if($pollStart===false||$pollEnd===false)throw new RuntimeException('cannot isolate verifying bill refresh');
+    $poll=substr($js,$pollStart,$pollEnd-$pollStart);
+    $generationCapture=strpos($poll,'const loadGeneration = state.loadRequest');
+    $pollRequest=strpos($poll,"api('/api/resident/bills')");
+    $generationGuard=strpos($poll,'if (loadGeneration !== state.loadRequest) return;');
+    $unchangedGuard=strpos($poll,'if (JSON.stringify(nextBills) === JSON.stringify(state.bills)) return;');
+    $billAssignment=strpos($poll,'state.bills = nextBills;');
+    $billRender=strpos($poll,'renderBills();');
+    $currentBillGuard=strpos($poll,'String(state.currentBillId) === String(currentId)');
+    $same(true,$generationCapture!==false&&$pollRequest!==false&&$generationGuard!==false&&$unchangedGuard!==false&&$billAssignment!==false&&$billRender!==false&&$currentBillGuard!==false
+        &&$generationCapture<$pollRequest&&$pollRequest<$generationGuard&&$generationGuard<$unchangedGuard&&$unchangedGuard<$billAssignment&&$billAssignment<$billRender&&$billRender<$currentBillGuard);
+    $same(true,str_contains($poll,'finally { state.billRefreshRequest = false; }'));
+    $same(true,str_contains($js,"if (doc.visibilityState === 'visible') refreshVerifyingBills(true);"));
+});
+
+$test('activation passwords survive retryable failure and unsent access secrets block navigation',function()use($same):void{
+    $js=file_get_contents(dirname(__DIR__).'/public/assets/js/app.js');
+    if(!is_string($js))throw new RuntimeException('cannot read activation UX source');
+
+    $loginStart=strpos($js,'function initResidentLogin()');
+    $loginEnd=$loginStart===false?false:strpos($js,'function initResidentPortal()',$loginStart);
+    if($loginStart===false||$loginEnd===false)throw new RuntimeException('cannot isolate resident login');
+    $login=substr($js,$loginStart,$loginEnd-$loginStart);
+    $successFlag=strpos($login,'let loginSucceeded = false;');
+    $loginRequest=strpos($login,"api('/api/auth/resident/login'");
+    $successSet=strpos($login,'loginSucceeded = true;');
+    $finally=strpos($login,'} finally {');
+    $same(true,$successFlag!==false&&$loginRequest!==false&&$successSet!==false&&$finally!==false&&$successFlag<$loginRequest&&$loginRequest<$successSet&&$successSet<$finally);
+    $finallyEnd=$finally===false?false:strpos($login,'resetSecretVisibility();',$finally);
+    if($finally===false||$finallyEnd===false)throw new RuntimeException('cannot isolate resident login cleanup');
+    $cleanup=substr($login,$finally,$finallyEnd-$finally);
+    $retainGuard=strpos($cleanup,'if (!activating || loginSucceeded)');
+    $newPasswordClear=strpos($cleanup,"form.elements.new_password.value = '';");
+    $confirmationClear=strpos($cleanup,"form.elements.new_password_confirm.value = '';");
+    $same(true,$retainGuard!==false&&$newPasswordClear!==false&&$confirmationClear!==false&&$retainGuard<$newPasswordClear&&$newPasswordClear<$confirmationClear);
+
+    $same(true,str_contains($js,"let residentActivationSecret = '';"));
+    $same(true,str_contains($js,'residentActivationSecret = code;'));
+    $beforeStart=strpos($js,"window.addEventListener('beforeunload'");
+    $beforeEnd=$beforeStart===false?false:strpos($js,'integrationSettingsForm?.addEventListener',$beforeStart);
+    if($beforeStart===false||$beforeEnd===false)throw new RuntimeException('cannot isolate admin beforeunload guard');
+    $beforeUnload=substr($js,$beforeStart,$beforeEnd-$beforeStart);
+    $same(true,str_contains($beforeUnload,'if (adminLogoutInProgress || (!residentActivationSecret && !hasDirtySettings() && !hasDirtyMeterRows())) return;'));
+    $same(true,str_contains($beforeUnload,"event.preventDefault(); event.returnValue = '';"));
+});
+
+$test('resident LINE polling merges only LINE state without overwriting profile edits',function()use($same):void{
+    $js=file_get_contents(dirname(__DIR__).'/public/assets/js/app.js');
+    if(!is_string($js))throw new RuntimeException('cannot read resident LINE polling source');
+
+    $pollStart=strpos($js,'async function refreshLineStatus(silent = false)');
+    $pollEnd=$pollStart===false?false:strpos($js,'function replaceResidentHash(',$pollStart);
+    if($pollStart===false||$pollEnd===false)throw new RuntimeException('cannot isolate resident LINE status polling');
+    $poll=substr($js,$pollStart,$pollEnd-$pollStart);
+
+    $revisionCapture=strpos($poll,'const profileRevision = state.profileRevision;');
+    $request=strpos($poll,"api('/api/resident/profile')");
+    $revisionGuard=strpos($poll,'if (profileRevision !== state.profileRevision) return false;');
+    $merge=strpos($poll,'state.profile = {');
+    $render=strpos($poll,'renderLineStatus();');
+    $same(true,$revisionCapture!==false&&$request!==false&&$revisionGuard!==false&&$merge!==false&&$render!==false
+        &&$revisionCapture<$request&&$request<$revisionGuard&&$revisionGuard<$merge&&$merge<$render);
+    foreach([
+        'line_verified: latestProfile.line_verified',
+        'line_user_id_hint: latestProfile.line_user_id_hint',
+        'line_add_friend_url: latestProfile.line_add_friend_url',
+    ]as$lineField)$same(true,str_contains($poll,$lineField));
+    foreach([
+        'fillProfile();',
+        'state.profile = objectFrom',
+        'latestProfile.full_name',
+        'latestProfile.email',
+        'latestProfile.phone',
+        'latestProfile.room_code',
+    ]as$profileOverwrite)$same(false,str_contains($poll,$profileOverwrite));
+});
+
+$test('resident and admin logout use shared in-flight locks and recover after failure',function()use($same):void{
+    $js=file_get_contents(dirname(__DIR__).'/public/assets/js/app.js');
+    if(!is_string($js))throw new RuntimeException('cannot read logout UX source');
+
+    $residentStart=strpos($js,"const residentLogoutButtons = \$\$('[data-resident-logout]');");
+    $residentEnd=$residentStart===false?false:strpos($js,"profileForm.addEventListener('submit'",$residentStart);
+    if($residentStart===false||$residentEnd===false)throw new RuntimeException('cannot isolate resident logout handler');
+    $resident=substr($js,$residentStart,$residentEnd-$residentStart);
+    $residentGuard=strpos($resident,'if (residentLogoutInProgress) return;');
+    $residentLock=strpos($resident,'residentLogoutInProgress = true;');
+    $residentDisable=strpos($resident,"residentLogoutButtons.forEach((item) => { item.disabled = true; item.setAttribute('aria-busy', 'true'); });");
+    $residentRequest=strpos($resident,"api('/api/auth/resident/logout'");
+    $residentRedirect=strpos($resident,"location.assign('/resident/login');");
+    $residentUnlock=strpos($resident,'residentLogoutInProgress = false;',$residentRequest===false?0:$residentRequest);
+    $residentEnable=strpos($resident,"residentLogoutButtons.forEach((item) => { item.disabled = false; item.removeAttribute('aria-busy'); });");
+    $same(true,$residentGuard!==false&&$residentLock!==false&&$residentDisable!==false&&$residentRequest!==false&&$residentRedirect!==false&&$residentUnlock!==false&&$residentEnable!==false
+        &&$residentGuard<$residentLock&&$residentLock<$residentDisable&&$residentDisable<$residentRequest&&$residentRequest<$residentRedirect&&$residentRedirect<$residentUnlock&&$residentUnlock<$residentEnable);
+    $same(false,str_contains($resident,'finally { location.assign'));
+
+    $adminStart=strpos($js,"const adminLogoutButtons = \$\$('[data-admin-logout]');");
+    $adminEnd=$adminStart===false?false:strpos($js,'const initialHash = location.hash',$adminStart);
+    if($adminStart===false||$adminEnd===false)throw new RuntimeException('cannot isolate admin logout handler');
+    $admin=substr($js,$adminStart,$adminEnd-$adminStart);
+    $adminGuard=strpos($admin,'if (adminLogoutInProgress) return;');
+    $adminLock=strpos($admin,'adminLogoutInProgress = true;');
+    $activationGuard=strpos($admin,'const hasUncopiedAccess = Boolean(residentActivationSecret);');
+    $confirm=strpos($admin,'&& !await confirmAction(');
+    $cancelUnlock=strpos($admin,'adminLogoutInProgress = false;',$confirm===false?0:$confirm);
+    $adminDisable=strpos($admin,"adminLogoutButtons.forEach((item) => { item.disabled = true; item.setAttribute('aria-busy', 'true'); });");
+    $adminRequest=strpos($admin,"api('/api/auth/admin/logout'");
+    $adminRedirect=strpos($admin,"location.assign('/admin/login');");
+    $failureUnlock=strpos($admin,'adminLogoutInProgress = false;',$adminRequest===false?0:$adminRequest);
+    $adminEnable=strpos($admin,"adminLogoutButtons.forEach((item) => { item.disabled = false; item.removeAttribute('aria-busy'); });");
+    $same(true,$adminGuard!==false&&$adminLock!==false&&$activationGuard!==false&&$confirm!==false&&$cancelUnlock!==false&&$adminDisable!==false&&$adminRequest!==false&&$adminRedirect!==false&&$failureUnlock!==false&&$adminEnable!==false
+        &&$adminGuard<$adminLock&&$adminLock<$activationGuard&&$activationGuard<$confirm&&$confirm<$cancelUnlock&&$cancelUnlock<$adminDisable&&$adminDisable<$adminRequest&&$adminRequest<$adminRedirect&&$adminRedirect<$failureUnlock&&$failureUnlock<$adminEnable);
+    foreach([
+        "hasUncopiedAccess ? 'ยังมี activation code แสดงอยู่'",
+        "hasUncopiedAccess ? 'ยืนยันว่าได้ส่งมอบแล้ว'",
+        'รหัสเปิดใช้งานจะแสดงได้ครั้งเดียวและจะถูกล้างเมื่อออกจากระบบ',
+    ]as$activationWarning)$same(true,str_contains($admin,$activationWarning));
+    $same(false,str_contains($admin,'finally { location.assign'));
+});
+
+$test('settings saves fence stale loads and block navigation until completion',function()use($same):void{
+    $js=file_get_contents(dirname(__DIR__).'/public/assets/js/app.js');
+    if(!is_string($js))throw new RuntimeException('cannot read settings concurrency source');
+    foreach(['let settingsSaveInProgress = false;','let settingsLoadGeneration = 0;']as$stateGuard)$same(true,str_contains($js,$stateGuard));
+
+    $switchStart=strpos($js,'function switchView(name, force = false, updateHash = true)');
+    $switchEnd=$switchStart===false?false:strpos($js,'function roomMatches(',$switchStart);
+    if($switchStart===false||$switchEnd===false)throw new RuntimeException('cannot isolate admin view switch');
+    $switch=substr($js,$switchStart,$switchEnd-$switchStart);
+    $navigationStart=strpos($switch,"if (activeView === 'settings' && name !== 'settings' && settingsSaveInProgress)");
+    $dirtyGuard=strpos($switch,"if (activeView === 'settings' && name !== 'settings' && hasDirtySettings())");
+    if($navigationStart===false||$dirtyGuard===false)throw new RuntimeException('cannot isolate settings navigation lock');
+    $navigationGuard=substr($switch,$navigationStart,$dirtyGuard-$navigationStart);
+    $same(true,str_contains($navigationGuard,'กำลังบันทึกการตั้งค่า กรุณารอให้เสร็จก่อนเปลี่ยนหน้า'));
+    $same(true,str_contains($navigationGuard,'return false;'));
+
+    $loadStart=strpos($js,'async function loadSettings()');
+    $loadEnd=$loadStart===false?false:strpos($js,'function applyBillingReadiness()',$loadStart);
+    if($loadStart===false||$loadEnd===false)throw new RuntimeException('cannot isolate settings loader');
+    $load=substr($js,$loadStart,$loadEnd-$loadStart);
+    $generationCapture=strpos($load,'const generation = ++settingsLoadGeneration;');
+    $loadRequest=strpos($load,"api('/api/admin/settings')");
+    $generationGuard=strpos($load,'if (generation !== settingsLoadGeneration) return;');
+    $settingsAssignment=strpos($load,"state.settings = objectFrom(data, 'settings');");
+    $same(true,$generationCapture!==false&&$loadRequest!==false&&$generationGuard!==false&&$settingsAssignment!==false
+        &&$generationCapture<$loadRequest&&$loadRequest<$generationGuard&&$generationGuard<$settingsAssignment);
+    $same(2,substr_count($load,'if (generation !== settingsLoadGeneration) return;'));
+    $same(true,str_contains($load,"if (integrationSettingsForm?.dataset.dirty !== 'true') renderIntegrationSettings"));
+
+    $billingStart=strpos($js,"billingSettingsForm?.addEventListener('submit'");
+    $billingEnd=$billingStart===false?false:strpos($js,"integrationSettingsForm?.addEventListener('input'",$billingStart);
+    if($billingStart===false||$billingEnd===false)throw new RuntimeException('cannot isolate billing settings save');
+    $billing=substr($js,$billingStart,$billingEnd-$billingStart);
+    $billingGuard=strpos($billing,'if (settingsSaveInProgress || !form.reportValidity()) return;');
+    $billingLock=strpos($billing,'settingsSaveInProgress = true;');
+    $billingRequest=strpos($billing,"api('/api/admin/settings'");
+    $billingFence=strpos($billing,'++settingsLoadGeneration;');
+    $billingUnlock=strpos($billing,'finally { settingsSaveInProgress = false;');
+    $same(true,$billingGuard!==false&&$billingLock!==false&&$billingRequest!==false&&$billingFence!==false&&$billingUnlock!==false
+        &&$billingGuard<$billingLock&&$billingLock<$billingRequest&&$billingRequest<$billingFence&&$billingFence<$billingUnlock);
+
+    $integrationStart=strpos($js,"integrationSettingsForm?.addEventListener('submit'");
+    $integrationEnd=$integrationStart===false?false:strpos($js,"\$\$('[data-test-integration]')",$integrationStart);
+    if($integrationStart===false||$integrationEnd===false)throw new RuntimeException('cannot isolate integration settings save');
+    $integration=substr($js,$integrationStart,$integrationEnd-$integrationStart);
+    $integrationGuard=strpos($integration,'if (settingsSaveInProgress || !form.reportValidity()) return;');
+    $integrationLock=strpos($integration,'settingsSaveInProgress = true;');
+    $integrationRequest=strpos($integration,"api('/api/admin/settings/integrations'");
+    $integrationFence=strpos($integration,'++settingsLoadGeneration;');
+    $integrationUnlock=strpos($integration,'finally { settingsSaveInProgress = false;');
+    $same(true,$integrationGuard!==false&&$integrationLock!==false&&$integrationRequest!==false&&$integrationFence!==false&&$integrationUnlock!==false
+        &&$integrationGuard<$integrationLock&&$integrationLock<$integrationRequest&&$integrationRequest<$integrationFence&&$integrationFence<$integrationUnlock);
+});
+
+$test('bill preview invalidates an older token before starting a replacement request',function()use($same):void{
+    $js=file_get_contents(dirname(__DIR__).'/public/assets/js/app.js');
+    if(!is_string($js))throw new RuntimeException('cannot read bill preview source');
+    $previewStart=strpos($js,"$('#preview-bills-button').addEventListener('click'");
+    $previewEnd=$previewStart===false?false:strpos($js,"$('#bill-builder-form').addEventListener('submit'",$previewStart);
+    if($previewStart===false||$previewEnd===false)throw new RuntimeException('cannot isolate bill preview handler');
+    $preview=substr($js,$previewStart,$previewEnd-$previewStart);
+    $validation=strpos($preview,"if (!$('#bill-builder-form').reportValidity() || !payload.room_ids.length)");
+    $invalidate=strpos($preview,'invalidateBillPreview();');
+    $busy=strpos($preview,"setBusy(button, true, 'กำลังคำนวณ…');");
+    $request=strpos($preview,"api('/api/admin/bills/preview'");
+    $same(true,$validation!==false&&$invalidate!==false&&$busy!==false&&$request!==false
+        &&$validation<$invalidate&&$invalidate<$busy&&$busy<$request);
+    $same(1,substr_count($preview,'invalidateBillPreview();'));
+});
+
+$test('admin bill status and LINE queues honor the deterministic latest payment',function()use($same):void{
+    $root=dirname(__DIR__);
+    $billing=file_get_contents($root.'/src/Domain/BillingService.php');
+    $notifications=file_get_contents($root.'/src/Domain/NotificationService.php');
+    $js=file_get_contents($root.'/public/assets/js/app.js');
+    if(!is_string($billing)||!is_string($notifications)||!is_string($js))throw new RuntimeException('cannot read admin payment-aware LINE sources');
+
+    $adminListStart=strpos($billing,'public function adminList(?string $period): array');
+    $adminListEnd=$adminListStart===false?false:strpos($billing,'public function residentList(',$adminListStart);
+    if($adminListStart===false||$adminListEnd===false)throw new RuntimeException('cannot isolate admin bill list');
+    $adminList=substr($billing,$adminListStart,$adminListEnd-$adminListStart);
+    $paymentSelect=strpos($adminList,'(SELECT p.status');
+    $paymentScope=strpos($adminList,'WHERE p.bill_id=b.id');
+    $paymentOrder=strpos($adminList,'ORDER BY p.id DESC');
+    $paymentAlias=strpos($adminList,'LIMIT 1) AS payment_status');
+    $same(true,$paymentSelect!==false&&$paymentScope!==false&&$paymentOrder!==false&&$paymentAlias!==false
+        &&$paymentSelect<$paymentScope&&$paymentScope<$paymentOrder&&$paymentOrder<$paymentAlias);
+
+    $enqueueStart=strpos($notifications,'public function enqueueBill(int $billId): array');
+    $enqueueEnd=$enqueueStart===false?false:strpos($notifications,'public function enqueuePeriod(',$enqueueStart);
+    if($enqueueStart===false||$enqueueEnd===false)throw new RuntimeException('cannot isolate single-bill LINE enqueue');
+    $enqueue=substr($notifications,$enqueueStart,$enqueueEnd-$enqueueStart);
+    $billLock=strpos($enqueue,'WHERE b.id=? FOR UPDATE');
+    $latestPaymentLock=strpos($enqueue,'SELECT status FROM payments WHERE bill_id=? ORDER BY id DESC LIMIT 1 FOR UPDATE');
+    $pendingGuard=strpos($enqueue,"if(\$paymentStatus==='pending')");
+    $verifiedGuard=strpos($enqueue,"if(\$paymentStatus==='verified')");
+    $lineConfiguration=strpos($enqueue,'line_channel_access_token');
+    $outboxWrite=strpos($enqueue,'INSERT INTO notification_outbox');
+    $same(true,$billLock!==false&&$latestPaymentLock!==false&&$pendingGuard!==false&&$verifiedGuard!==false&&$lineConfiguration!==false&&$outboxWrite!==false
+        &&$billLock<$latestPaymentLock&&$latestPaymentLock<$pendingGuard&&$pendingGuard<$verifiedGuard&&$verifiedGuard<$lineConfiguration&&$lineConfiguration<$outboxWrite);
+    foreach(['BILL_PAYMENT_PENDING','BILL_PAYMENT_VERIFIED',"['payment_status'=>\$paymentStatus]"]as$contract)$same(true,str_contains($enqueue,$contract));
+
+    $periodStart=strpos($notifications,'public function enqueuePeriod(array $input): array');
+    $periodEnd=$periodStart===false?false:strpos($notifications,'public function process(',$periodStart);
+    if($periodStart===false||$periodEnd===false)throw new RuntimeException('cannot isolate bulk LINE enqueue');
+    $period=substr($notifications,$periodStart,$periodEnd-$periodStart);
+    $same(true,str_contains($period,'$item=$this->enqueueBill((int)$id);'));
+    $same(true,str_contains($period,"\$skipped[]=['bill_id'=>(int)\$id,'code'=>\$e->errorCode,'message'=>\$e->getMessage()];"));
+
+    $same(true,str_contains($notifications,"\$id=(int)\$row['id'];\$billId=(int)\$row['bill_id'];"));
+    $same(true,str_contains($notifications,'return $this->deliverClaimed($id,$billId,$claimToken);'));
+    $deliveryStart=strpos($notifications,'private function deliverClaimed(int $id,int $billId,string $claimToken): array');
+    $deliveryEnd=$deliveryStart===false?false:strpos($notifications,'private function refreshClaim(',$deliveryStart);
+    if($deliveryStart===false||$deliveryEnd===false)throw new RuntimeException('cannot isolate claimed LINE delivery');
+    $delivery=substr($notifications,$deliveryStart,$deliveryEnd-$deliveryStart);
+    $deliveryTransaction=strpos($delivery,'$this->app->database()->transaction');
+    $deliveryBillLock=strpos($delivery,'SELECT id,status,resident_id FROM bills WHERE id=? FOR UPDATE');
+    $deliveryPaymentLock=strpos($delivery,'SELECT status FROM payments WHERE bill_id=? ORDER BY id DESC LIMIT 1 FOR UPDATE');
+    $deliveryOutboxLock=strpos($delivery,"WHERE id=? AND bill_id=? AND status='processing' AND claim_token=?");
+    $deliveryPendingGuard=strpos($delivery,"if(\$paymentStatus==='pending')");
+    $deliveryVerifiedGuard=strpos($delivery,"if(\$paymentStatus==='verified')");
+    $deliveryPush=strpos($delivery,'$this->pushLine(');
+    $same(true,$deliveryTransaction!==false&&$deliveryBillLock!==false&&$deliveryPaymentLock!==false&&$deliveryOutboxLock!==false
+        &&$deliveryPendingGuard!==false&&$deliveryVerifiedGuard!==false&&$deliveryPush!==false
+        &&$deliveryTransaction<$deliveryBillLock&&$deliveryBillLock<$deliveryPaymentLock&&$deliveryPaymentLock<$deliveryOutboxLock
+        &&$deliveryOutboxLock<$deliveryPendingGuard&&$deliveryPendingGuard<$deliveryVerifiedGuard&&$deliveryVerifiedGuard<$deliveryPush);
+    foreach([
+        'LINE delivery cancelled: payment slip is pending review',
+        'LINE delivery cancelled: payment slip is already verified',
+        'AND lease_until>UTC_TIMESTAMP(6)',
+    ]as$deliveryContract)$same(true,str_contains($delivery,$deliveryContract));
+
+    $renderStart=strpos($js,'function renderAdminBills()');
+    $renderEnd=$renderStart===false?false:strpos($js,'async function loadBills()',$renderStart);
+    if($renderStart===false||$renderEnd===false)throw new RuntimeException('cannot isolate admin bill rendering');
+    $render=substr($js,$renderStart,$renderEnd-$renderStart);
+    $paymentState=strpos($render,"const paymentStatus = String(bill.payment_status || '').toLowerCase();");
+    $paymentLock=strpos($render,"const paymentLocksLine = paymentStatus === 'pending' || paymentStatus === 'verified';");
+    $mayQueue=strpos($render,"bill.status === 'pending' && !paymentLocksLine");
+    $pendingDisplay=strpos($render,"paymentStatus === 'pending' ? 'verifying'");
+    $verifiedDisplay=strpos($render,"paymentStatus === 'verified' ? 'paid'");
+    $same(true,$paymentState!==false&&$paymentLock!==false&&$mayQueue!==false&&$pendingDisplay!==false&&$verifiedDisplay!==false
+        &&$paymentState<$paymentLock&&$paymentLock<$mayQueue&&$mayQueue<$pendingDisplay&&$pendingDisplay<$verifiedDisplay);
+    foreach(['กำลังตรวจสลิป ไม่ส่งแจ้งชำระซ้ำ',"displayStatus === 'verifying' ? 'กำลังตรวจสลิป'","displayStatus === 'paid' ? 'ชำระแล้ว'"]as$displayContract)$same(true,str_contains($render,$displayContract));
+});
+
+$test('pending or verified slips suppress irrelevant payment configuration warnings',function()use($same):void{
+    $js=file_get_contents(dirname(__DIR__).'/public/assets/js/app.js');
+    if(!is_string($js))throw new RuntimeException('cannot read resident payment notice source');
+    $noticeStart=strpos($js,'const paymentConfigurationReady = promptPayReady && slipReady;');
+    $noticeEnd=$noticeStart===false?false:strpos($js,"const breakdown = \$('#resident-bill-breakdown');",$noticeStart);
+    if($noticeStart===false||$noticeEnd===false)throw new RuntimeException('cannot isolate resident payment notice');
+    $notice=substr($js,$noticeStart,$noticeEnd-$noticeStart);
+    foreach([
+        "const paymentInProgress = payment?.status === 'pending' || payment?.status === 'verified';",
+        'const paymentBlocked = !paymentConfigurationReady && !paymentInProgress;',
+        "if (paymentBlocked) {",
+        'สลิปอยู่ระหว่างตรวจสอบ กรุณารอผลและอย่าโอนซ้ำ',
+        'สลิปผ่านการตรวจสอบแล้ว ไม่ต้องชำระซ้ำ',
+        "paymentBlocked ? 'alert' : 'status'",
+    ]as$guard)$same(true,str_contains($notice,$guard));
+    $same(false,str_contains($notice,'if (!paymentConfigurationReady) {'));
+});
+
+$test('admin console opens on an overview that surfaces pending work and worker health',function()use($same):void{
+    $root=dirname(__DIR__);
+    $admin=file_get_contents($root.'/templates/admin/console.php');
+    $js=file_get_contents($root.'/public/assets/js/app.js');
+    $payments=file_get_contents($root.'/src/Domain/PaymentService.php');
+    $routes=file_get_contents($root.'/src/Http/Routes.php');
+    foreach(compact('admin','js','payments','routes')as$name=>$source){
+        if(!is_string($source))throw new RuntimeException("cannot read {$name} overview source");
+    }
+
+    // The landing view is the overview, and every other view starts hidden so a
+    // failed script load cannot reveal several stacked sections at once.
+    $same(true,str_contains($admin,'<section class="admin-view is-active" data-admin-view="overview" aria-labelledby="overview-title">'));
+    $same(true,str_contains($admin,'<section class="admin-view" data-admin-view="rooms" aria-labelledby="rooms-title" hidden>'));
+    $same(1,preg_match_all('/class="admin-view is-active"/',$admin));
+    $same(9,preg_match_all('/data-admin-view="/',$admin));
+
+    // Work that costs money must be visible without opening the view first.
+    foreach(['id="booking-nav-count"','id="payment-nav-count"','id="booking-bottom-count"','id="payment-bottom-count"']as$badge)$same(true,str_contains($admin,$badge));
+    $same(true,str_contains($js,"renderCountBadge(['#payment-nav-count', '#payment-bottom-count'], state.paymentPendingCount);"));
+    $same(true,str_contains($js,"api('/api/admin/payments?status=pending&offset=0&limit=1')"));
+    $same(true,str_contains($payments,"SELECT COUNT(*) FROM payments WHERE status='pending'"));
+    $same(true,str_contains($payments,"'pending_count'=>\$pendingCount"));
+
+    // The overview is the home view, so its hash stays empty and bookmarks of
+    // the other views keep working.
+    $same(true,str_contains($js,"const homeView = 'overview';"));
+    $same(true,str_contains($js,'const hash = name === homeView ? \'\' : `#${name}`;'));
+    $same(0,preg_match('/name === \'rooms\' \? \'\' :/',$js));
+
+    // Worker health has no other surface; only an owner may read it.
+    $same(true,str_contains($routes,"'notifications'=>\$app->notifications()->workerHealth(),"));
+    $overviewStart=strpos($js,'async function loadOverview() {');
+    $overviewEnd=$overviewStart===false?false:strpos($js,'loaders.overview = loadOverview;',$overviewStart);
+    if($overviewStart===false||$overviewEnd===false)throw new RuntimeException('cannot isolate admin overview loader');
+    $overview=substr($js,$overviewStart,$overviewEnd-$overviewStart);
+    $same(true,str_contains($overview,"if (role === 'owner') requests.push(api('/api/admin/operations/health', options));"));
+    $same(1,substr_count($overview,"api('/api/admin/operations/health'"));
+    $same(true,str_contains($overview,'results = await Promise.allSettled(requests);'));
+    $same(true,str_contains($overview,'if (controller.signal.aborted) return;'));
+    $same(true,str_contains($admin,'id="overview-health-card"'));
+    $same(true,str_contains($admin,'<?php if ($canManageIntegrations): ?>'));
+
+    // A half-entered room still needs attention, so progress counts both meters.
+    $same(true,str_contains($js,"const meterIsComplete = (meter) => ['water', 'electric'].every((type) => {"));
+    $same(true,str_contains($admin,'id="meter-progress"'));
 });
 
 fwrite(STDOUT,"\n{$passed} passed, {$failed} failed".PHP_EOL);exit($failed===0?0:1);

@@ -8,6 +8,7 @@ use Dormitory\Domain\AdminUserService;
 use Dormitory\Domain\BillingService;
 use Dormitory\Domain\BookingService;
 use Dormitory\Domain\MeterService;
+use Dormitory\Domain\LineBindingService;
 use Dormitory\Domain\LineWebhookService;
 use Dormitory\Domain\NotificationService;
 use Dormitory\Domain\PaymentService;
@@ -37,6 +38,7 @@ final class Application
     private BillingService $billing;
     private SystemSettingsService $settings;
     private NotificationService $notifications;
+    private LineBindingService $lineBindings;
     private LineWebhookService $lineWebhook;
     private PaymentService $payments;
     /** @var array<string,mixed>|null|false */
@@ -59,6 +61,7 @@ final class Application
         $this->billing = new BillingService($this);
         $this->settings = new SystemSettingsService($this);
         $this->notifications = new NotificationService($this);
+        $this->lineBindings = new LineBindingService($this);
         $this->lineWebhook = new LineWebhookService($this);
         $this->payments = new PaymentService($this);
     }
@@ -78,6 +81,7 @@ final class Application
     public function billing(): BillingService { return $this->billing; }
     public function settings(): SystemSettingsService { return $this->settings; }
     public function notifications(): NotificationService { return $this->notifications; }
+    public function lineBindings(): LineBindingService { return $this->lineBindings; }
     public function lineWebhook(): LineWebhookService { return $this->lineWebhook; }
     public function payments(): PaymentService { return $this->payments; }
 

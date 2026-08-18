@@ -83,7 +83,7 @@ $residentInitial = preg_match('/^./us', $residentName, $initialMatch) === 1 ? $i
           <button type="button" data-bill-filter="paid" aria-pressed="false">ชำระแล้ว</button>
         </div>
         <div class="bill-list" id="resident-bill-list" aria-live="polite" aria-busy="true"></div>
-        <div class="empty-state" id="resident-bills-empty" hidden><span class="empty-icon" aria-hidden="true">▤</span><h3>ไม่มีบิลในรายการนี้</h3><p>เมื่อมีการออกบิล รายการจะแสดงที่นี่</p></div>
+        <div class="empty-state" id="resident-bills-empty" hidden><span class="empty-icon" aria-hidden="true">▤</span><h3 id="resident-bills-empty-title">ยังไม่มีบิล</h3><p id="resident-bills-empty-copy">เมื่อมีการออกบิล รายการจะแสดงที่นี่</p></div>
       </section>
 
       <section class="portal-view" id="resident-view-profile" data-view-panel="profile" aria-labelledby="resident-profile-title" hidden>
@@ -102,14 +102,21 @@ $residentInitial = preg_match('/^./us', $residentName, $initialMatch) === 1 ? $i
           <div class="card-block stack-form" id="resident-line-card">
             <div class="card-heading"><div><h3>รับบิลผ่าน LINE</h3><p id="resident-line-status">ยังไม่ได้ผูกบัญชี LINE</p></div></div>
             <form class="stack-form" id="resident-line-start-form" novalidate>
-              <label class="field"><span>LINE User ID</span><input name="line_user_id" type="text" minlength="33" maxlength="33" pattern="U[0-9a-f]{32}" autocomplete="off" spellcheck="false" placeholder="U ตามด้วยเลขฐานสิบหก 32 ตัว" required><small>เพิ่มบัญชี LINE Official Account เป็นเพื่อนหรือส่งข้อความหา Bot แล้วคัดลอกรหัสที่ Bot ตอบกลับมาวางที่นี่</small></label>
-              <p class="field-hint">ระบบจะส่งรหัสใช้ครั้งเดียวไปยัง LINE ปลายทางเพื่อยืนยันว่าคุณควบคุมบัญชีนั้น</p>
-              <button class="button button-secondary" type="submit">ส่งรหัสยืนยัน</button>
+              <ol class="field-hint line-link-steps">
+                <li>เพิ่มเพื่อนและเปิดแชต LINE Official Account ที่หอพักแจ้งไว้</li>
+                <li>กดสร้างรหัส แล้วคัดลอกไปส่งในแชตส่วนตัว</li>
+                <li>รอข้อความยืนยันจาก Bot หน้านี้จะตรวจสถานะให้อัตโนมัติ</li>
+              </ol>
+              <a class="button button-secondary" id="resident-line-add-friend" href="#" target="_blank" rel="noopener noreferrer" hidden>เพิ่มเพื่อน LINE Official Account</a>
+              <button class="button button-secondary" type="submit">สร้างรหัสผูก LINE</button>
             </form>
-            <form class="stack-form" id="resident-line-confirm-form" novalidate hidden>
-              <label class="field"><span>รหัสยืนยันจาก LINE</span><input name="code" type="text" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code" required></label>
-              <button class="button button-primary" type="submit">ยืนยันการผูกบัญชี</button>
-            </form>
+            <div class="stack-form" id="resident-line-code-panel" hidden>
+              <label class="field"><span>รหัสสำหรับส่งให้ LINE Bot</span><input id="resident-line-code" type="text" readonly aria-readonly="true" autocomplete="off" spellcheck="false"></label>
+              <p class="field-hint" id="resident-line-code-expiry">รหัสใช้ได้ 10 นาที แสดงให้เห็นเพียงครั้งเดียว</p>
+              <canvas class="line-code-qr" id="resident-line-code-qr" width="220" height="220" role="img" aria-label="QR รหัสผูก LINE" hidden></canvas>
+              <p class="field-hint" id="resident-line-code-qr-fallback" role="status" hidden>อุปกรณ์นี้สร้าง QR ไม่สำเร็จ กรุณากดคัดลอกรหัสแทน</p>
+              <div class="form-actions"><button class="button button-primary" id="resident-line-code-copy" type="button">คัดลอกรหัส</button><button class="button button-secondary" id="resident-line-status-refresh" type="button">ตรวจสอบสถานะ</button></div>
+            </div>
             <button class="button button-ghost" id="resident-line-unlink" type="button" hidden>ยกเลิกการผูก LINE</button>
             <div class="form-error" id="resident-line-error" role="alert" hidden></div>
           </div>
@@ -142,7 +149,10 @@ $residentInitial = preg_match('/^./us', $residentName, $initialMatch) === 1 ? $i
       <div><span class="eyebrow">รายละเอียดใบแจ้งหนี้</span><h2 id="resident-bill-dialog-title">รายละเอียดบิล</h2></div>
       <button class="icon-button" type="button" data-close-dialog aria-label="ปิดหน้าต่าง">×</button>
     </div>
-    <div class="bill-detail-loading" id="resident-bill-loading">กำลังโหลดรายละเอียดบิล…</div>
+    <div class="bill-detail-loading" id="resident-bill-loading" role="status">
+      <p id="resident-bill-loading-message">กำลังโหลดรายละเอียดบิล…</p>
+      <button class="button button-secondary button-small" id="resident-bill-detail-retry" type="button" hidden>ลองโหลดบิลนี้ใหม่</button>
+    </div>
     <div id="resident-bill-detail" hidden>
       <div class="bill-detail-hero">
         <div><span id="resident-bill-number">—</span><small id="resident-bill-due">—</small></div>
@@ -176,5 +186,17 @@ $residentInitial = preg_match('/^./us', $residentName, $initialMatch) === 1 ? $i
       </div>
     </div>
     <div class="dialog-actions"><button class="button button-ghost" type="button" data-close-dialog>ปิด</button></div>
+  </div>
+</dialog>
+
+<dialog class="modal confirm-modal" id="confirm-dialog" aria-labelledby="confirm-title">
+  <div class="modal-card">
+    <div class="confirm-icon" aria-hidden="true">!</div>
+    <h2 id="confirm-title">ยืนยันการทำรายการ</h2>
+    <p id="confirm-message"></p>
+    <div class="form-actions">
+      <button class="button button-ghost" type="button" data-confirm-cancel>ยกเลิก</button>
+      <button class="button button-danger" type="button" data-confirm-accept>ยืนยัน</button>
+    </div>
   </div>
 </dialog>

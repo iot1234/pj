@@ -13,7 +13,7 @@
 | `DB_USERNAME` | บัญชี runtime ของเว็บและ worker | Compose สร้างให้ครั้งแรกและลดสิทธิ์เหลือ `SELECT`/`INSERT`/`UPDATE` | ต้องสร้างแยกจาก `root` |
 | `DB_PASSWORD` | รหัสผ่านบัญชี runtime | ต้องไม่ว่างและต้องไม่ซ้ำ root password | ต้องตรงกับ runtime user |
 | `DB_ROOT_PASSWORD` | รหัส root สำหรับ bootstrap MySQL container | ใช้เฉพาะ service `db` | เว้นว่างหรือลบออก |
-| `DB_SSL`, `DB_SSL_CA` | TLS ระหว่าง PHP กับ MySQL ระยะไกล | network ส่วนตัวภายใน Compose ใช้ `false` ได้ | เปิดเมื่อ MySQL ระยะไกลรองรับและมี CA |
+| `DB_SSL`, `DB_SSL_CA` | TLS ระหว่าง PHP/สคริปต์ติดตั้งกับ MySQL ระยะไกล | network ส่วนตัวภายใน Compose ใช้ `false` ได้ | เปิดเมื่อ MySQL ระยะไกลรองรับและมีไฟล์ CA แบบ absolute path ที่อ่านได้; ตัวติดตั้งจะบังคับตรวจ hostname/certificate และหยุดทันทีหาก client ทำไม่ได้ |
 
 `DB_FORWARD_PORT` ไม่ใช่ `DB_PORT` ของแอป ตัวอย่างเช่นเครื่อง host อาจเชื่อม `127.0.0.1:3307` เพื่อดูแลฐานข้อมูล แต่ app/worker ใน Docker ยังคงเชื่อม `db:3306`
 
@@ -44,10 +44,53 @@
 5. ตรวจและปิดคำขอจองซ้ำให้แต่ละเบอร์เหลือสถานะ `pending`/`confirmed` ไม่เกินหนึ่งรายการ แล้วรัน `database/migrations/005_booking_active_phone.sql` เพื่อเพิ่ม generated unique guard ต่อเบอร์ ไฟล์จะหยุดก่อน ALTER หากยังมีข้อมูลซ้ำ และปลอดภัยต่อการรันซ้ำ
 6. Deploy transitional commit `a52bc33` ให้ทุก replica healthy เพื่อสร้างขอบเขต rolling upgrade ที่ไม่รับ PIN แต่ยังรองรับ schema เก่าชั่วคราว
 7. สำรองและทดสอบ restore แล้วรัน `database/migrations/006_remove_resident_pin.sql` เพื่อลบคอลัมน์ legacy ไฟล์นี้ปลอดภัยต่อการรันซ้ำ ห้ามรันขณะยังมีแอปรุ่น PIN และหลังรันแล้วห้าม rollback ไปแอปรุ่น PIN เดิมโดยไม่ restore schema/backup
-8. ยืนยันว่า `residents.pin_hash` ไม่มีแล้วจึง deploy source ปัจจุบัน ซึ่งไม่มี runtime compatibility สำหรับคอลัมน์นี้
-9. รัน `php scripts/check_requirements.php --db --strict` ด้วยบัญชี runtime แล้วรัน `php scripts/check_requirements.php --schema-audit` ด้วยบัญชี DBA/schema owner ชั่วคราว เพื่อตรวจ generated guards, คอลัมน์ migration 004, CHECK constraints, การไม่มี `pin_hash` และ trigger ทั้ง 15 รายการหลังอัปเกรด
+8. ยืนยันว่า `residents.pin_hash` ไม่มีแล้ว หยุด notification worker ทุก instance แล้วรัน `database/migrations/007_notification_worker_fencing.sql` ด้วย schema owner ไฟล์นี้เพิ่ม claim token/lease, ดัชนี lease และตาราง heartbeat และจะคืนเฉพาะงาน `processing` แบบเก่าที่ไม่มี claim/lease กลับเป็น `pending`; คง worker ไว้ในสถานะหยุดจน deploy source ที่รองรับ schema นี้
+9. รัน `database/migrations/008_resident_access_credentials.sql` เพื่อเพิ่ม activation credential แบบใช้ครั้งเดียวและ password hash ของผู้พัก ไฟล์นี้ปลอดภัยต่อการรันซ้ำ
+10. เปิด maintenance window ที่ปิด public write, หยุด web/worker และ pause monthly-billing cron สำรองข้อมูลอีกครั้ง แล้วรัน `database/migrations/009_occupancy_meter_baselines.sql` หลัง `008` เพื่อผูกมิเตอร์กับ occupancy และเก็บค่าเปิดมิเตอร์ โดยยังคงปิด traffic และยังไม่ deploy source ปัจจุบันจนกว่าจะรัน `010`, `011` และ `012` ในขั้นถัดไปครบ
+11. ขณะที่ยังปิด traffic ให้รัน `database/migrations/010_line_self_service_binding.sql` หลัง `009` เพื่อสร้าง `line_link_codes` สำหรับรหัส `BIND-`; migration นี้ปลอดภัยต่อการรันซ้ำเมื่อ table มีนิยามตรง และจะหยุดหากพบ table บางส่วนหรือคอลัมน์/FK/CHECK/index สำคัญไม่ตรง
+12. ขณะที่ยังปิด traffic ให้รัน `database/migrations/011_line_add_friend_identity.sql` หลัง `010` เพื่อเพิ่ม `integration_settings.line_basic_id` สำหรับ LINE Official Account Basic ID สาธารณะพร้อม named CHECK ที่รับรูปแบบ `@...`; migration นี้ปลอดภัยต่อการรันซ้ำและจะหยุดหาก postcondition ของคอลัมน์หรือ CHECK ไม่ครบ
+13. ขณะที่ยังปิด traffic ให้รัน `database/migrations/012_move_in_request_hash.sql` หลัง `011` เพื่อเพิ่ม `bookings.move_in_request_hash`, named CHECK และ trigger ที่ตรึง digest หลังย้ายเข้า Migration นี้ปลอดภัยต่อการรันซ้ำ, ไม่สร้าง hash ย้อนหลังจากอีเมลปัจจุบัน และจะหยุดหาก column/data/postcondition ไม่ตรง
+14. Deploy source ปัจจุบันโดยยังปิด public traffic แล้วให้ Owner เข้าผ่านช่องทาง maintenance เพื่อ reissue credential ผู้พักเดิมที่ยังเข้าไม่ได้และบันทึก integration settings รวม LINE Basic ID
+15. ให้ production รัน `php scripts/check_requirements.php --db --strict --production` ด้วยบัญชี runtime แล้วรัน `php scripts/check_requirements.php --schema-audit` ด้วยบัญชี DBA/schema owner ชั่วคราว Canonical schema ต้องพบ 16 ตาราง, integrity triggers 19 รายการพร้อม body ตรง canonical และ CHECK 86 รายการ รวม booking/occupancy insert guards, claim/lease, heartbeat, resident credential, occupancy-meter, LINE binding, LINE Basic ID และ move-in request hash guards
+16. เริ่ม worker หลัง migration/deploy สำเร็จและตรวจว่า `notification_worker_heartbeats.heartbeat_at` เดินต่อเนื่อง ห้ามถือว่า web `/healthz.php` ที่ผ่านเพียงอย่างเดียวพิสูจน์ว่า worker ส่ง LINE ได้ เพราะ web readiness ตั้งใจไม่ผูกกับ liveness ของ service อื่น
 
 ข้อมูล snapshot ของรายการเก่าที่ migration สร้างขึ้นเป็นการประกอบย้อนจากข้อมูลที่ยังมีอยู่: ค่าเช่าจะเลือกจาก occupancy ก่อนแล้วจึง fallback ไปค่าเช่าห้องปัจจุบัน ส่วนชื่อผู้พัก/รหัสห้องของบิลเก่าอาจไม่ใช่ค่าประวัติเดิมหากเคยแก้ไข จึงต้องตรวจเอกสารย้อนหลังหรือ export เดิมบน staging ก่อนเปิดใช้งานจริง
+
+### การแก้ข้อมูลก่อนผ่าน migration 009
+
+ก่อนรัน `009_occupancy_meter_baselines.sql` บน staging ให้ตรวจว่า occupancy ที่ยัง `active` มีรายการมิเตอร์น้ำและไฟของเดือนที่ย้ายเข้า และค่า `previous_reading` มาจากหลักฐานส่งมอบห้องที่เชื่อถือได้ เพราะ migration จะ backfill ค่าเปิดมิเตอร์ได้ต่อเมื่อพบข้อมูลทั้งสองชนิดเท่านั้น Migration จะหยุดก่อนติดตั้ง immutable trigger เมื่อพบอย่างใดอย่างหนึ่ง:
+
+- `DORMITORY_009_REPAIR_ACTIVE_OPENING_READINGS_BEFORE_RERUN`: occupancy ที่ active ขาดค่าเปิดน้ำหรือไฟ
+- `DORMITORY_009_REPAIR_OCCUPANCY_PERIOD_OVERLAPS_BEFORE_RERUN`: occupancy ของห้องหรือ resident เดียวกันทับ calendar month ซึ่งระบบรายเดือนไม่รองรับ
+- `DORMITORY_009_REPAIR_RESIDENT_OCCUPANCY_STATES_BEFORE_RERUN`: สถานะ resident/occupancy/room/booking, moved-in booking ที่ไม่มี occupancy หรือค่าเช่า snapshot ไม่สอดคล้อง
+- `DORMITORY_009_REPAIR_FINANCIAL_RELATIONSHIPS_BEFORE_RERUN`: ความสัมพันธ์ occupancy → bill → bill items → payment หรือ bill → notification ไม่ตรงกัน, meter snapshot ของบิลไม่ตรง ledger, หรือ paid bill ไม่มี verified payment ที่ยอด/ผู้พักตรงกันหนึ่งรายการ
+- `DORMITORY_009_REPAIR_METER_OCCUPANCY_LINKS_BEFORE_RERUN`: meter reading ทับช่วงผู้พักแต่ไม่ผูก `occupancy_id` หรือผูกผิดห้อง/ช่วงวัน
+- `DORMITORY_009_REPAIR_METER_CHAIN_BEFORE_RERUN`: เดือนแรกไม่ตรงค่าเปิด, มีเดือนขาดช่วง หรือ `previous_reading` ไม่ตรง `current_reading` ของเดือนก่อน
+
+คอลัมน์ที่เพิ่มและค่าที่ backfill สำเร็จแล้วอาจคงอยู่ตามธรรมชาติของ MySQL DDL ให้คง maintenance window ไว้ กระทบยอดค่าจากหลักฐานจริง แก้เฉพาะแถวที่รายงานด้วย DBA แล้วรัน migration เดิมซ้ำ จากนั้นตรวจ:
+
+```sql
+SELECT id, room_id, move_in_date
+FROM occupancies
+WHERE status = 'active'
+  AND (
+    opening_water_reading IS NULL
+    OR opening_electric_reading IS NULL
+  );
+```
+
+ถ้าคำสั่งนี้พบแถว ให้คงระบบไว้ใน maintenance และห้ามเดาค่าเป็น `0` หรือใช้ค่ามิเตอร์ปัจจุบันแทนค่าเปิดมิเตอร์ วิธีที่ปลอดภัยคือ restore backup ก่อน migration บน staging, กระทบยอดกับใบส่งมอบห้อง/ประวัติมิเตอร์/บิล/หลักฐานธนาคาร และแก้ด้วย one-off repair ที่ผ่านการทบทวนและมีแผน rollback ก่อนรัน `009` ซ้ำ
+
+Guard ของ `009` ตั้งใจรันขณะที่ trigger immutable จาก migration 002 ยังอยู่ จึงอาจปฏิเสธ `UPDATE` ที่ใช้ซ่อมข้อมูล legacy ห้ามแก้ด้วยการปิด `FOREIGN_KEY_CHECKS`/CHECK ทั้งระบบหรือเปิด traffic ค้างไว้ วิธี recovery ที่ควบคุมได้คือ:
+
+1. ทำและทดสอบบน staging restore ก่อน ระบุ row, หลักฐานอ้างอิง, SQL ก่อน/หลัง และ trigger ที่ขวางเฉพาะรายการนั้นใน one-off repair ที่ผ่าน review
+2. บน production ให้ปิด public write, worker และ cron ตลอดงาน สำรองอีกครั้ง ใช้ advisory maintenance lock และ drop เฉพาะ trigger immutable ที่ one-off repair ระบุ จากนั้นแก้เฉพาะแถวเป้าหมาย ห้ามใช้คำสั่งกว้างหรือเดาค่า
+3. รัน `009_occupancy_meter_baselines.sql` ซ้ำจน preflight ทุกชุดผ่าน แล้วเฉพาะกรณีที่ one-off repair เคย drop trigger อื่นนอกชุดที่ `009` สร้างกลับ ให้ import `database/schema.sql` บน schema ที่ยืนยันแล้วว่า migrate ครบเพื่อ recreate canonical triggers ทั้ง 19 รายการ ขั้นนี้เป็น recovery exception ไม่ใช่วิธีอัปเกรด schema เก่า
+4. รัน `--schema-audit` เพื่อเทียบ event/timing/table/body กับ canonical และรัน runtime production gate ก่อนปล่อย maintenance lock/เปิด traffic หากขั้นใดไม่ผ่านให้ restore backup หรือคงระบบปิดไว้
+
+เมื่อ migration ผ่านแล้วห้าม `UPDATE occupancies`, bill หรือ payment แบบเฉพาะหน้า เพราะ trigger immutable ตั้งใจป้องกันการเปลี่ยนหลักฐานย้อนหลัง
+
+จากนั้นต้องรัน `php scripts/check_requirements.php --db --strict --production` อีกครั้งบน production (staging ใช้ `--db --strict` ได้) ตัวตรวจจะหยุด deploy หากยังมี occupancy ของห้องหรือ resident เดียวกันทับรอบเดือน, lifecycle state/ค่าเช่า snapshot ของ resident/occupancy/room/booking ไม่สอดคล้อง, moved-in booking ไม่มี occupancy, ความสัมพันธ์ bill/items/payment/notification หรือ verified-payment state ไม่ตรงหลักฐาน, active occupancy ที่ค่าเปิดมิเตอร์ไม่ครบ, meter reading ที่ควรผูกกับ occupancy แต่ไม่ผูก/ผูกผิดห้องหรือผิดช่วงวันที่, chain มิเตอร์ขาดเดือน/ยอดก่อนหน้าไม่ตรง หรือผู้พัก active ไม่มีทั้ง password และ activation code ที่ยังไม่ถูกใช้/ยังไม่หมดอายุ กรณี credential ให้แก้ผ่าน Admin โดย reissue รหัสเปิดใช้งานและส่งให้เจ้าตัวผ่านช่องทางส่วนตัว
 
 ## ติดตั้งด้วย Docker Compose
 
@@ -126,7 +169,7 @@ SELECT DATABASE() AS selected_database, VERSION() AS mysql_version;
 SHOW TABLES;
 ```
 
-`selected_database` ต้องไม่เป็น `NULL`, version ต้องเป็น MySQL 8.0.16 ขึ้นไป และหลัง import ต้องมีตารางระบบ 14 ตาราง จากนั้นรัน:
+`selected_database` ต้องไม่เป็น `NULL`, version ต้องเป็น MySQL 8.0.16 ขึ้นไป และหลัง import ต้องมีตารางระบบ 16 ตาราง จากนั้นรัน:
 
 ```powershell
 php scripts/check_requirements.php --db
@@ -138,7 +181,11 @@ php scripts/check_requirements.php --db
 
 1. สร้างบัญชี Owner คนแรกตาม README
 2. เข้าหน้า Admin → ตั้งค่า แล้วบันทึกอัตราค่าน้ำ ค่าไฟ และวันครบกำหนดจริง
-3. กรอก PromptPay, LINE Channel access token/Channel secret และผู้ให้บริการตรวจสลิปจากหน้าเดียวกัน ค่าลับจะถูกเข้ารหัสใน MySQL โดยใช้ key ที่ derive จาก `APP_KEY`; `APP_KEY` เองยังต้องอยู่ใน `.env`/secret manager และต้องตรงกันทุก web/worker instance
+3. กรอก PromptPay, LINE Official Account Basic ID, Channel access token/Channel secret และผู้ให้บริการตรวจสลิปจากหน้าเดียวกัน ค่าลับจะถูกเข้ารหัสใน MySQL โดยใช้ key ที่ derive จาก `APP_KEY`; `APP_KEY` เองยังต้องอยู่ใน `.env`/secret manager และต้องตรงกันทุก web/worker/job instance
 4. คัดลอก Webhook URL ที่หน้า Settings แสดง (`<APP_URL>/api/webhooks/line`) ไปใส่ใน LINE Developers Console เปิด **Use webhook** และ **Webhook redelivery** แล้วกด **Verify** โดย `APP_URL` ต้องเป็น HTTPS origin สาธารณะที่ตรงกับโดเมนจริง
 5. เพิ่มห้องจริงจากหลังบ้าน; production ไม่มีห้องตัวอย่างอัตโนมัติ
-6. รัน requirement checker อีกครั้งก่อนเปิดให้ผู้ใช้จริง ค่า LINE webhook จะพร้อมเมื่อถอดรหัสได้ทั้ง Channel access token และ Channel secret
+6. รัน requirement checker อีกครั้งก่อนเปิดให้ผู้ใช้จริง ค่า LINE binding จะพร้อมเมื่อ Basic ID ถูกต้องและถอดรหัสได้ทั้ง Channel access token และ Channel secret
+
+การผูก LINE แบบปัจจุบันให้ผู้พัก login แล้วกดปุ่มเพิ่มเพื่อนจาก Basic ID ที่ Owner บันทึกใน MySQL จากนั้นสร้างรหัส `BIND-` จากหน้าโปรไฟล์ รหัสมีข้อมูลสุ่ม 128 บิต อายุ 10 นาที แสดงครั้งเดียวและมี QR ให้ใช้อีกอุปกรณ์สแกน โดย `line_link_codes` เก็บเฉพาะ HMAC-SHA256 จาก `APP_KEY` ผู้พักส่งรหัสในแชตส่วนตัวกับ OA; webhook ตรวจ `X-Line-Signature`, lock resident/code/occupancy และผูก `source.userId` แบบ transaction หน้าผู้พักตรวจสถานะอัตโนมัติ รหัสหมดอายุ ใช้แล้ว หรือถูกเพิกถอนใช้ซ้ำไม่ได้ ห้ามคัดลอกรหัสลง ticket/log/audit
+
+Requirement checker และ `/healthz.php` ตรวจได้เฉพาะ schema/configuration ไม่ได้พิสูจน์ LINE network, quota หรือ credential จริง ก่อน production ต้องทดสอบ **Verify**, reply หลังส่งรหัส `BIND-`, unlink/rebind และ push บิลบน staging ด้วย Channel access token/Channel secret จริง

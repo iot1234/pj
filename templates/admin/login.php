@@ -25,17 +25,17 @@
       <p>ใช้ชื่อผู้ใช้และรหัสผ่านของบัญชีผู้ดูแลระบบ</p>
     </div>
     <form id="admin-login-form" class="stack-form" novalidate>
-      <label class="field">
-        <span>ชื่อผู้ใช้</span>
-        <input name="username" type="text" minlength="3" maxlength="64" autocomplete="username" autocapitalize="none" required autofocus>
-      </label>
-      <label class="field">
-        <span>รหัสผ่าน</span>
+      <div class="field">
+        <label for="admin-username">ชื่อผู้ใช้</label>
+        <input id="admin-username" name="username" type="text" minlength="3" maxlength="64" autocomplete="username" autocapitalize="none" required autofocus>
+      </div>
+      <div class="field">
+        <label for="admin-password">รหัสผ่าน</label>
         <span class="password-field">
-          <input name="password" type="password" minlength="12" maxlength="200" autocomplete="current-password" required>
-          <button class="password-toggle" type="button" data-password-toggle aria-label="แสดงรหัสผ่าน" aria-pressed="false">แสดง</button>
+          <input id="admin-password" name="password" type="password" minlength="12" maxlength="200" autocomplete="current-password" required>
+          <button class="password-toggle" type="button" data-password-toggle aria-label="แสดงรหัสผ่าน" aria-controls="admin-password" aria-pressed="false">แสดง</button>
         </span>
-      </label>
+      </div>
       <div class="form-error" id="admin-login-error" role="alert" hidden></div>
       <button class="button button-primary button-large button-full" type="submit" data-submit-label="เข้าสู่ระบบ">เข้าสู่ระบบ</button>
     </form>

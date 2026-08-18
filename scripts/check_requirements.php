@@ -128,6 +128,42 @@ function configuredDatabaseValue(mixed $value): bool
     return is_string($value) && trim($value) !== '';
 }
 
+function normalizeTriggerAction(string $sql): string
+{
+    $normalized = preg_replace('/\s+/u', '', str_replace('`', '', $sql));
+    return strtolower(is_string($normalized) ? $normalized : '');
+}
+
+/** @return array<string,string> */
+function expectedTriggerActions(string $schemaPath): array
+{
+    $schema = file_get_contents($schemaPath);
+    if (!is_string($schema)) {
+        return [];
+    }
+    $matched = preg_match_all(
+        '/CREATE\s+TRIGGER\s+([a-z0-9_]+)\s+'
+        . '(?:BEFORE|AFTER)\s+(?:INSERT|UPDATE|DELETE)\s+ON\s+[a-z0-9_]+\s+'
+        . 'FOR\s+EACH\s+ROW\s+(BEGIN.*?\bEND)\s*\$\$/isu',
+        $schema,
+        $matches,
+        PREG_SET_ORDER,
+    );
+    if ($matched === false) {
+        return [];
+    }
+    $actions = [];
+    foreach ($matches as $match) {
+        $name = strtolower((string) ($match[1] ?? ''));
+        $body = normalizeTriggerAction((string) ($match[2] ?? ''));
+        if ($name === '' || $body === '' || isset($actions[$name])) {
+            return [];
+        }
+        $actions[$name] = $body;
+    }
+    return $actions;
+}
+
 /** @param list<string> $errors */
 function configuredIntegrationSecret(
     mixed $payload,
@@ -358,6 +394,14 @@ $bookingHold = filter_var(envValue($env, 'BOOKING_HOLD_SECONDS', '86400'), FILTE
 if ($bookingHold === false) {
     addResult($errors, 'BOOKING_HOLD_SECONDS ต้องเป็นเลข 900-604800');
 }
+$residentActivationTtl = filter_var(
+    envValue($env, 'RESIDENT_ACTIVATION_TTL_SECONDS', '604800'),
+    FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 900, 'max_range' => 2592000]],
+);
+if ($residentActivationTtl === false) {
+    addResult($errors, 'RESIDENT_ACTIVATION_TTL_SECONDS ต้องเป็นเลข 900-2592000');
+}
 
 foreach (['DB_DATABASE', 'DB_USERNAME'] as $key) {
     if (trim((string) envValue($env, $key, '')) === '') {
@@ -466,10 +510,14 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
             PDO::ATTR_EMULATE_PREPARES => false,
             PDO::ATTR_TIMEOUT => 5,
         ];
-        if ($dbSsl && defined('PDO::MYSQL_ATTR_SSL_CA')) {
+        if ($dbSsl) {
+            if (!defined('PDO::MYSQL_ATTR_SSL_CA')
+                || !defined('PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT')) {
+                throw new RuntimeException('pdo_mysql TLS identity-verification support is unavailable');
+            }
             $ca = trim((string) envValue($env, 'DB_SSL_CA', ''));
-            if ($ca === '') {
-                throw new RuntimeException('DB_SSL_CA is missing');
+            if ($ca === '' || !is_file($ca) || !is_readable($ca)) {
+                throw new RuntimeException('DB_SSL_CA is not a readable CA file');
             }
             $options[PDO::MYSQL_ATTR_SSL_CA] = $ca;
             $options[PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT] = true;
@@ -485,9 +533,9 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
         }
 
         $expectedTables = [
-            'admin_users', 'residents', 'rooms', 'bookings', 'occupancies',
+            'admin_users', 'residents', 'line_link_codes', 'rooms', 'bookings', 'occupancies',
             'meter_readings', 'billing_settings', 'integration_settings', 'bills', 'bill_items', 'payments',
-            'notification_outbox', 'audit_logs', 'rate_limits',
+            'notification_outbox', 'notification_worker_heartbeats', 'audit_logs', 'rate_limits',
         ];
         $statement = $pdo->prepare(
             'SELECT table_name FROM information_schema.tables WHERE table_schema=? AND table_name IN ('
@@ -499,7 +547,7 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
         }, $statement->fetchAll());
         $missing = array_values(array_diff($expectedTables, $found));
         if ($missing === []) {
-            addResult($successes, 'พบตารางระบบครบ 14 ตาราง');
+            addResult($successes, 'พบตารางระบบครบ 16 ตาราง รวม LINE binding code และ notification worker heartbeat');
         } else {
             addResult($errors, 'schema ไม่ครบ; ขาดตาราง: ' . implode(', ', $missing));
         }
@@ -512,7 +560,7 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
         if($retiredResidentCredentialColumns===0){
             addResult($successes,'schema ไม่มีคอลัมน์ credential ของ Resident ที่เลิกใช้แล้ว');
         }else{
-            addResult($errors,'schema ยังมี residents.pin_hash ซึ่งไม่รองรับกับ source ปัจจุบัน; ใช้ transitional commit a52bc33 ให้ทุก replica พร้อม รัน migration 006 ตรวจว่าคอลัมน์หาย แล้วจึง deploy source ปัจจุบัน');
+            addResult($errors,'schema ยังมี residents.pin_hash ซึ่งไม่รองรับกับ source ปัจจุบัน; ใช้ transitional commit a52bc33 ให้ทุก replica พร้อม รัน migration 006 ตรวจว่าคอลัมน์หาย แล้วดำเนิน migrations 007–012 ตาม maintenance guide ก่อน deploy source ปัจจุบัน');
         }
 
         $grantRows = $pdo->query('SHOW GRANTS')->fetchAll(PDO::FETCH_NUM);
@@ -532,8 +580,12 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
         }
 
         $expectedTriggers = [
+            'trg_bookings_insert_guard' => ['INSERT', 'BEFORE', 'bookings'],
             'trg_bookings_identity_immutable' => ['UPDATE', 'BEFORE', 'bookings'],
+            'trg_occupancies_relationship_guard' => ['INSERT', 'BEFORE', 'occupancies'],
             'trg_occupancies_identity_immutable' => ['UPDATE', 'BEFORE', 'occupancies'],
+            'trg_meter_readings_occupancy_guard' => ['INSERT', 'BEFORE', 'meter_readings'],
+            'trg_meter_readings_occupancy_guard_update' => ['UPDATE', 'BEFORE', 'meter_readings'],
             'trg_bills_snapshot_immutable' => ['UPDATE', 'BEFORE', 'bills'],
             'trg_bills_relationship_guard' => ['INSERT', 'BEFORE', 'bills'],
             'trg_bills_no_delete' => ['DELETE', 'BEFORE', 'bills'],
@@ -548,9 +600,11 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
             'trg_audit_logs_no_update' => ['UPDATE', 'BEFORE', 'audit_logs'],
             'trg_audit_logs_no_delete' => ['DELETE', 'BEFORE', 'audit_logs'],
         ];
-        $triggerStatement = $pdo->prepare('SELECT trigger_name,event_manipulation,action_timing,event_object_table FROM information_schema.triggers WHERE trigger_schema=?');
+        $expectedTriggerBodies=expectedTriggerActions($root.'/database/schema.sql');
+        $triggerStatement = $pdo->prepare('SELECT trigger_name,event_manipulation,action_timing,event_object_table,action_statement FROM information_schema.triggers WHERE trigger_schema=?');
         $triggerStatement->execute([$database]);
         $foundTriggers = [];
+        $foundTriggerBodies=[];
         foreach ($triggerStatement->fetchAll() as $row) {
             $name = (string) ($row['TRIGGER_NAME'] ?? $row['trigger_name'] ?? '');
             $foundTriggers[$name] = [
@@ -558,19 +612,30 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
                 strtoupper((string) ($row['ACTION_TIMING'] ?? $row['action_timing'] ?? '')),
                 (string) ($row['EVENT_OBJECT_TABLE'] ?? $row['event_object_table'] ?? ''),
             ];
+            $foundTriggerBodies[$name]=normalizeTriggerAction(
+                (string)($row['ACTION_STATEMENT']??$row['action_statement']??'')
+            );
         }
         $invalidTriggers = [];
+        $invalidTriggerBodies=[];
         foreach ($expectedTriggers as $name => $definition) {
             if (($foundTriggers[$name] ?? null) !== $definition) {
                 $invalidTriggers[] = $name;
             }
+            if(!isset($expectedTriggerBodies[$name])
+                ||($foundTriggerBodies[$name]??null)!==$expectedTriggerBodies[$name]){
+                $invalidTriggerBodies[]=$name;
+            }
         }
-        if ($invalidTriggers === []) {
-            addResult($successes, 'พบ immutable/relationship triggers พร้อม event/timing ครบ 15 รายการ');
+        if(count($expectedTriggerBodies)!==count($expectedTriggers)){
+            addResult($errors,'อ่าน canonical trigger bodies จาก database/schema.sql ไม่ครบ');
+        }elseif ($invalidTriggers === []&&$invalidTriggerBodies===[]) {
+            addResult($successes, 'พบ integrity triggers พร้อม event/timing/body ตรง canonical ครบ 19 รายการ');
         } elseif ($schemaAudit || $grantInspection['can_read_all_triggers']) {
-            addResult($errors, 'schema ขาด trigger หรือ event/timing ไม่ตรง: ' . implode(', ', $invalidTriggers));
+            $invalid=array_values(array_unique(array_merge($invalidTriggers,$invalidTriggerBodies)));
+            addResult($errors, 'schema ขาด trigger หรือ event/timing/body ไม่ตรง canonical: ' . implode(', ', $invalid));
         } else {
-            addResult($skips, 'MySQL ซ่อน trigger metadata จากบัญชี runtime-only; รัน --schema-audit ด้วยบัญชี DBA เพื่อรับรอง triggers 15 รายการ');
+            addResult($skips, 'MySQL ซ่อน trigger metadata/body จากบัญชี runtime-only; รัน --schema-audit ด้วยบัญชี DBA เพื่อรับรอง triggers 19 รายการ');
         }
 
         $indexStatement = $pdo->prepare(
@@ -587,17 +652,56 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
 
         $requiredColumns = [
             'bookings.booked_monthly_rent' => ['decimal(12,2)', 'NO'],
+            'bookings.move_in_request_hash' => ['char(64)', 'YES'],
             'bills.resident_name_snapshot' => ['varchar(150)', 'NO'],
             'bills.room_code_snapshot' => ['varchar(32)', 'NO'],
             'payments.verification_lease_until' => ['datetime(6)', 'YES'],
             'payments.verification_token' => ['char(64)', 'YES'],
             'payments.verification_attempts' => ['smallint unsigned', 'NO'],
+            'residents.access_password_hash' => ['varchar(255)', 'YES'],
+            'residents.activation_code_hash' => ['char(64)', 'YES'],
+            'residents.activation_expires_at' => ['datetime(6)', 'YES'],
+            'residents.activation_consumed_at' => ['datetime(6)', 'YES'],
+            'line_link_codes.id' => ['bigint unsigned', 'NO'],
+            'line_link_codes.resident_id' => ['bigint unsigned', 'NO'],
+            'line_link_codes.code_hash' => ['char(64)', 'NO'],
+            'line_link_codes.status' => ["enum('pending','bound','expired','revoked')", 'NO'],
+            'line_link_codes.line_user_id' => ['varchar(33)', 'YES'],
+            'line_link_codes.expires_at' => ['datetime(6)', 'NO'],
+            'line_link_codes.bound_at' => ['datetime(6)', 'YES'],
+            'line_link_codes.revoked_at' => ['datetime(6)', 'YES'],
+            'line_link_codes.created_at' => ['datetime(6)', 'NO'],
+            'line_link_codes.updated_at' => ['datetime(6)', 'NO'],
+            'line_link_codes.pending_resident_id' => ['bigint unsigned', 'YES'],
+            'occupancies.opening_water_reading' => ['decimal(14,2)', 'YES'],
+            'occupancies.opening_electric_reading' => ['decimal(14,2)', 'YES'],
+            'meter_readings.occupancy_id' => ['bigint unsigned', 'YES'],
+            'notification_outbox.claim_token' => ['char(64)', 'YES'],
+            'notification_outbox.lease_until' => ['datetime(6)', 'YES'],
+            'notification_worker_heartbeats.worker_id' => ['char(64)', 'NO'],
+            'notification_worker_heartbeats.status' => ["enum('starting','running','error','stopped')", 'NO'],
+            'notification_worker_heartbeats.started_at' => ['datetime(6)', 'NO'],
+            'notification_worker_heartbeats.heartbeat_at' => ['datetime(6)', 'NO'],
+            'notification_worker_heartbeats.last_cycle_at' => ['datetime(6)', 'YES'],
+            'notification_worker_heartbeats.last_processed' => ['int unsigned', 'NO'],
+            'notification_worker_heartbeats.last_sent' => ['int unsigned', 'NO'],
+            'notification_worker_heartbeats.last_failed' => ['int unsigned', 'NO'],
+            'notification_worker_heartbeats.last_retried' => ['int unsigned', 'NO'],
+            'notification_worker_heartbeats.last_lost_claims' => ['int unsigned', 'NO'],
+            'notification_worker_heartbeats.last_recovered' => ['int unsigned', 'NO'],
+            'notification_worker_heartbeats.last_error' => ['varchar(1000)', 'YES'],
+            'notification_worker_heartbeats.created_at' => ['datetime(6)', 'NO'],
+            'notification_worker_heartbeats.updated_at' => ['datetime(6)', 'NO'],
         ];
         $columnStatement = $pdo->prepare(
             'SELECT table_name,column_name,column_type,is_nullable
                FROM information_schema.columns
               WHERE table_schema=?
-                AND table_name IN (\'bookings\',\'bills\',\'payments\')'
+                AND table_name IN (
+                    \'bookings\',\'bills\',\'payments\',\'residents\',\'occupancies\',
+                    \'meter_readings\',\'notification_outbox\',\'notification_worker_heartbeats\',
+                    \'line_link_codes\'
+                )'
         );
         $columnStatement->execute([$database]);
         $foundColumns = [];
@@ -616,20 +720,22 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
             }
         }
         if ($invalidColumns === []) {
-            addResult($successes, 'พบ operational-hardening columns ครบ 6 คอลัมน์');
+            addResult($successes, 'พบคอลัมน์และชนิดข้อมูลที่ต้องใช้จาก migrations 002/007/008/009/010/012 ครบ '
+                . count($requiredColumns) . ' คอลัมน์');
         } else {
-            addResult($errors, 'schema ยังไม่ได้ใช้ migration 002 หรือชนิดคอลัมน์ไม่ตรง: ' . implode(', ', $invalidColumns));
+            addResult($errors, 'schema ขาดคอลัมน์หรือชนิดข้อมูลจาก migrations 002/007/008/009/010/012 ไม่ตรง: '
+                . implode(', ', $invalidColumns));
         }
 
         $checkStatement=$pdo->prepare("SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema=? AND constraint_type='CHECK'");
         $checkStatement->execute([$database]);
         $checkCount=(int)$checkStatement->fetchColumn();
-        if($checkCount>=73)addResult($successes,'พบ CHECK constraints ครบอย่างน้อย 73 รายการ');
-        else addResult($errors,'schema มี CHECK constraints ไม่ครบ; พบ '.$checkCount.' จากอย่างน้อย 73');
+        if($checkCount>=86)addResult($successes,'พบ CHECK constraints ครบอย่างน้อย 86 รายการ');
+        else addResult($errors,'schema มี CHECK constraints ไม่ครบ; พบ '.$checkCount.' จากอย่างน้อย 86');
 
         // A generated UNIQUE guard is ineffective when its expression has been
         // changed to always return NULL. Verify the complete definition of all
-        // five write-critical generated columns, not only their names.
+        // six write-critical generated columns, not only their names.
         $requiredGeneratedColumns = [
             'bookings.active_room_id' => [
                 'type' => 'bigint unsigned',
@@ -659,6 +765,10 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
                     "casewhenstatusin'pending','verified'thenbill_idelsenullend",
                     "casewhenstatusin'verified','pending'thenbill_idelsenullend",
                 ],
+            ],
+            'line_link_codes.pending_resident_id' => [
+                'type' => 'bigint unsigned',
+                'expressions' => ["casewhenstatus='pending'thenresident_idelsenullend"],
             ],
         ];
         $generatedPredicates = [];
@@ -711,7 +821,7 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
             $missingGeneratedColumns,
         )));
         if ($invalidGeneratedColumns === []) {
-            addResult($successes, 'พบ generated uniqueness guards ที่มีนิยามถูกต้องครบ 5 คอลัมน์');
+            addResult($successes, 'พบ generated uniqueness guards ที่มีนิยามถูกต้องครบ 6 คอลัมน์');
         } else {
             addResult($errors, 'schema ขาดหรือมีนิยาม generated uniqueness guards ไม่ถูกต้อง: '
                 . implode(', ', $invalidGeneratedColumns));
@@ -755,6 +865,7 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
 
         $requiredLineColumns = [
             'integration_settings.line_channel_secret_enc' => ['text', 'YES'],
+            'integration_settings.line_basic_id' => ['varchar(33)', 'YES'],
             'notification_outbox.line_accepted_request_id' => ['varchar(128)', 'YES'],
             'notification_outbox.line_request_id' => ['varchar(128)', 'YES'],
             'notification_outbox.recipient' => ['varchar(33)', 'NO'],
@@ -763,7 +874,7 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
         $lineColumnsStatement=$pdo->prepare("SELECT table_name,column_name,column_type,is_nullable
             FROM information_schema.columns
             WHERE table_schema=? AND (
-                (table_name='integration_settings' AND column_name='line_channel_secret_enc')
+                (table_name='integration_settings' AND column_name IN ('line_channel_secret_enc','line_basic_id'))
                 OR (table_name='notification_outbox' AND column_name IN ('line_request_id','line_accepted_request_id','recipient'))
                 OR (table_name='residents' AND column_name='line_user_id')
             )");
@@ -781,16 +892,523 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
         foreach($requiredLineColumns as $column=>$definition){
             if(($lineColumns[$column]??null)!==$definition)$invalidLineColumns[]=$column;
         }
-        if($invalidLineColumns===[])addResult($successes,'พบคอลัมน์ LINE webhook/reconciliation และชนิดข้อมูลครบ 5 คอลัมน์');
-        else addResult($errors,'schema ขาดคอลัมน์/ชนิดข้อมูลจาก migration 004: '.implode(', ',$invalidLineColumns));
+        if($invalidLineColumns===[])addResult($successes,'พบคอลัมน์ LINE webhook/reconciliation/Basic ID และชนิดข้อมูลครบ 6 คอลัมน์');
+        else addResult($errors,'schema ขาดคอลัมน์/ชนิดข้อมูลจาก migration 004/011: '.implode(', ',$invalidLineColumns));
 
-        $requiredLineChecks=['chk_integration_settings_line_secret','chk_notification_outbox_line_accepted_request_id','chk_notification_outbox_line_request_id','chk_notification_outbox_recipient','chk_residents_line_user_id'];
-        $lineChecksStatement=$pdo->prepare("SELECT constraint_name FROM information_schema.table_constraints WHERE constraint_schema=? AND constraint_type='CHECK' AND constraint_name IN ('chk_integration_settings_line_secret','chk_notification_outbox_line_accepted_request_id','chk_notification_outbox_line_request_id','chk_notification_outbox_recipient','chk_residents_line_user_id')");
+        $requiredLineChecks=['chk_integration_settings_line_secret','chk_integration_settings_line_basic_id','chk_notification_outbox_line_accepted_request_id','chk_notification_outbox_line_request_id','chk_notification_outbox_recipient','chk_residents_line_user_id'];
+        $lineChecksStatement=$pdo->prepare("SELECT constraint_name FROM information_schema.table_constraints WHERE constraint_schema=? AND constraint_type='CHECK' AND constraint_name IN ('chk_integration_settings_line_secret','chk_integration_settings_line_basic_id','chk_notification_outbox_line_accepted_request_id','chk_notification_outbox_line_request_id','chk_notification_outbox_recipient','chk_residents_line_user_id')");
         $lineChecksStatement->execute([$database]);
         $lineChecks=array_map(static fn(array $row):string=>(string)($row['CONSTRAINT_NAME']??$row['constraint_name']??''),$lineChecksStatement->fetchAll());
         $missingLineChecks=array_values(array_diff($requiredLineChecks,$lineChecks));
-        if($missingLineChecks===[])addResult($successes,'พบ LINE webhook/reconciliation CHECK constraints ครบ 5 รายการ');
-        else addResult($errors,'schema ขาด CHECK constraints จาก migration 004: '.implode(', ',$missingLineChecks));
+        if($missingLineChecks===[])addResult($successes,'พบ LINE webhook/reconciliation/Basic ID CHECK constraints ครบ 6 รายการ');
+        else addResult($errors,'schema ขาด CHECK constraints จาก migration 004/011: '.implode(', ',$missingLineChecks));
+
+        $requiredCurrentChecks=[
+            'chk_notification_outbox_claim_lease',
+            'chk_notification_worker_error',
+            'chk_notification_worker_id',
+            'chk_occupancies_opening_readings',
+            'chk_residents_access_password',
+            'chk_residents_activation_state',
+            'chk_residents_password_activation',
+            'chk_line_link_codes_hash',
+            'chk_line_link_codes_line_user',
+            'chk_line_link_codes_state',
+            'chk_line_link_codes_timestamps',
+            'chk_bookings_move_in_request_hash',
+        ];
+        $currentChecksStatement=$pdo->prepare(
+            "SELECT constraint_name FROM information_schema.table_constraints
+              WHERE constraint_schema=? AND constraint_type='CHECK'
+                AND constraint_name IN ("
+            .implode(',',array_fill(0,count($requiredCurrentChecks),'?')).')'
+        );
+        $currentChecksStatement->execute(array_merge([$database],$requiredCurrentChecks));
+        $currentChecks=array_map(
+            static fn(array $row):string=>(string)($row['CONSTRAINT_NAME']??$row['constraint_name']??''),
+            $currentChecksStatement->fetchAll()
+        );
+        $missingCurrentChecks=array_values(array_diff($requiredCurrentChecks,$currentChecks));
+        if($missingCurrentChecks===[]){
+            addResult($successes,'พบ CHECK constraints ของ migrations 007/008/009/010/012 ครบ 12 รายการ');
+        }else{
+            addResult($errors,'schema ขาด CHECK constraints ของ migrations 007/008/009/010/012: '
+                .implode(', ',$missingCurrentChecks));
+        }
+
+        $requiredOperationalIndexes=[
+            'meter_readings.idx_meter_readings_occupancy_period'=>['occupancy_id','period'],
+            'notification_outbox.idx_notification_outbox_lease'=>['status','lease_until'],
+            'notification_worker_heartbeats.idx_notification_worker_heartbeat'=>['heartbeat_at'],
+            'line_link_codes.idx_line_link_codes_expiry'=>['status','expires_at'],
+            'line_link_codes.idx_line_link_codes_resident'=>['resident_id','created_at'],
+        ];
+        $operationalIndexPredicates=[];
+        $operationalIndexParameters=[$database];
+        foreach(array_keys($requiredOperationalIndexes)as$qualifiedIndex){
+            [$table,$index]=explode('.',$qualifiedIndex,2);
+            $operationalIndexPredicates[]='(table_name=? AND index_name=?)';
+            $operationalIndexParameters[]=$table;
+            $operationalIndexParameters[]=$index;
+        }
+        $operationalIndexesStatement=$pdo->prepare(
+            'SELECT table_name,index_name,column_name,non_unique,seq_in_index,sub_part'
+            .' FROM information_schema.statistics WHERE table_schema=? AND ('
+            .implode(' OR ',$operationalIndexPredicates).') ORDER BY table_name,index_name,seq_in_index'
+        );
+        $operationalIndexesStatement->execute($operationalIndexParameters);
+        $foundOperationalIndexes=[];
+        $invalidOperationalIndexes=[];
+        foreach($operationalIndexesStatement->fetchAll()as$row){
+            $qualifiedIndex=(string)($row['TABLE_NAME']??$row['table_name']??'').'.'
+                .(string)($row['INDEX_NAME']??$row['index_name']??'');
+            if(!isset($requiredOperationalIndexes[$qualifiedIndex])
+                ||(int)($row['NON_UNIQUE']??$row['non_unique']??0)!==1
+                ||(int)($row['SEQ_IN_INDEX']??$row['seq_in_index']??0)
+                    !==count($foundOperationalIndexes[$qualifiedIndex]??[])+1
+                ||($row['SUB_PART']??$row['sub_part']??null)!==null){
+                $invalidOperationalIndexes[]=$qualifiedIndex;
+                continue;
+            }
+            $foundOperationalIndexes[$qualifiedIndex][]=(string)(
+                $row['COLUMN_NAME']??$row['column_name']??''
+            );
+        }
+        foreach($requiredOperationalIndexes as$qualifiedIndex=>$definition){
+            if(($foundOperationalIndexes[$qualifiedIndex]??null)!==$definition){
+                $invalidOperationalIndexes[]=$qualifiedIndex;
+            }
+        }
+        $invalidOperationalIndexes=array_values(array_unique($invalidOperationalIndexes));
+        if($invalidOperationalIndexes===[]){
+            addResult($successes,'พบ operational indexes ของ migrations 007/009/010 ครบ 5 รายการ');
+        }else{
+            addResult($errors,'schema ขาดหรือมีนิยาม operational index ไม่ตรง: '
+                .implode(', ',$invalidOperationalIndexes));
+        }
+
+        $meterOccupancyForeignKeyStatement=$pdo->prepare(
+            "SELECT k.column_name,k.referenced_table_name,k.referenced_column_name,
+                    r.update_rule,r.delete_rule
+               FROM information_schema.key_column_usage k
+               JOIN information_schema.referential_constraints r
+                 ON r.constraint_schema=k.constraint_schema
+                AND r.table_name=k.table_name
+                AND r.constraint_name=k.constraint_name
+              WHERE k.constraint_schema=? AND k.table_name='meter_readings'
+                AND k.constraint_name='fk_meter_readings_occupancy'
+              ORDER BY k.ordinal_position"
+        );
+        $meterOccupancyForeignKeyStatement->execute([$database]);
+        $meterOccupancyForeignKey=$meterOccupancyForeignKeyStatement->fetchAll();
+        $meterOccupancyForeignKeyExact=count($meterOccupancyForeignKey)===1;
+        if($meterOccupancyForeignKeyExact){
+            $foreignKeyRow=$meterOccupancyForeignKey[0];
+            $meterOccupancyForeignKeyExact=
+                (string)($foreignKeyRow['COLUMN_NAME']??$foreignKeyRow['column_name']??'')==='occupancy_id'
+                &&(string)($foreignKeyRow['REFERENCED_TABLE_NAME']??$foreignKeyRow['referenced_table_name']??'')==='occupancies'
+                &&(string)($foreignKeyRow['REFERENCED_COLUMN_NAME']??$foreignKeyRow['referenced_column_name']??'')==='id'
+                &&strtoupper((string)($foreignKeyRow['UPDATE_RULE']??$foreignKeyRow['update_rule']??''))==='RESTRICT'
+                &&strtoupper((string)($foreignKeyRow['DELETE_RULE']??$foreignKeyRow['delete_rule']??''))==='RESTRICT';
+        }
+        if($meterOccupancyForeignKeyExact){
+            addResult($successes,'พบ foreign key meter_readings(occupancy_id) ไป occupancies(id) แบบ RESTRICT');
+        }else{
+            addResult($errors,'schema ขาดหรือมีนิยาม fk_meter_readings_occupancy ไม่ตรงกับ migration 009');
+        }
+
+        $lineCodeForeignKeyStatement=$pdo->prepare(
+            "SELECT k.column_name,k.referenced_table_name,k.referenced_column_name,
+                    r.update_rule,r.delete_rule
+               FROM information_schema.key_column_usage k
+               JOIN information_schema.referential_constraints r
+                 ON r.constraint_schema=k.constraint_schema
+                AND r.table_name=k.table_name
+                AND r.constraint_name=k.constraint_name
+              WHERE k.constraint_schema=? AND k.table_name='line_link_codes'
+                AND k.constraint_name='fk_line_link_codes_resident'
+              ORDER BY k.ordinal_position"
+        );
+        $lineCodeForeignKeyStatement->execute([$database]);
+        $lineCodeForeignKey=$lineCodeForeignKeyStatement->fetchAll();
+        $lineCodeForeignKeyExact=count($lineCodeForeignKey)===1;
+        if($lineCodeForeignKeyExact){
+            $lineCodeForeignKeyRow=$lineCodeForeignKey[0];
+            $lineCodeForeignKeyExact=
+                (string)($lineCodeForeignKeyRow['COLUMN_NAME']??$lineCodeForeignKeyRow['column_name']??'')==='resident_id'
+                &&(string)($lineCodeForeignKeyRow['REFERENCED_TABLE_NAME']??$lineCodeForeignKeyRow['referenced_table_name']??'')==='residents'
+                &&(string)($lineCodeForeignKeyRow['REFERENCED_COLUMN_NAME']??$lineCodeForeignKeyRow['referenced_column_name']??'')==='id'
+                &&strtoupper((string)($lineCodeForeignKeyRow['UPDATE_RULE']??$lineCodeForeignKeyRow['update_rule']??''))==='RESTRICT'
+                &&strtoupper((string)($lineCodeForeignKeyRow['DELETE_RULE']??$lineCodeForeignKeyRow['delete_rule']??''))==='RESTRICT';
+        }
+        if($lineCodeForeignKeyExact){
+            addResult($successes,'พบ foreign key line_link_codes(resident_id) ไป residents(id) แบบ RESTRICT');
+        }else{
+            addResult($errors,'schema ขาดหรือมีนิยาม fk_line_link_codes_resident ไม่ตรงกับ migration 010');
+        }
+
+        $requiredLineCodeUniqueIndexes=[
+            'uq_line_link_codes_code_hash'=>['code_hash'],
+            'uq_line_link_codes_pending_resident'=>['pending_resident_id'],
+        ];
+        $lineCodeUniqueIndexStatement=$pdo->prepare(
+            "SELECT index_name,column_name,non_unique,seq_in_index,sub_part
+               FROM information_schema.statistics
+              WHERE table_schema=? AND table_name='line_link_codes'
+                AND index_name IN ('uq_line_link_codes_code_hash','uq_line_link_codes_pending_resident')
+              ORDER BY index_name,seq_in_index"
+        );
+        $lineCodeUniqueIndexStatement->execute([$database]);
+        $lineCodeUniqueIndexes=[];
+        $invalidLineCodeUniqueIndexes=[];
+        foreach($lineCodeUniqueIndexStatement->fetchAll()as$lineCodeIndexRow){
+            $indexName=(string)($lineCodeIndexRow['INDEX_NAME']??$lineCodeIndexRow['index_name']??'');
+            if(!isset($requiredLineCodeUniqueIndexes[$indexName])
+                ||(int)($lineCodeIndexRow['NON_UNIQUE']??$lineCodeIndexRow['non_unique']??1)!==0
+                ||(int)($lineCodeIndexRow['SEQ_IN_INDEX']??$lineCodeIndexRow['seq_in_index']??0)
+                    !==count($lineCodeUniqueIndexes[$indexName]??[])+1
+                ||($lineCodeIndexRow['SUB_PART']??$lineCodeIndexRow['sub_part']??null)!==null){
+                $invalidLineCodeUniqueIndexes[]=$indexName;
+                continue;
+            }
+            $lineCodeUniqueIndexes[$indexName][]=(string)(
+                $lineCodeIndexRow['COLUMN_NAME']??$lineCodeIndexRow['column_name']??''
+            );
+        }
+        foreach($requiredLineCodeUniqueIndexes as$indexName=>$definition){
+            if(($lineCodeUniqueIndexes[$indexName]??null)!==$definition){
+                $invalidLineCodeUniqueIndexes[]=$indexName;
+            }
+        }
+        $invalidLineCodeUniqueIndexes=array_values(array_unique($invalidLineCodeUniqueIndexes));
+        if($invalidLineCodeUniqueIndexes===[]){
+            addResult($successes,'พบ unique indexes ป้องกัน code hash ซ้ำและ pending code ซ้ำต่อผู้พักจาก migration 010');
+        }else{
+            addResult($errors,'schema ขาดหรือมีนิยาม unique indexes ของ LINE binding ไม่ตรง: '
+                .implode(', ',$invalidLineCodeUniqueIndexes));
+        }
+
+        if($invalidColumns===[]&&$missingCurrentChecks===[]&&$meterOccupancyForeignKeyExact){
+            $overlappingOccupancyMonths=(int)$pdo->query(
+                "SELECT COUNT(*)
+                   FROM occupancies first_row
+                   JOIN occupancies second_row
+                     ON second_row.id>first_row.id
+                    AND (
+                        second_row.room_id=first_row.room_id
+                        OR second_row.resident_id=first_row.resident_id
+                    )
+                  WHERE DATE_FORMAT(first_row.move_in_date,'%Y-%m-01')
+                            <=DATE_FORMAT(COALESCE(second_row.move_out_date,'9999-12-31'),'%Y-%m-01')
+                    AND DATE_FORMAT(second_row.move_in_date,'%Y-%m-01')
+                            <=DATE_FORMAT(COALESCE(first_row.move_out_date,'9999-12-31'),'%Y-%m-01')"
+            )->fetchColumn();
+            if($overlappingOccupancyMonths===0){
+                addResult($successes,'ไม่มี occupancy ของห้องหรือ resident เดียวกันทับรอบเดือน');
+            }else{
+                addResult($errors,'data readiness ไม่ผ่าน: occupancy ของห้องหรือ resident เดียวกันทับรอบเดือน '
+                    .$overlappingOccupancyMonths
+                    .' คู่; ระบบไม่รองรับค่าเช่า/มิเตอร์แบบแบ่งเดือน ต้อง reconcile ก่อนเปิด billing');
+            }
+
+            $invalidResidentOccupancyStates=(int)$pdo->query(
+                "SELECT COUNT(*)
+                   FROM (
+                       SELECT CONCAT('resident:',resident_row.id) AS issue_key
+                         FROM residents resident_row
+                         LEFT JOIN occupancies active_occupancy
+                           ON active_occupancy.resident_id=resident_row.id
+                          AND active_occupancy.status='active'
+                         LEFT JOIN rooms active_room
+                           ON active_room.id=active_occupancy.room_id
+                        WHERE resident_row.active=1
+                        GROUP BY resident_row.id
+                       HAVING COUNT(active_occupancy.id)<>1
+                           OR SUM(CASE
+                               WHEN active_room.id IS NOT NULL
+                                AND active_room.deleted_at IS NULL THEN 1
+                               ELSE 0
+                           END)<>1
+
+                       UNION ALL
+
+                       SELECT CONCAT('occupancy:',occupancy_row.id) AS issue_key
+                         FROM occupancies occupancy_row
+                         JOIN residents linked_resident
+                           ON linked_resident.id=occupancy_row.resident_id
+                         JOIN rooms linked_room
+                           ON linked_room.id=occupancy_row.room_id
+                         JOIN bookings linked_booking
+                           ON linked_booking.id=occupancy_row.booking_id
+                        WHERE (
+                            occupancy_row.status='active'
+                            AND (
+                                linked_resident.active<>1
+                                OR linked_room.deleted_at IS NOT NULL
+                            )
+                        )
+                           OR linked_booking.status<>'moved_in'
+                           OR NOT(linked_booking.resident_id<=>occupancy_row.resident_id)
+                           OR NOT(linked_booking.room_id<=>occupancy_row.room_id)
+                           OR NOT(linked_booking.booked_monthly_rent<=>occupancy_row.monthly_rent)
+
+                       UNION ALL
+
+                       SELECT CONCAT('booking:',moved_booking.id) AS issue_key
+                         FROM bookings moved_booking
+                         LEFT JOIN occupancies moved_occupancy
+                           ON moved_occupancy.booking_id=moved_booking.id
+                        WHERE moved_booking.status='moved_in'
+                          AND (
+                              moved_occupancy.id IS NULL
+                              OR NOT(moved_booking.resident_id<=>moved_occupancy.resident_id)
+                              OR NOT(moved_booking.room_id<=>moved_occupancy.room_id)
+                              OR NOT(moved_booking.booked_monthly_rent<=>moved_occupancy.monthly_rent)
+                          )
+                   ) invalid_state_rows"
+            )->fetchColumn();
+            if($invalidResidentOccupancyStates===0){
+                addResult($successes,'resident/occupancy/room/booking lifecycle states สอดคล้องกัน');
+            }else{
+                addResult($errors,'data readiness ไม่ผ่าน: resident/occupancy/room/booking lifecycle state '
+                    .'ไม่สอดคล้อง '.$invalidResidentOccupancyStates
+                    .' จุด; ต้อง reconcile ก่อนเปิด login, billing และ move-out');
+            }
+
+            $invalidFinancialRelationships=(int)$pdo->query(
+                <<<'SQL'
+SELECT COUNT(*)
+  FROM (
+      SELECT CONCAT('bill:',bill_row.id) AS issue_key
+        FROM bills bill_row
+        JOIN occupancies bill_occupancy
+          ON bill_occupancy.id=bill_row.occupancy_id
+        LEFT JOIN meter_readings bill_water
+          ON bill_water.room_id=bill_row.room_id
+         AND bill_water.occupancy_id=bill_row.occupancy_id
+         AND bill_water.meter_type='water'
+         AND bill_water.period=bill_row.period
+        LEFT JOIN meter_readings bill_electric
+          ON bill_electric.room_id=bill_row.room_id
+         AND bill_electric.occupancy_id=bill_row.occupancy_id
+         AND bill_electric.meter_type='electric'
+         AND bill_electric.period=bill_row.period
+       WHERE NOT(bill_row.resident_id<=>bill_occupancy.resident_id)
+          OR NOT(bill_row.room_id<=>bill_occupancy.room_id)
+          OR NOT(bill_row.rent_amount<=>bill_occupancy.monthly_rent)
+          OR bill_row.period<DATE_FORMAT(bill_occupancy.move_in_date,'%Y-%m-01')
+          OR bill_row.period>DATE_FORMAT(
+              COALESCE(bill_occupancy.move_out_date,'9999-12-31'),
+              '%Y-%m-01'
+          )
+          OR bill_water.id IS NULL
+          OR NOT(bill_row.water_previous<=>bill_water.previous_reading)
+          OR NOT(bill_row.water_current<=>bill_water.current_reading)
+          OR NOT(bill_row.water_units<=>bill_water.units_used)
+          OR bill_electric.id IS NULL
+          OR NOT(bill_row.electric_previous<=>bill_electric.previous_reading)
+          OR NOT(bill_row.electric_current<=>bill_electric.current_reading)
+          OR NOT(bill_row.electric_units<=>bill_electric.units_used)
+
+      UNION ALL
+
+      SELECT CONCAT('bill-items:',item_bill.id) AS issue_key
+        FROM bills item_bill
+        LEFT JOIN bill_items item_row ON item_row.bill_id=item_bill.id
+       GROUP BY item_bill.id,item_bill.rent_amount,
+                item_bill.water_units,item_bill.water_rate,item_bill.water_amount,
+                item_bill.electric_units,item_bill.electric_rate,item_bill.electric_amount,
+                item_bill.other_description,item_bill.other_amount
+      HAVING SUM(CASE
+                 WHEN item_row.item_type='rent'
+                  AND item_row.quantity=1.00
+                  AND item_row.unit_price=item_bill.rent_amount
+                  AND item_row.amount=item_bill.rent_amount THEN 1
+                 ELSE 0
+             END)<>1
+          OR SUM(CASE
+                 WHEN item_row.item_type='water'
+                  AND item_row.quantity=item_bill.water_units
+                  AND item_row.unit_price=item_bill.water_rate
+                  AND item_row.amount=item_bill.water_amount THEN 1
+                 ELSE 0
+             END)<>1
+          OR SUM(CASE
+                 WHEN item_row.item_type='electric'
+                  AND item_row.quantity=item_bill.electric_units
+                  AND item_row.unit_price=item_bill.electric_rate
+                  AND item_row.amount=item_bill.electric_amount THEN 1
+                 ELSE 0
+             END)<>1
+          OR (
+              item_bill.other_amount=0
+              AND SUM(CASE WHEN item_row.item_type='other' THEN 1 ELSE 0 END)<>0
+          )
+          OR (
+              item_bill.other_amount>0
+              AND SUM(CASE
+                      WHEN item_row.item_type='other'
+                       AND item_row.quantity=1.00
+                       AND item_row.unit_price=item_bill.other_amount
+                       AND item_row.amount=item_bill.other_amount
+                       AND item_row.description=item_bill.other_description THEN 1
+                      ELSE 0
+                  END)<>1
+          )
+
+      UNION ALL
+
+      SELECT CONCAT('payment:',payment_row.id) AS issue_key
+        FROM payments payment_row
+        JOIN bills payment_bill ON payment_bill.id=payment_row.bill_id
+       WHERE NOT(payment_row.resident_id<=>payment_bill.resident_id)
+          OR NOT(payment_row.amount<=>payment_bill.total_amount)
+          OR (payment_row.status='pending' AND payment_bill.status<>'pending')
+          OR (payment_row.status='verified' AND payment_bill.status<>'paid')
+
+      UNION ALL
+
+      SELECT CONCAT('bill-payment:',paid_bill.id) AS issue_key
+        FROM bills paid_bill
+        LEFT JOIN payments paid_payment ON paid_payment.bill_id=paid_bill.id
+       GROUP BY paid_bill.id,paid_bill.status,
+                paid_bill.resident_id,paid_bill.total_amount
+      HAVING (
+          paid_bill.status='paid'
+          AND SUM(CASE
+                  WHEN paid_payment.status='verified'
+                   AND paid_payment.resident_id=paid_bill.resident_id
+                   AND paid_payment.amount=paid_bill.total_amount THEN 1
+                  ELSE 0
+              END)<>1
+      ) OR (
+          paid_bill.status='pending'
+          AND SUM(CASE WHEN paid_payment.status='verified' THEN 1 ELSE 0 END)<>0
+      )
+
+      UNION ALL
+
+      SELECT CONCAT('notification:',notification_row.id) AS issue_key
+        FROM notification_outbox notification_row
+        JOIN bills notification_bill ON notification_bill.id=notification_row.bill_id
+       WHERE NOT(notification_row.resident_id<=>notification_bill.resident_id)
+  ) invalid_financial_rows
+SQL
+            )->fetchColumn();
+            if($invalidFinancialRelationships===0){
+                addResult($successes,'ความสัมพันธ์ occupancy/bill/items/payment/notification ถูกต้อง');
+            }else{
+                addResult($errors,'data readiness ไม่ผ่าน: ความสัมพันธ์ทางการเงินหรือผู้รับแจ้งเตือน '
+                    .'ไม่สอดคล้อง '.$invalidFinancialRelationships
+                    .' จุด; ต้อง reconcile หลักฐานก่อนเปิด billing, payment, move-out และ LINE');
+            }
+
+            $activeOccupanciesMissingOpening=(int)$pdo->query(
+                "SELECT COUNT(*) FROM occupancies
+                  WHERE status='active'
+                    AND (opening_water_reading IS NULL OR opening_electric_reading IS NULL)"
+            )->fetchColumn();
+            if($activeOccupanciesMissingOpening===0){
+                addResult($successes,'active occupancies มีค่าเปิดมิเตอร์น้ำ/ไฟครบทุกแถว');
+            }else{
+                addResult($errors,'data readiness ไม่ผ่าน: active occupancies ขาดค่าเปิดมิเตอร์น้ำ/ไฟ '
+                    .$activeOccupanciesMissingOpening
+                    .' แถว; ห้ามเดาค่า ให้ซ่อมจากหลักฐานก่อนเปิด write ตามคู่มือ migration 009');
+            }
+
+            $invalidMeterOccupancyLinks=(int)$pdo->query(
+                "SELECT COUNT(*)
+                   FROM meter_readings m
+                   LEFT JOIN occupancies linked ON linked.id=m.occupancy_id
+                  WHERE (
+                      m.occupancy_id IS NULL
+                      AND EXISTS(
+                          SELECT 1 FROM occupancies overlap_row
+                           WHERE overlap_row.room_id=m.room_id
+                             AND overlap_row.move_in_date<=LAST_DAY(m.period)
+                             AND (overlap_row.move_out_date IS NULL
+                                  OR overlap_row.move_out_date>=m.period)
+                      )
+                  ) OR (
+                      m.occupancy_id IS NOT NULL
+                      AND (
+                          linked.id IS NULL
+                          OR linked.room_id<>m.room_id
+                          OR linked.move_in_date>LAST_DAY(m.period)
+                          OR (linked.move_out_date IS NOT NULL
+                              AND linked.move_out_date<m.period)
+                      )
+                  )"
+            )->fetchColumn();
+            if($invalidMeterOccupancyLinks===0){
+                addResult($successes,'meter readings ผูก occupancy/ห้อง/ช่วงวันที่ถูกต้องทุกแถว');
+            }else{
+                addResult($errors,'data readiness ไม่ผ่าน: meter readings ทับช่วง occupancy แต่ไม่ผูก '
+                    .'occupancy_id หรือผูกห้อง/ช่วงวันที่ไม่ตรง '.$invalidMeterOccupancyLinks
+                    .' แถว; ต้อง reconcile ก่อนเปิด billing');
+            }
+
+            $invalidMeterChains=(int)$pdo->query(
+                "SELECT COUNT(*)
+                   FROM meter_readings current_row
+                   JOIN occupancies occupancy_row
+                     ON occupancy_row.id=current_row.occupancy_id
+                   LEFT JOIN meter_readings prior_row
+                     ON prior_row.occupancy_id=current_row.occupancy_id
+                    AND prior_row.room_id=current_row.room_id
+                    AND prior_row.meter_type=current_row.meter_type
+                    AND prior_row.period=DATE_SUB(current_row.period,INTERVAL 1 MONTH)
+                  WHERE (
+                      current_row.period=DATE_FORMAT(occupancy_row.move_in_date,'%Y-%m-01')
+                      AND NOT (
+                          current_row.previous_reading <=> IF(
+                              current_row.meter_type='water',
+                              occupancy_row.opening_water_reading,
+                              occupancy_row.opening_electric_reading
+                          )
+                      )
+                  ) OR (
+                      current_row.period>DATE_FORMAT(occupancy_row.move_in_date,'%Y-%m-01')
+                      AND (
+                          prior_row.id IS NULL
+                          OR NOT (
+                              current_row.previous_reading
+                              <=> prior_row.current_reading
+                          )
+                      )
+                  )"
+            )->fetchColumn();
+            if($invalidMeterChains===0){
+                addResult($successes,'meter readings มี opening baseline และลำดับเดือนต่อเนื่องถูกต้อง');
+            }else{
+                addResult($errors,'data readiness ไม่ผ่าน: meter chain ขาดเดือนหรือ previous reading '
+                    .'ไม่ตรงกับ opening/เดือนก่อน '.$invalidMeterChains
+                    .' แถว; ต้องกระทบยอดและซ่อมด้วย DBA ระหว่าง maintenance ก่อนเปิด billing');
+            }
+
+            $activeResidentsWithoutCredential=(int)$pdo->query(
+                "SELECT COUNT(*) FROM residents
+                  WHERE active=1
+                    AND NOT (
+                        access_password_hash IS NOT NULL
+                        OR (
+                            activation_code_hash IS NOT NULL
+                            AND activation_consumed_at IS NULL
+                            AND activation_expires_at>UTC_TIMESTAMP(6)
+                        )
+                    )"
+            )->fetchColumn();
+            if($activeResidentsWithoutCredential===0){
+                addResult($successes,'active residents มี password หรือ activation key ที่ยังใช้ได้ครบทุกแถว');
+            }else{
+                addResult($errors,'data readiness ไม่ผ่าน: active residents ไม่มี password หรือ activation key ที่ยังใช้ได้ '
+                    .$activeResidentsWithoutCredential
+                    .' แถว; deploy ใน maintenance, ให้ผู้ดูแล reissue access key '
+                    .'และยืนยันการส่งมอบผ่านช่องทางส่วนตัวก่อนเปิด traffic');
+            }
+        }else{
+            addResult($skips,'ข้าม data-readiness ของ resident/occupancy/meter เพราะ schema migrations 007–009 ยังไม่ครบ');
+        }
 
         if ($missing === [] && $invalidLineColumns === []) {
             $ownerCount = (int) $pdo->query("SELECT COUNT(*) FROM admin_users WHERE role='owner' AND active=1")->fetchColumn();
@@ -804,7 +1422,7 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
             elseif ($billingSettings['updated_by'] === null) addResult($warnings, 'ยังไม่ได้ยืนยันค่าน้ำ ค่าไฟ และวันครบกำหนดผ่านหลังบ้าน; ระบบจะปฏิเสธการออกบิล');
             else addResult($successes, 'ผู้ดูแลยืนยันค่าการเรียกเก็บรายเดือนผ่านหลังบ้านแล้ว');
             $integration = $pdo->query(
-                'SELECT promptpay_target,payment_receiver_account_tail,
+                'SELECT promptpay_target,payment_receiver_account_tail,line_basic_id,
                         line_channel_access_token_enc,line_channel_secret_enc,slip_provider,
                         slipok_api_key_enc,slipok_branch_id,easyslip_api_key_enc
                    FROM integration_settings WHERE id=1'
@@ -845,6 +1463,10 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
                 else addResult($warnings, 'ยังไม่ได้ตั้ง LINE token จากหลังบ้าน; worker จะยังส่งบิลไม่ได้');
                 if ($lineReady && $lineChannelSecretReady) addResult($successes, 'ตั้ง LINE Channel secret แล้ว; signed webhook พร้อมตรวจสอบลายเซ็น');
                 else addResult($warnings, 'ยังตั้ง LINE webhook ไม่ครบ; ต้องมีทั้ง Channel access token และ Channel secret');
+                $lineBasicIdReady = is_string($integration['line_basic_id'] ?? null)
+                    && preg_match('/^@[A-Za-z0-9._-]{1,32}$/D', (string) $integration['line_basic_id']) === 1;
+                if ($lineBasicIdReady) addResult($successes, 'ตั้ง LINE Official Account Basic ID แล้ว; ผู้พักเปิดหน้าเพิ่มเพื่อนได้');
+                else addResult($warnings, 'ยังไม่ได้ตั้ง LINE Basic ID; ผู้พักจะยังสร้างรหัสผูก LINE ไม่ได้');
 
                 $provider = (string) ($integration['slip_provider'] ?? 'none');
                 // PromptPay is intentionally not a receiver-account fallback:

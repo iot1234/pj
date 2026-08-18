@@ -33,6 +33,140 @@ final class BillingService
         return $this->mapSettings($row);
     }
 
+    /**
+     * Build an automation-safe plan for a completed calendar month. The
+     * current month is deliberately rejected so a scheduler cannot freeze
+     * readings while that month is still in progress.
+     *
+     * @return array<string,mixed>
+     */
+    public function closedPeriodPreview(string $period, ?string $dueDate = null): array
+    {
+        $period = Validator::period($period);
+        $this->assertClosedBillingPeriod($period);
+        $settings = $this->settings();
+        if (($settings['configured'] ?? false) !== true) {
+            throw new HttpException(
+                409,
+                'Billing settings must be confirmed before monthly generation',
+                'BILLING_SETTINGS_NOT_CONFIRMED'
+            );
+        }
+
+        $timezone = new \DateTimeZone((string) $this->app->config->get('APP_TIMEZONE', 'Asia/Bangkok'));
+        $today = new \DateTimeImmutable('today', $timezone);
+        $dueDate ??= $today->modify('+' . (int) $settings['due_days'] . ' days')->format('Y-m-d');
+        $periodDate = $period . '-01';
+        $lastDay = (new \DateTimeImmutable($periodDate))->modify('last day of this month')->format('Y-m-d');
+        $statement = $this->app->database()->pdo()->prepare(
+            'SELECT DISTINCT o.room_id
+               FROM occupancies o
+              WHERE o.move_in_date<=?
+                AND (o.move_out_date IS NULL OR o.move_out_date>=?)
+                AND NOT EXISTS (
+                    SELECT 1
+                      FROM bills b
+                     WHERE b.occupancy_id=o.id
+                       AND b.period=?
+                )
+              ORDER BY o.room_id
+              LIMIT 501'
+        );
+        $statement->execute([$lastDay, $periodDate, $periodDate]);
+        $roomIds = array_map('intval', $statement->fetchAll(PDO::FETCH_COLUMN));
+        if (count($roomIds) > 500) {
+            throw new HttpException(
+                409,
+                'Completed-month generation exceeds the safe 500-room batch limit',
+                'BILL_AUTOMATION_BATCH_TOO_LARGE',
+                ['maximum_rooms' => 500]
+            );
+        }
+
+        if ($roomIds === []) {
+            // Still validate the supplied/default due date so a dry run cannot
+            // report a malformed plan as safe merely because no room matches.
+            $this->validatedBillingDates($period, $dueDate);
+            return [
+                'period' => $period,
+                'due_date' => $dueDate,
+                'room_ids' => [],
+                'bills' => [],
+                'issues' => [],
+                'preview_token' => null,
+                'preview_expires_at' => null,
+                'automation_safe' => true,
+            ];
+        }
+
+        $preview = $this->preview([
+            'period' => $period,
+            'room_ids' => $roomIds,
+            'due_date' => $dueDate,
+        ]);
+        $preview['room_ids'] = $roomIds;
+        $preview['automation_safe'] = true;
+        return $preview;
+    }
+
+    /**
+     * Generate a completed month atomically and idempotently. Occupancies that
+     * already have a bill are excluded from the plan, so a complete rerun is a
+     * safe no-op; any missing/ambiguous meter state aborts the whole run
+     * instead of silently producing a partial month.
+     *
+     * @param null|callable(array<string,mixed>):void $afterCreate
+     * @return array<string,mixed>
+     */
+    public function generateClosedPeriod(
+        string $period,
+        int $adminId,
+        ?string $dueDate = null,
+        ?callable $afterCreate = null,
+    ): array {
+        return $this->app->database()->transaction(function (PDO $pdo) use (
+            $period,
+            $adminId,
+            $dueDate,
+            $afterCreate,
+        ): array {
+            $this->assertActiveAdmin($pdo, $adminId);
+            $plan = $this->closedPeriodPreview($period, $dueDate);
+            if ($plan['issues'] !== []) {
+                throw new HttpException(
+                    409,
+                    'Completed-month generation is blocked by unresolved room data',
+                    'BILL_AUTOMATION_BLOCKED',
+                    ['issues' => $plan['issues']]
+                );
+            }
+            if ($plan['room_ids'] === []) {
+                $result = [
+                    'period' => $plan['period'],
+                    'created' => [],
+                    'skipped' => [],
+                    'automation_safe' => true,
+                ];
+                if ($afterCreate !== null) {
+                    $afterCreate($result);
+                }
+                return $result;
+            }
+
+            $result = $this->bulk([
+                'period' => $plan['period'],
+                'room_ids' => $plan['room_ids'],
+                'due_date' => $plan['due_date'],
+                'preview_token' => $plan['preview_token'],
+            ], $adminId);
+            $result['automation_safe'] = true;
+            if ($afterCreate !== null) {
+                $afterCreate($result);
+            }
+            return $result;
+        });
+    }
+
     /** @return array<string,mixed> */
     public function updateSettings(array $input, int $adminId): array
     {
@@ -73,7 +207,10 @@ final class BillingService
     /** @return array<string,mixed> */
     public function bulk(array $input, int $adminId): array
     {
-        Validator::only($input, ['period','room_ids','water_rate','electric_rate','other_description','other_amount','due_date','preview_token']);
+        Validator::only($input,[
+            'period','room_ids','water_rate','electric_rate','other_description',
+            'other_amount','due_date','preview_token','confirm_current_period',
+        ]);
         $token=Validator::string($input['preview_token']??null,'preview_token',40,2048);
         unset($input['preview_token']);
         return $this->app->database()->transaction(function (PDO $pdo) use ($input, $adminId, $token): array {
@@ -134,6 +271,11 @@ final class BillingService
         }
         $statement = $this->app->database()->pdo()->prepare(
             'SELECT b.*,b.room_code_snapshot AS room_code,b.resident_name_snapshot AS full_name,res.phone_norm,
+                    (SELECT p.status
+                       FROM payments p
+                      WHERE p.bill_id=b.id
+                      ORDER BY p.id DESC
+                      LIMIT 1) AS payment_status,
                     res.id AS line_resident_id,res.line_user_id AS line_recipient,
                     n.status AS line_status,n.attempts AS line_attempts,n.last_error AS line_last_error,n.sent_at AS line_sent_at,
                     n.line_request_id,n.line_accepted_request_id
@@ -159,7 +301,15 @@ final class BillingService
     public function residentList(int $residentId): array
     {
         $statement = $this->app->database()->pdo()->prepare(
-            'SELECT b.*,b.room_code_snapshot AS room_code FROM bills b WHERE b.resident_id=? ORDER BY b.period DESC,b.id DESC'
+            'SELECT b.*,b.room_code_snapshot AS room_code,
+                    (SELECT p.status
+                       FROM payments p
+                      WHERE p.bill_id=b.id
+                      ORDER BY p.id DESC
+                      LIMIT 1) AS payment_status
+               FROM bills b
+              WHERE b.resident_id=?
+              ORDER BY b.period DESC,b.id DESC'
         );
         $statement->execute([$residentId]);
         return array_map($this->mapBill(...), $statement->fetchAll());
@@ -216,11 +366,27 @@ final class BillingService
     /** @return array<string,mixed> */
     private function buildPreview(array $input, PDO $pdo, bool $lock): array
     {
-        Validator::only($input, ['period','room_ids','water_rate','electric_rate','other_description','other_amount','due_date']);
+        Validator::only($input,[
+            'period','room_ids','water_rate','electric_rate','other_description',
+            'other_amount','due_date','confirm_current_period',
+        ]);
         [$period, $periodDate, $dueDate] = $this->validatedBillingDates(
             $input['period'] ?? null,
             $input['due_date'] ?? null,
         );
+        $timezone=new \DateTimeZone((string)$this->app->config->get('APP_TIMEZONE','Asia/Bangkok'));
+        $currentPeriod=(new \DateTimeImmutable('now',$timezone))->format('Y-m');
+        $currentPeriodConfirmed=array_key_exists('confirm_current_period',$input)
+            ?Validator::boolean($input['confirm_current_period'],'confirm_current_period')
+            :false;
+        if($period===$currentPeriod&&!$currentPeriodConfirmed){
+            throw new HttpException(
+                409,
+                'The current billing period must be explicitly finalized before issuing bills',
+                'CURRENT_BILLING_PERIOD_NOT_FINALIZED',
+                ['period'=>$period,'confirmation_required'=>true]
+            );
+        }
         if (array_key_exists('other_description', $input)
             && $input['other_description'] !== null
             && !is_string($input['other_description'])) {
@@ -260,7 +426,9 @@ final class BillingService
             $filter = ' AND o.room_id IN (' . implode(',', array_fill(0, count($roomIds), '?')) . ')';
             array_push($parameters, ...$roomIds);
         }
-        $sql = 'SELECT o.id AS occupancy_id,o.resident_id,o.room_id,o.monthly_rent,r.room_code,res.full_name
+        $sql = 'SELECT o.id AS occupancy_id,o.resident_id,o.room_id,o.monthly_rent,
+                       o.move_in_date,o.opening_water_reading,o.opening_electric_reading,
+                       r.room_code,res.full_name
                   FROM occupancies o JOIN rooms r ON r.id=o.room_id JOIN residents res ON res.id=o.resident_id
                  WHERE o.move_in_date<=? AND (o.move_out_date IS NULL OR o.move_out_date>=?)' . $filter .
                ' ORDER BY r.floor,r.room_code' . ($lock ? ' FOR UPDATE' : '');
@@ -275,13 +443,103 @@ final class BillingService
         $issues=$partition['issues'];
         foreach(array_diff($roomIds,$foundRoomIds)as$missingRoomId)$issues[]=['room_id'=>$missingRoomId,'code'=>'NO_OCCUPANCY'];
         foreach ($occupancies as $occupancy) {
-            $meter = $pdo->prepare('SELECT meter_type,previous_reading,current_reading,units_used FROM meter_readings WHERE room_id=? AND period=?' . ($lock ? ' FOR UPDATE' : ''));
+            $meter = $pdo->prepare('SELECT meter_type,occupancy_id,previous_reading,current_reading,units_used
+                FROM meter_readings WHERE room_id=? AND period=?' . ($lock ? ' FOR UPDATE' : ''));
             $meter->execute([$occupancy['room_id'], $periodDate]);
             $readings = [];
-            foreach ($meter->fetchAll() as $row) $readings[$row['meter_type']] = $row;
+            $mismatched=[];
+            foreach ($meter->fetchAll() as $row) {
+                if((int)($row['occupancy_id']??0)!==(int)$occupancy['occupancy_id']){
+                    $mismatched[]=(string)$row['meter_type'];
+                    continue;
+                }
+                $readings[$row['meter_type']] = $row;
+            }
+            if($mismatched!==[]){
+                $issues[]=[
+                    'room_id'=>(int)$occupancy['room_id'],
+                    'room_code'=>$occupancy['room_code'],
+                    'occupancy_id'=>(int)$occupancy['occupancy_id'],
+                    'code'=>'METER_OCCUPANCY_MISMATCH',
+                    'meter_types'=>$mismatched,
+                ];
+                continue;
+            }
             $missing = array_values(array_diff(['water','electric'], array_keys($readings)));
             if ($missing !== []) {
                 $issues[] = ['room_id'=>(int)$occupancy['room_id'],'room_code'=>$occupancy['room_code'],'code'=>'MISSING_METER','meter_types'=>$missing];
+                continue;
+            }
+            $baselineIssues=[];
+            $moveInPeriod=substr((string)$occupancy['move_in_date'],0,7).'-01';
+            $requiredPriorPeriod=(new \DateTimeImmutable($periodDate,new \DateTimeZone('UTC')))
+                ->modify('first day of previous month')
+                ->format('Y-m-01');
+            foreach(['water','electric'] as$type){
+                $expectedPrevious=null;
+                if($moveInPeriod===$periodDate){
+                    $openingField='opening_'.$type.'_reading';
+                    if($occupancy[$openingField]===null){
+                        $baselineIssues[]=[
+                            'meter_type'=>$type,
+                            'code'=>'METER_OPENING_REQUIRED',
+                        ];
+                        continue;
+                    }
+                    $expectedPrevious=Validator::scaledDecimal(
+                        $occupancy[$openingField],
+                        $openingField,
+                        2,
+                        12
+                    );
+                }else{
+                    $prior=$pdo->prepare('SELECT current_reading
+                        FROM meter_readings
+                        WHERE occupancy_id=? AND room_id=? AND meter_type=? AND period=?
+                        LIMIT 1'.($lock?' FOR UPDATE':''));
+                    $prior->execute([
+                        $occupancy['occupancy_id'],
+                        $occupancy['room_id'],
+                        $type,
+                        $requiredPriorPeriod,
+                    ]);
+                    $priorCurrent=$prior->fetchColumn();
+                    if($priorCurrent===false){
+                        $baselineIssues[]=[
+                            'meter_type'=>$type,
+                            'code'=>'METER_HISTORY_GAP',
+                            'required_previous_period'=>substr($requiredPriorPeriod,0,7),
+                        ];
+                        continue;
+                    }
+                    $expectedPrevious=Validator::scaledDecimal(
+                        $priorCurrent,
+                        'previous_reading',
+                        2,
+                        12
+                    );
+                }
+                $storedPrevious=Validator::scaledDecimal(
+                    $readings[$type]['previous_reading'],
+                    'previous_reading',
+                    2,
+                    12
+                );
+                if($storedPrevious!==$expectedPrevious){
+                    $baselineIssues[]=[
+                        'meter_type'=>$type,
+                        'code'=>'METER_BASELINE_MISMATCH',
+                    ];
+                }
+            }
+            if($baselineIssues!==[]){
+                $issues[]=[
+                    'room_id'=>(int)$occupancy['room_id'],
+                    'room_code'=>$occupancy['room_code'],
+                    'occupancy_id'=>(int)$occupancy['occupancy_id'],
+                    'code'=>'METER_CHAIN_INVALID',
+                    'meter_issues'=>$baselineIssues,
+                ];
                 continue;
             }
             $rent = Validator::scaledDecimal($occupancy['monthly_rent'], 'monthly_rent', 2, 9);
@@ -301,7 +559,13 @@ final class BillingService
                 'other_description'=>$otherDescription,'other_amount'=>Validator::decimalString($otherAmount),'total_amount'=>Validator::decimalString($total),
             ];
         }
-        return ['period'=>$period,'due_date'=>$dueDate,'bills'=>$bills,'issues'=>$issues];
+        return [
+            'period'=>$period,
+            'due_date'=>$dueDate,
+            'current_period_confirmed'=>$period===$currentPeriod&&$currentPeriodConfirmed,
+            'bills'=>$bills,
+            'issues'=>$issues,
+        ];
     }
 
     /** @return array{0:string,1:string,2:string} */
@@ -334,6 +598,36 @@ final class BillingService
             ]);
         }
         return [$period, $periodDate, $dueDate];
+    }
+
+    private function assertClosedBillingPeriod(
+        string $period,
+        ?\DateTimeImmutable $now = null,
+    ): void {
+        $timezone = new \DateTimeZone((string) $this->app->config->get('APP_TIMEZONE', 'Asia/Bangkok'));
+        $currentPeriod = ($now ?? new \DateTimeImmutable('now', $timezone))
+            ->setTimezone($timezone)
+            ->format('Y-m');
+        if ($period >= $currentPeriod) {
+            throw new HttpException(
+                409,
+                'Automated billing only accepts a completed calendar month',
+                'BILL_PERIOD_NOT_CLOSED',
+                ['period' => $period, 'maximum' => (new \DateTimeImmutable($currentPeriod . '-01'))->modify('-1 month')->format('Y-m')]
+            );
+        }
+    }
+
+    private function assertActiveAdmin(PDO $pdo, int $adminId): void
+    {
+        if ($adminId < 1) {
+            throw new HttpException(422, 'admin_id is invalid', 'VALIDATION_ERROR', ['field' => 'admin_id']);
+        }
+        $statement = $pdo->prepare('SELECT id FROM admin_users WHERE id=? AND active=1 FOR SHARE');
+        $statement->execute([$adminId]);
+        if ($statement->fetchColumn() === false) {
+            throw new HttpException(403, 'Active administrator is required', 'ADMIN_INACTIVE');
+        }
     }
 
     /**

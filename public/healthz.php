@@ -21,6 +21,7 @@ try {
     $tables = [
         'admin_users',
         'residents',
+        'line_link_codes',
         'rooms',
         'bookings',
         'occupancies',
@@ -31,6 +32,7 @@ try {
         'bill_items',
         'payments',
         'notification_outbox',
+        'notification_worker_heartbeats',
         'audit_logs',
         'rate_limits',
     ];
@@ -49,11 +51,30 @@ try {
     // deployment-critical fields that current write paths use immediately.
     $requiredColumns = [
         ['residents', 'line_user_id'],
+        ['residents', 'access_password_hash'],
+        ['residents', 'activation_code_hash'],
+        ['residents', 'activation_expires_at'],
+        ['residents', 'activation_consumed_at'],
+        ['line_link_codes', 'id'],
+        ['line_link_codes', 'resident_id'],
+        ['line_link_codes', 'code_hash'],
+        ['line_link_codes', 'status'],
+        ['line_link_codes', 'line_user_id'],
+        ['line_link_codes', 'expires_at'],
+        ['line_link_codes', 'bound_at'],
+        ['line_link_codes', 'revoked_at'],
+        ['line_link_codes', 'created_at'],
+        ['line_link_codes', 'updated_at'],
+        ['line_link_codes', 'pending_resident_id'],
         ['bookings', 'booked_monthly_rent'],
+        ['bookings', 'move_in_request_hash'],
         ['bookings', 'active_room_id'],
         ['bookings', 'active_phone_norm'],
         ['occupancies', 'active_room_id'],
         ['occupancies', 'active_resident_id'],
+        ['occupancies', 'opening_water_reading'],
+        ['occupancies', 'opening_electric_reading'],
+        ['meter_readings', 'occupancy_id'],
         ['bills', 'resident_name_snapshot'],
         ['bills', 'room_code_snapshot'],
         ['payments', 'verification_lease_until'],
@@ -61,7 +82,10 @@ try {
         ['payments', 'verification_attempts'],
         ['payments', 'active_bill_id'],
         ['integration_settings', 'line_channel_secret_enc'],
+        ['integration_settings', 'line_basic_id'],
         ['notification_outbox', 'recipient'],
+        ['notification_outbox', 'claim_token'],
+        ['notification_outbox', 'lease_until'],
         ['notification_outbox', 'line_request_id'],
         ['notification_outbox', 'line_accepted_request_id'],
     ];
@@ -78,6 +102,213 @@ try {
     $columns->execute($columnParameters);
     if ((int) $columns->fetchColumn() !== count($requiredColumns)) {
         throw new RuntimeException('schema migration readiness check failed');
+    }
+
+    // The current worker and resident/meter write paths depend on exact types,
+    // not only column names. Fail readiness on a partial or manually altered
+    // migration before a process can claim work with incompatible fencing.
+    $requiredCurrentColumns = [
+        'residents.access_password_hash' => ['varchar(255)', 'YES'],
+        'residents.activation_code_hash' => ['char(64)', 'YES'],
+        'residents.activation_expires_at' => ['datetime(6)', 'YES'],
+        'residents.activation_consumed_at' => ['datetime(6)', 'YES'],
+        'line_link_codes.id' => ['bigint unsigned', 'NO'],
+        'line_link_codes.resident_id' => ['bigint unsigned', 'NO'],
+        'line_link_codes.code_hash' => ['char(64)', 'NO'],
+        'line_link_codes.status' => ["enum('pending','bound','expired','revoked')", 'NO'],
+        'line_link_codes.line_user_id' => ['varchar(33)', 'YES'],
+        'line_link_codes.expires_at' => ['datetime(6)', 'NO'],
+        'line_link_codes.bound_at' => ['datetime(6)', 'YES'],
+        'line_link_codes.revoked_at' => ['datetime(6)', 'YES'],
+        'line_link_codes.created_at' => ['datetime(6)', 'NO'],
+        'line_link_codes.updated_at' => ['datetime(6)', 'NO'],
+        'line_link_codes.pending_resident_id' => ['bigint unsigned', 'YES'],
+        'bookings.move_in_request_hash' => ['char(64)', 'YES'],
+        'occupancies.opening_water_reading' => ['decimal(14,2)', 'YES'],
+        'occupancies.opening_electric_reading' => ['decimal(14,2)', 'YES'],
+        'meter_readings.occupancy_id' => ['bigint unsigned', 'YES'],
+        'integration_settings.line_basic_id' => ['varchar(33)', 'YES'],
+        'notification_outbox.claim_token' => ['char(64)', 'YES'],
+        'notification_outbox.lease_until' => ['datetime(6)', 'YES'],
+        'notification_worker_heartbeats.worker_id' => ['char(64)', 'NO'],
+        'notification_worker_heartbeats.status' => ["enum('starting','running','error','stopped')", 'NO'],
+        'notification_worker_heartbeats.started_at' => ['datetime(6)', 'NO'],
+        'notification_worker_heartbeats.heartbeat_at' => ['datetime(6)', 'NO'],
+        'notification_worker_heartbeats.last_cycle_at' => ['datetime(6)', 'YES'],
+        'notification_worker_heartbeats.last_processed' => ['int unsigned', 'NO'],
+        'notification_worker_heartbeats.last_sent' => ['int unsigned', 'NO'],
+        'notification_worker_heartbeats.last_failed' => ['int unsigned', 'NO'],
+        'notification_worker_heartbeats.last_retried' => ['int unsigned', 'NO'],
+        'notification_worker_heartbeats.last_lost_claims' => ['int unsigned', 'NO'],
+        'notification_worker_heartbeats.last_recovered' => ['int unsigned', 'NO'],
+        'notification_worker_heartbeats.last_error' => ['varchar(1000)', 'YES'],
+        'notification_worker_heartbeats.created_at' => ['datetime(6)', 'NO'],
+        'notification_worker_heartbeats.updated_at' => ['datetime(6)', 'NO'],
+    ];
+    $currentColumnPredicates = [];
+    $currentColumnParameters = [$app->config->require('DB_DATABASE')];
+    foreach (array_keys($requiredCurrentColumns) as $qualifiedColumn) {
+        [$table, $column] = explode('.', $qualifiedColumn, 2);
+        $currentColumnPredicates[] = '(table_name=? AND column_name=?)';
+        $currentColumnParameters[] = $table;
+        $currentColumnParameters[] = $column;
+    }
+    $currentColumns = $pdo->prepare(
+        'SELECT table_name,column_name,column_type,is_nullable'
+        . ' FROM information_schema.columns WHERE table_schema=? AND ('
+        . implode(' OR ', $currentColumnPredicates) . ')'
+    );
+    $currentColumns->execute($currentColumnParameters);
+    $actualCurrentColumns = [];
+    foreach ($currentColumns->fetchAll() as $currentColumn) {
+        $qualifiedColumn = (string) ($currentColumn['table_name'] ?? $currentColumn['TABLE_NAME'] ?? '')
+            . '.' . (string) ($currentColumn['column_name'] ?? $currentColumn['COLUMN_NAME'] ?? '');
+        if (!isset($requiredCurrentColumns[$qualifiedColumn])
+            || isset($actualCurrentColumns[$qualifiedColumn])) {
+            throw new RuntimeException('schema current-column readiness check failed');
+        }
+        $actualCurrentColumns[$qualifiedColumn] = [
+            strtolower((string) ($currentColumn['column_type'] ?? $currentColumn['COLUMN_TYPE'] ?? '')),
+            strtoupper((string) ($currentColumn['is_nullable'] ?? $currentColumn['IS_NULLABLE'] ?? '')),
+        ];
+    }
+    ksort($actualCurrentColumns);
+    ksort($requiredCurrentColumns);
+    if ($actualCurrentColumns !== $requiredCurrentColumns) {
+        throw new RuntimeException('schema current-column readiness check failed');
+    }
+
+    $requiredCurrentChecks = [
+        'chk_notification_outbox_claim_lease',
+        'chk_notification_worker_error',
+        'chk_notification_worker_id',
+        'chk_occupancies_opening_readings',
+        'chk_residents_access_password',
+        'chk_residents_activation_state',
+        'chk_residents_password_activation',
+        'chk_line_link_codes_hash',
+        'chk_line_link_codes_line_user',
+        'chk_line_link_codes_state',
+        'chk_line_link_codes_timestamps',
+        'chk_integration_settings_line_basic_id',
+        'chk_bookings_move_in_request_hash',
+    ];
+    $currentChecks = $pdo->prepare(
+        "SELECT constraint_name FROM information_schema.table_constraints"
+        . " WHERE constraint_schema=? AND constraint_type='CHECK' AND constraint_name IN ("
+        . implode(',', array_fill(0, count($requiredCurrentChecks), '?')) . ')'
+    );
+    $currentChecks->execute(array_merge(
+        [$app->config->require('DB_DATABASE')],
+        $requiredCurrentChecks,
+    ));
+    $actualCurrentChecks = array_map(
+        static fn (array $row): string => (string) (
+            $row['constraint_name'] ?? $row['CONSTRAINT_NAME'] ?? ''
+        ),
+        $currentChecks->fetchAll(),
+    );
+    sort($actualCurrentChecks);
+    sort($requiredCurrentChecks);
+    if ($actualCurrentChecks !== $requiredCurrentChecks) {
+        throw new RuntimeException('schema current-check readiness check failed');
+    }
+
+    $requiredOperationalIndexes = [
+        'meter_readings.idx_meter_readings_occupancy_period' => ['occupancy_id', 'period'],
+        'notification_outbox.idx_notification_outbox_lease' => ['status', 'lease_until'],
+        'notification_worker_heartbeats.idx_notification_worker_heartbeat' => ['heartbeat_at'],
+        'line_link_codes.idx_line_link_codes_expiry' => ['status', 'expires_at'],
+        'line_link_codes.idx_line_link_codes_resident' => ['resident_id', 'created_at'],
+    ];
+    $operationalIndexPredicates = [];
+    $operationalIndexParameters = [$app->config->require('DB_DATABASE')];
+    foreach (array_keys($requiredOperationalIndexes) as $qualifiedIndex) {
+        [$table, $index] = explode('.', $qualifiedIndex, 2);
+        $operationalIndexPredicates[] = '(table_name=? AND index_name=?)';
+        $operationalIndexParameters[] = $table;
+        $operationalIndexParameters[] = $index;
+    }
+    $operationalIndexes = $pdo->prepare(
+        'SELECT table_name,index_name,column_name,non_unique,seq_in_index,sub_part'
+        . ' FROM information_schema.statistics WHERE table_schema=? AND ('
+        . implode(' OR ', $operationalIndexPredicates) . ') ORDER BY table_name,index_name,seq_in_index'
+    );
+    $operationalIndexes->execute($operationalIndexParameters);
+    $actualOperationalIndexes = [];
+    foreach ($operationalIndexes->fetchAll() as $indexRow) {
+        $qualifiedIndex = (string) ($indexRow['table_name'] ?? $indexRow['TABLE_NAME'] ?? '')
+            . '.' . (string) ($indexRow['index_name'] ?? $indexRow['INDEX_NAME'] ?? '');
+        if (!isset($requiredOperationalIndexes[$qualifiedIndex])
+            || (int) ($indexRow['non_unique'] ?? $indexRow['NON_UNIQUE'] ?? 0) !== 1
+            || ($indexRow['sub_part'] ?? $indexRow['SUB_PART'] ?? null) !== null
+            || (int) ($indexRow['seq_in_index'] ?? $indexRow['SEQ_IN_INDEX'] ?? 0)
+                !== count($actualOperationalIndexes[$qualifiedIndex] ?? []) + 1) {
+            throw new RuntimeException('schema operational-index readiness check failed');
+        }
+        $actualOperationalIndexes[$qualifiedIndex][] = (string) (
+            $indexRow['column_name'] ?? $indexRow['COLUMN_NAME'] ?? ''
+        );
+    }
+    ksort($actualOperationalIndexes);
+    ksort($requiredOperationalIndexes);
+    if ($actualOperationalIndexes !== $requiredOperationalIndexes) {
+        throw new RuntimeException('schema operational-index readiness check failed');
+    }
+
+    $meterOccupancyForeignKey = $pdo->prepare(
+        "SELECT k.column_name,k.referenced_table_name,k.referenced_column_name,"
+        . " r.update_rule,r.delete_rule"
+        . " FROM information_schema.key_column_usage k"
+        . " JOIN information_schema.referential_constraints r"
+        . " ON r.constraint_schema=k.constraint_schema"
+        . " AND r.table_name=k.table_name AND r.constraint_name=k.constraint_name"
+        . " WHERE k.constraint_schema=? AND k.table_name='meter_readings'"
+        . " AND k.constraint_name='fk_meter_readings_occupancy'"
+    );
+    $meterOccupancyForeignKey->execute([$app->config->require('DB_DATABASE')]);
+    $foreignKeyRows = $meterOccupancyForeignKey->fetchAll();
+    $foreignKeyRow = count($foreignKeyRows) === 1 ? $foreignKeyRows[0] : null;
+    if (!is_array($foreignKeyRow)
+        || (string) ($foreignKeyRow['column_name'] ?? $foreignKeyRow['COLUMN_NAME'] ?? '') !== 'occupancy_id'
+        || (string) ($foreignKeyRow['referenced_table_name']
+            ?? $foreignKeyRow['REFERENCED_TABLE_NAME'] ?? '') !== 'occupancies'
+        || (string) ($foreignKeyRow['referenced_column_name']
+            ?? $foreignKeyRow['REFERENCED_COLUMN_NAME'] ?? '') !== 'id'
+        || strtoupper((string) ($foreignKeyRow['update_rule']
+            ?? $foreignKeyRow['UPDATE_RULE'] ?? '')) !== 'RESTRICT'
+        || strtoupper((string) ($foreignKeyRow['delete_rule']
+            ?? $foreignKeyRow['DELETE_RULE'] ?? '')) !== 'RESTRICT') {
+        throw new RuntimeException('schema occupancy foreign-key readiness check failed');
+    }
+
+    $lineCodeResidentForeignKey = $pdo->prepare(
+        "SELECT k.column_name,k.referenced_table_name,k.referenced_column_name,"
+        . " r.update_rule,r.delete_rule"
+        . " FROM information_schema.key_column_usage k"
+        . " JOIN information_schema.referential_constraints r"
+        . " ON r.constraint_schema=k.constraint_schema"
+        . " AND r.table_name=k.table_name AND r.constraint_name=k.constraint_name"
+        . " WHERE k.constraint_schema=? AND k.table_name='line_link_codes'"
+        . " AND k.constraint_name='fk_line_link_codes_resident'"
+    );
+    $lineCodeResidentForeignKey->execute([$app->config->require('DB_DATABASE')]);
+    $lineCodeForeignKeyRows = $lineCodeResidentForeignKey->fetchAll();
+    $lineCodeForeignKeyRow = count($lineCodeForeignKeyRows) === 1
+        ? $lineCodeForeignKeyRows[0]
+        : null;
+    if (!is_array($lineCodeForeignKeyRow)
+        || (string) ($lineCodeForeignKeyRow['column_name']
+            ?? $lineCodeForeignKeyRow['COLUMN_NAME'] ?? '') !== 'resident_id'
+        || (string) ($lineCodeForeignKeyRow['referenced_table_name']
+            ?? $lineCodeForeignKeyRow['REFERENCED_TABLE_NAME'] ?? '') !== 'residents'
+        || (string) ($lineCodeForeignKeyRow['referenced_column_name']
+            ?? $lineCodeForeignKeyRow['REFERENCED_COLUMN_NAME'] ?? '') !== 'id'
+        || strtoupper((string) ($lineCodeForeignKeyRow['update_rule']
+            ?? $lineCodeForeignKeyRow['UPDATE_RULE'] ?? '')) !== 'RESTRICT'
+        || strtoupper((string) ($lineCodeForeignKeyRow['delete_rule']
+            ?? $lineCodeForeignKeyRow['DELETE_RULE'] ?? '')) !== 'RESTRICT') {
+        throw new RuntimeException('schema LINE binding foreign-key readiness check failed');
     }
 
     // A UNIQUE index over a generated column is only as strong as the
@@ -113,6 +344,10 @@ try {
                 "casewhenstatusin'pending','verified'thenbill_idelsenullend",
                 "casewhenstatusin'verified','pending'thenbill_idelsenullend",
             ],
+        ],
+        'line_link_codes.pending_resident_id' => [
+            'type' => 'bigint unsigned',
+            'expressions' => ["casewhenstatus='pending'thenresident_idelsenullend"],
         ],
     ];
     $generatedPredicates = [];
@@ -203,6 +438,8 @@ try {
         'payments.uq_payments_one_active_per_bill' => ['active_bill_id'],
         'notification_outbox.uq_notification_outbox_bill_purpose' => ['bill_id', 'purpose'],
         'notification_outbox.uq_notification_outbox_retry_key' => ['retry_key'],
+        'line_link_codes.uq_line_link_codes_code_hash' => ['code_hash'],
+        'line_link_codes.uq_line_link_codes_pending_resident' => ['pending_resident_id'],
     ];
     $indexPredicates = [];
     $indexParameters = [$app->config->require('DB_DATABASE')];
