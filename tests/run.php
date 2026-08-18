@@ -2348,4 +2348,56 @@ $test('admin console opens on an overview that surfaces pending work and worker 
     $same(true,str_contains($admin,'id="meter-progress"'));
 });
 
+$test('trigger local variables pin their collation instead of inheriting the database default',function()use($same):void{
+    $root=dirname(__DIR__);
+    // A stored-program variable declared without CHARACTER SET takes the DATABASE
+    // default collation, not the collation of the tables it is compared against.
+    // install.sql creates the database as utf8mb4_unicode_ci, but a host-managed
+    // database (Railway) or a container using MYSQL_DATABASE gets the server
+    // default utf8mb4_0900_ai_ci, and the <=> against bill_items.description then
+    // fails with error 1267 for every bill item insert.
+    foreach([
+        'database/schema.sql',
+        'database/install.sql',
+        'database/migrations/013_trigger_collation_pinning.sql',
+    ]as$file){
+        $sql=file_get_contents($root.'/'.$file);
+        if(!is_string($sql))throw new RuntimeException("cannot read {$file}");
+        $same(0,preg_match_all('/DECLARE\s+[a-z_]+\s+(?:VARCHAR|CHAR|TEXT|ENUM)\s*(?:\([^)]*\))?\s+DEFAULT\b/i',$sql));
+        $same(3,preg_match_all('/DECLARE\s+[a-z_]+\s+VARCHAR\(\d+\) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT/',$sql));
+    }
+
+    $migration=file_get_contents($root.'/database/migrations/013_trigger_collation_pinning.sql');
+    if(!is_string($migration))throw new RuntimeException('cannot read migration 013');
+    // The migration only recreates guards; it must not touch tables or data.
+    $same(0,preg_match('/\b(ALTER TABLE|CREATE TABLE|DROP TABLE|INSERT INTO|DELETE FROM)\b/i',$migration));
+    foreach([
+        'trg_occupancies_relationship_guard',
+        'trg_bill_items_insert_guard',
+        'trg_payments_relationship_guard',
+    ]as$trigger){
+        $same(1,preg_match_all('/^DROP TRIGGER IF EXISTS '.$trigger.';$/m',$migration));
+        $same(1,preg_match_all('/^CREATE TRIGGER '.$trigger.'$/m',$migration));
+    }
+    $same(true,str_contains($migration,'DORMITORY_013_IMPORT_PRIOR_MIGRATIONS_FIRST'));
+    $same(true,str_contains($migration,'DORMITORY_013_TRIGGER_POSTCONDITION_FAILED'));
+
+    // The recreated bodies must stay byte-identical to the fresh schema, or an
+    // upgraded database would enforce different rules than a new one.
+    $schema=file_get_contents($root.'/database/schema.sql');
+    if(!is_string($schema))throw new RuntimeException('cannot read schema');
+    $body=static function(string $sql,string $trigger):string{
+        $start=strpos($sql,'CREATE TRIGGER '.$trigger."\n");
+        if($start===false)throw new RuntimeException("missing {$trigger}");
+        $end=strpos($sql,'END$$',$start);
+        if($end===false)throw new RuntimeException("unterminated {$trigger}");
+        return substr($sql,$start,$end-$start+5);
+    };
+    foreach([
+        'trg_occupancies_relationship_guard',
+        'trg_bill_items_insert_guard',
+        'trg_payments_relationship_guard',
+    ]as$trigger)$same($body($schema,$trigger),$body($migration,$trigger));
+});
+
 fwrite(STDOUT,"\n{$passed} passed, {$failed} failed".PHP_EOL);exit($failed===0?0:1);

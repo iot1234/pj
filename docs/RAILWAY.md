@@ -89,7 +89,7 @@ snapshot/backup อีกครั้งแล้วรัน `006_remove_reside
 `monthly-billing` ตลอด maintenance window จากนั้นรัน
 `007_notification_worker_fencing.sql` → `008_resident_access_credentials.sql` →
 `009_occupancy_meter_baselines.sql` → `010_line_self_service_binding.sql` →
-`011_line_add_friend_identity.sql` → `012_move_in_request_hash.sql` ตามลำดับ Migration `007` จะคืนงาน `processing`
+`011_line_add_friend_identity.sql` → `012_move_in_request_hash.sql` → `013_trigger_collation_pinning.sql` ตามลำดับ Migration `013` จำเป็นบน Railway เสมอ เพราะฐานที่ Railway สร้างให้ใช้ collation ปริยาย `utf8mb4_0900_ai_ci` ซึ่งทำให้การออกบิลล้มด้วย error 1267 จนกว่าจะรัน Migration `007` จะคืนงาน `processing`
 รุ่นเก่าที่ไม่มี claim/lease เป็น `pending` โดยไม่เปลี่ยน retry key ส่วน `009`
 จะหยุดเมื่อ lifecycle/meter legacy ไม่สอดคล้องและเปลี่ยนกฎการเขียนมิเตอร์ ต้อง
 reconcile จนรันซ้ำผ่านก่อน deploy source ปัจจุบัน Fresh database จาก `install.sql`

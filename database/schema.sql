@@ -15,9 +15,10 @@
 -- maintenance window with web/worker writes stopped and run
 -- database/migrations/009_occupancy_meter_baselines.sql, followed by
 -- database/migrations/010_line_self_service_binding.sql,
--- database/migrations/011_line_add_friend_identity.sql and
--- database/migrations/012_move_in_request_hash.sql. Deploy the current source
--- before reopening traffic.
+-- database/migrations/011_line_add_friend_identity.sql,
+-- database/migrations/012_move_in_request_hash.sql and
+-- database/migrations/013_trigger_collation_pinning.sql. Deploy the current
+-- source before reopening traffic.
 
 SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
 -- Store timestamps in UTC. PHP formats them for Asia/Bangkok at the UI edge.
@@ -887,7 +888,10 @@ CREATE TRIGGER trg_occupancies_relationship_guard
 BEFORE INSERT ON occupancies
 FOR EACH ROW
 BEGIN
-    DECLARE booking_status VARCHAR(16) DEFAULT NULL;
+    -- Pin the collation: an unqualified DECLARE inherits the DATABASE default,
+    -- which is not utf8mb4_unicode_ci when the database was created by a host
+    -- (Railway, Docker MYSQL_DATABASE) instead of database/install.sql.
+    DECLARE booking_status VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL;
     DECLARE booking_resident BIGINT UNSIGNED DEFAULT NULL;
     DECLARE booking_room BIGINT UNSIGNED DEFAULT NULL;
     DECLARE booking_rent DECIMAL(12,2) DEFAULT NULL;
@@ -1254,7 +1258,9 @@ BEGIN
     DECLARE expected_quantity DECIMAL(14,2) DEFAULT NULL;
     DECLARE expected_unit_price DECIMAL(14,2) DEFAULT NULL;
     DECLARE expected_amount DECIMAL(14,2) DEFAULT NULL;
-    DECLARE expected_other_description VARCHAR(255) DEFAULT NULL;
+    -- Pin the collation: this variable is compared against bill_items.description
+    -- with <=>, and two IMPLICIT operands of different collations raise error 1267.
+    DECLARE expected_other_description VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL;
 
     SELECT CASE NEW.item_type
                WHEN 'rent' THEN 1.00
@@ -1312,7 +1318,8 @@ FOR EACH ROW
 BEGIN
     DECLARE bill_resident BIGINT UNSIGNED DEFAULT NULL;
     DECLARE bill_total DECIMAL(14,2) DEFAULT NULL;
-    DECLARE bill_status VARCHAR(16) DEFAULT NULL;
+    -- Pin the collation for the same reason as the guards above.
+    DECLARE bill_status VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL;
     SELECT resident_id, total_amount, status
       INTO bill_resident, bill_total, bill_status
       FROM bills
