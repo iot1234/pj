@@ -2367,6 +2367,18 @@ $test('trigger local variables pin their collation instead of inheriting the dat
         $same(3,preg_match_all('/DECLARE\s+[a-z_]+\s+VARCHAR\(\d+\) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT/',$sql));
     }
 
+    // scripts/check_requirements.php compares each stored body against schema.sql
+    // after stripping whitespace only. MySQL drops "--" comments when it stores a
+    // trigger, so a comment inside BEGIN...END makes the canonical audit fail;
+    // explanations belong above CREATE TRIGGER instead.
+    $bodyPattern='/CREATE\s+TRIGGER\s+([a-z0-9_]+)\s+(?:BEFORE|AFTER)\s+(?:INSERT|UPDATE|DELETE)\s+ON\s+[a-z0-9_]+\s+FOR\s+EACH\s+ROW\s+(BEGIN.*?\bEND)\s*\$\$/isu';
+    foreach(['database/schema.sql','database/install.sql']as$file){
+        $sql=file_get_contents($root.'/'.$file);
+        if(!is_string($sql))throw new RuntimeException("cannot read {$file}");
+        $same(19,preg_match_all($bodyPattern,$sql,$bodies,PREG_SET_ORDER));
+        foreach($bodies as $trigger)$same(false,str_contains($trigger[2],'--'));
+    }
+
     $migration=file_get_contents($root.'/database/migrations/013_trigger_collation_pinning.sql');
     if(!is_string($migration))throw new RuntimeException('cannot read migration 013');
     // The migration only recreates guards; it must not touch tables or data.

@@ -45,9 +45,6 @@ CREATE TRIGGER trg_occupancies_relationship_guard
 BEFORE INSERT ON occupancies
 FOR EACH ROW
 BEGIN
-    -- Pin the collation: an unqualified DECLARE inherits the DATABASE default,
-    -- which is not utf8mb4_unicode_ci when the database was created by a host
-    -- (Railway, Docker MYSQL_DATABASE) instead of database/install.sql.
     DECLARE booking_status VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL;
     DECLARE booking_resident BIGINT UNSIGNED DEFAULT NULL;
     DECLARE booking_room BIGINT UNSIGNED DEFAULT NULL;
@@ -119,8 +116,6 @@ BEGIN
     DECLARE expected_quantity DECIMAL(14,2) DEFAULT NULL;
     DECLARE expected_unit_price DECIMAL(14,2) DEFAULT NULL;
     DECLARE expected_amount DECIMAL(14,2) DEFAULT NULL;
-    -- Pin the collation: this variable is compared against bill_items.description
-    -- with <=>, and two IMPLICIT operands of different collations raise error 1267.
     DECLARE expected_other_description VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL;
 
     SELECT CASE NEW.item_type
@@ -169,7 +164,6 @@ FOR EACH ROW
 BEGIN
     DECLARE bill_resident BIGINT UNSIGNED DEFAULT NULL;
     DECLARE bill_total DECIMAL(14,2) DEFAULT NULL;
-    -- Pin the collation for the same reason as the guards above.
     DECLARE bill_status VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL;
     SELECT resident_id, total_amount, status
       INTO bill_resident, bill_total, bill_status

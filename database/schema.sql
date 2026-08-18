@@ -884,13 +884,13 @@ BEGIN
     END IF;
 END$$
 
+-- A string local declared without CHARACTER SET inherits the DATABASE default
+-- collation, not the collation of the tables it is compared against, so the
+-- declarations below pin it explicitly. See trg_bill_items_insert_guard.
 CREATE TRIGGER trg_occupancies_relationship_guard
 BEFORE INSERT ON occupancies
 FOR EACH ROW
 BEGIN
-    -- Pin the collation: an unqualified DECLARE inherits the DATABASE default,
-    -- which is not utf8mb4_unicode_ci when the database was created by a host
-    -- (Railway, Docker MYSQL_DATABASE) instead of database/install.sql.
     DECLARE booking_status VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL;
     DECLARE booking_resident BIGINT UNSIGNED DEFAULT NULL;
     DECLARE booking_room BIGINT UNSIGNED DEFAULT NULL;
@@ -1251,6 +1251,11 @@ BEGIN
         SET MESSAGE_TEXT = 'Issued bills cannot be deleted';
 END$$
 
+-- expected_other_description is compared with bill_items.description using <=>.
+-- Both operands are IMPLICIT, so different collations raise error 1267 and every
+-- bill item insert fails. The database is utf8mb4_unicode_ci only when created by
+-- database/install.sql; a managed host or MYSQL_DATABASE gives it the server
+-- default, so the declaration pins the collation rather than inheriting it.
 CREATE TRIGGER trg_bill_items_insert_guard
 BEFORE INSERT ON bill_items
 FOR EACH ROW
@@ -1258,8 +1263,6 @@ BEGIN
     DECLARE expected_quantity DECIMAL(14,2) DEFAULT NULL;
     DECLARE expected_unit_price DECIMAL(14,2) DEFAULT NULL;
     DECLARE expected_amount DECIMAL(14,2) DEFAULT NULL;
-    -- Pin the collation: this variable is compared against bill_items.description
-    -- with <=>, and two IMPLICIT operands of different collations raise error 1267.
     DECLARE expected_other_description VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL;
 
     SELECT CASE NEW.item_type
@@ -1312,13 +1315,13 @@ BEGIN
         SET MESSAGE_TEXT = 'Bill items are immutable';
 END$$
 
+-- The string local pins its collation for the same reason as the guards above.
 CREATE TRIGGER trg_payments_relationship_guard
 BEFORE INSERT ON payments
 FOR EACH ROW
 BEGIN
     DECLARE bill_resident BIGINT UNSIGNED DEFAULT NULL;
     DECLARE bill_total DECIMAL(14,2) DEFAULT NULL;
-    -- Pin the collation for the same reason as the guards above.
     DECLARE bill_status VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL;
     SELECT resident_id, total_amount, status
       INTO bill_resident, bill_total, bill_status
