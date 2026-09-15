@@ -153,6 +153,18 @@ jobs:
             docker network rm "$network" >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
+          report_failure() {
+            local failure_status=$?
+            echo "MySQL integration failed near line ${BASH_LINENO[0]} (exit ${failure_status})" >&2
+            for service in "$web" "$worker"; do
+              if docker inspect "$service" >/dev/null 2>&1; then
+                echo "Recent logs for ${service}:" >&2
+                docker logs --tail 60 "$service" >&2 || true
+              fi
+            done
+            return "$failure_status"
+          }
+          trap report_failure ERR
 
           docker network create "$network" >/dev/null
           docker run --detach \
@@ -321,8 +333,15 @@ jobs:
             --env HEALTHZ_SCHEMA_PASSWORD="$CI_DBA_PASSWORD" \
             "$image" tests/healthz_mysql.php
 
-          # Exercise the complete business lifecycle with the same
-          # least-privileged runtime account used by the web service.
+          # Lifecycle fixtures include LINE/phone rate-limit buckets and fake
+          # integration keys. Keep them out of the web quota/worker database.
+          lifecycle_database=appj_ci_lifecycle
+          lifecycle_username=lifecycle_test_runtime
+          docker exec \
+            --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+            "$database" mysql --host=127.0.0.1 --user=root \
+            --execute="CREATE DATABASE ${lifecycle_database} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+          run_database_setup "$lifecycle_database" "$lifecycle_username"
           docker run --rm \
             --network "$network" \
             --entrypoint php \
@@ -334,14 +353,14 @@ jobs:
             --env FORCE_HTTPS=false \
             --env DB_HOST="$database" \
             --env DB_PORT=3306 \
-            --env DB_DATABASE="$CI_DB_DATABASE" \
-            --env DB_USERNAME="$CI_DB_USERNAME" \
+            --env DB_DATABASE="$lifecycle_database" \
+            --env DB_USERNAME="$lifecycle_username" \
             --env DB_PASSWORD="$CI_DB_PASSWORD" \
             --env DB_SSL=false \
             "$image" tests/lifecycle_mysql.php
 
-          # Trigger bodies and metadata require the temporary schema-owner
-          # account; the long-running web/worker account remains least privilege.
+          # Audit the lifecycle's populated schema with the temporary owner;
+          # the long-running web/worker account remains least privilege.
           docker run --rm \
             --network "$network" \
             --entrypoint php \
@@ -353,7 +372,7 @@ jobs:
             --env FORCE_HTTPS=false \
             --env DB_HOST="$database" \
             --env DB_PORT=3306 \
-            --env DB_DATABASE="$CI_DB_DATABASE" \
+            --env DB_DATABASE="$lifecycle_database" \
             --env DB_USERNAME=root \
             --env DB_PASSWORD="$CI_DBA_PASSWORD" \
             --env DB_SSL=false \
@@ -440,9 +459,16 @@ jobs:
               --data "$body" \
               http://127.0.0.1:18080/api/public/bookings)"
             if [ "$attempt" -le 5 ]; then
-              [ "$status" = 201 ]
+              expected_status=201
             else
-              [ "$status" = 429 ]
+              expected_status=429
+            fi
+            if [ "$status" != "$expected_status" ]; then
+              echo "Initial booking ${attempt}: expected HTTP ${expected_status}, received ${status}" >&2
+              jq --compact-output '{ok,message,code:.data.code}' "/tmp/ci-rate-booking-${attempt}.json" >&2 || true
+              exit 1
+            fi
+            if [ "$attempt" -eq 6 ]; then
               grep --quiet '"code":"RATE_LIMITED"' "/tmp/ci-rate-booking-${attempt}.json"
             fi
           done

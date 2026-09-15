@@ -35,14 +35,14 @@ case "$mode" in
       --env MYSQL_PWD="$CI_DBA_PASSWORD" \
       "$database" mysql --host=127.0.0.1 --user=root \
       --database="$CI_DB_DATABASE" --execute="
+        SELECT monthly_rent INTO @ci_cross_rent FROM rooms WHERE id=${cross_old_room_id};
         INSERT INTO bookings
           (reference_no,room_id,full_name,phone_norm,booked_monthly_rent,
            status,idempotency_key,created_at,updated_at)
-        SELECT 'BK-CI-CROSS-EXPIRED',id,'CI Cross Expired','0878888888',
-               monthly_rent,'pending','ci-cross-expired-old-000001',
+        VALUES ('BK-CI-CROSS-EXPIRED',${cross_old_room_id},'CI Cross Expired','0878888888',
+               @ci_cross_rent,'pending','ci-cross-expired-old-000001',
                DATE_SUB(UTC_TIMESTAMP(),INTERVAL 2 DAY),
-               DATE_SUB(UTC_TIMESTAMP(),INTERVAL 2 DAY)
-        FROM rooms WHERE id=${cross_old_room_id};"
+               DATE_SUB(UTC_TIMESTAMP(),INTERVAL 2 DAY));"
     cross_replacement_body="$(printf '{\"room_id\":%s,\"full_name\":\"CI Cross Replacement\",\"phone\":\"0878888888\",\"idempotency_key\":\"ci-cross-expired-new-000001\"}' \
       "${rate_room_ids[7]}")"
     cross_replacement_status="$(curl --silent --show-error \
@@ -206,27 +206,34 @@ case "$mode" in
 
     # A phone already attached to an active occupancy must not create a
     # second-room booking. The per-table UNIQUE guards alone cannot enforce
-    # this cross-table identity invariant.
+    # this cross-table identity invariant. Follow the real booking transitions
+    # and supply resident access and meter baselines required by current guards.
     docker exec \
       --env MYSQL_PWD="$CI_DBA_PASSWORD" \
       "$database" mysql --host=127.0.0.1 --user=root \
       --database="$CI_DB_DATABASE" --execute="
-        INSERT INTO residents (full_name,phone_norm,email,active,auth_version)
-        VALUES ('CI Active Resident','0833333333',NULL,1,1);
+        SELECT monthly_rent INTO @ci_active_rent FROM rooms WHERE id=${rate_room_ids[5]};
+        INSERT INTO residents
+          (full_name,phone_norm,email,active,auth_version,
+           activation_code_hash,activation_expires_at)
+        VALUES ('CI Active Resident','0833333333',NULL,1,1,
+                LOWER(HEX(RANDOM_BYTES(32))),DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 1 DAY));
         SET @ci_active_resident_id=LAST_INSERT_ID();
         INSERT INTO bookings
           (reference_no,room_id,full_name,phone_norm,booked_monthly_rent,
-           status,idempotency_key,confirmed_at,resident_id,moved_in_at)
-        SELECT 'BK-CI-ACTIVE-RESIDENT',id,'CI Active Resident','0833333333',
-               monthly_rent,'moved_in','ci-active-resident-ledger-000001',
-               UTC_TIMESTAMP(),@ci_active_resident_id,UTC_TIMESTAMP()
-        FROM rooms WHERE id=${rate_room_ids[5]};
+           status,idempotency_key)
+        VALUES ('BK-CI-ACTIVE-RESIDENT',${rate_room_ids[5]},'CI Active Resident','0833333333',
+                @ci_active_rent,'pending','ci-active-resident-ledger-000001');
         SET @ci_active_resident_booking_id=LAST_INSERT_ID();
+        UPDATE bookings SET status='confirmed',confirmed_at=UTC_TIMESTAMP()
+        WHERE id=@ci_active_resident_booking_id AND status='pending';
+        UPDATE bookings SET status='moved_in',resident_id=@ci_active_resident_id,moved_in_at=UTC_TIMESTAMP()
+        WHERE id=@ci_active_resident_booking_id AND status='confirmed';
         INSERT INTO occupancies
-          (resident_id,room_id,booking_id,monthly_rent,status,move_in_date)
-        SELECT @ci_active_resident_id,id,@ci_active_resident_booking_id,
-               monthly_rent,'active',CURRENT_DATE()
-        FROM rooms WHERE id=${rate_room_ids[5]};"
+          (resident_id,room_id,booking_id,monthly_rent,status,move_in_date,
+           opening_water_reading,opening_electric_reading)
+        VALUES (@ci_active_resident_id,${rate_room_ids[5]},@ci_active_resident_booking_id,
+                @ci_active_rent,'active',CURRENT_DATE(),0.00,0.00);"
     occupied_phone_body="$(printf '{\"room_id\":%s,\"full_name\":\"CI Duplicate Resident\",\"phone\":\"0833333333\",\"idempotency_key\":\"ci-active-resident-public-000001\"}' \
       "${rate_room_ids[6]}")"
     occupied_phone_status="$(curl --silent --show-error \
@@ -252,12 +259,12 @@ case "$mode" in
       --env MYSQL_PWD="$CI_DBA_PASSWORD" \
       "$database" mysql --host=127.0.0.1 --user=root \
       --database="$CI_DB_DATABASE" --execute="
+        SELECT monthly_rent INTO @ci_admin_phone_rent FROM rooms WHERE id=${rate_room_ids[6]};
         INSERT INTO bookings
           (reference_no,room_id,full_name,phone_norm,booked_monthly_rent,
            status,idempotency_key)
-        SELECT 'BK-CI-ADMIN-PHONE',id,'CI Pending Phone','0822222222',
-               monthly_rent,'pending','ci-admin-phone-held-000001'
-        FROM rooms WHERE id=${rate_room_ids[6]};"
+        VALUES ('BK-CI-ADMIN-PHONE',${rate_room_ids[6]},'CI Pending Phone','0822222222',
+                @ci_admin_phone_rent,'pending','ci-admin-phone-held-000001');"
     admin_phone_guard="$(docker exec "$web" php -r '
       $app=require "/var/www/html/bootstrap.php";
       $id=(int)$app->database()->pdo()->query(
@@ -334,14 +341,14 @@ case "$mode" in
         SET status='cancelled',cancelled_at=UTC_TIMESTAMP(),
             cancel_reason='CI same-room transition',updated_at=UTC_TIMESTAMP()
         WHERE idempotency_key='ci-same-room-key-000001' AND status='pending';
+        SELECT monthly_rent INTO @ci_deleted_rent FROM rooms WHERE id=${rate_room_ids[7]};
         INSERT INTO bookings
           (reference_no,room_id,full_name,phone_norm,booked_monthly_rent,
            status,idempotency_key,created_at,updated_at)
-        SELECT 'BK-CI-DELETED-REPLAY',id,'CI Deleted Replay','0855555555',
-               monthly_rent,'pending','ci-deleted-replay-000001',
+        VALUES ('BK-CI-DELETED-REPLAY',${rate_room_ids[7]},'CI Deleted Replay','0855555555',
+               @ci_deleted_rent,'pending','ci-deleted-replay-000001',
                DATE_SUB(UTC_TIMESTAMP(),INTERVAL 2 DAY),
-               DATE_SUB(UTC_TIMESTAMP(),INTERVAL 2 DAY)
-        FROM rooms WHERE id=${rate_room_ids[7]};
+               DATE_SUB(UTC_TIMESTAMP(),INTERVAL 2 DAY));
         UPDATE rooms SET deleted_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP()
         WHERE id=${rate_room_ids[7]};"
     deleted_replay_body="$(printf '{\"room_id\":%s,\"full_name\":\"CI Deleted Replay\",\"phone\":\"0855555555\",\"idempotency_key\":\"ci-deleted-replay-000001\"}' \
