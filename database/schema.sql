@@ -677,6 +677,7 @@ CREATE TABLE IF NOT EXISTS notification_outbox (
     CONSTRAINT chk_notification_outbox_claim_lease CHECK (
         (
             status = 'processing'
+            AND claim_token IS NOT NULL
             AND claim_token REGEXP '^[0-9a-f]{64}$'
             AND lease_until IS NOT NULL
         )

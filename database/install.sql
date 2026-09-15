@@ -7,7 +7,7 @@
 -- Never use a force/continue-on-error import option with this file.
 -- Regenerate: php scripts/build_install_sql.php
 -- Verify current: php scripts/build_install_sql.php --check
--- Source digest: a1136df5eb08ffa7d6c2976950288309ea0c971db76da008183df8fc1cb8227d
+-- Source digest: 17f498226ef3eeaea0a8629fff1fe0a238d20cde63f47fe8e8b94a030e068982
 -- BEGIN database/00-create-database.sql
 -- Advanced/manual fresh-install step. For the simplest new installation,
 -- import database/install.sql once instead. Run this standalone file from the
@@ -731,6 +731,7 @@ CREATE TABLE IF NOT EXISTS notification_outbox (
     CONSTRAINT chk_notification_outbox_claim_lease CHECK (
         (
             status = 'processing'
+            AND claim_token IS NOT NULL
             AND claim_token REGEXP '^[0-9a-f]{64}$'
             AND lease_until IS NOT NULL
         )

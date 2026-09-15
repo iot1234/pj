@@ -77,6 +77,19 @@ $reject = static function (callable $operation, string $message) use ($assert): 
 $runSql($schema);
 $runSql((string) file_get_contents($root . '/database/defaults.sql'));
 
+// LIKE copies the real fresh-table CHECKs without the financial-chain foreign
+// keys/triggers, isolating claim fencing from unrelated fixture requirements.
+$pdo->exec('CREATE TABLE pending_claim_fixture LIKE notification_outbox');
+$pdo->exec("INSERT INTO pending_claim_fixture(bill_id,resident_id,recipient,payload,retry_key)
+    VALUES(1,1,CONCAT('U',REPEAT('a',32)),JSON_OBJECT(),'00000000-0000-4000-8000-000000000001')");
+$reject(fn() => $pdo->exec("UPDATE pending_claim_fixture SET status='processing',lease_until='2026-09-16'"), 'Check constraint');
+$pdo->exec("UPDATE pending_claim_fixture SET status='processing',claim_token=REPEAT('a',64),lease_until='2026-09-16'");
+$reject(fn() => $pdo->exec('UPDATE pending_claim_fixture SET claim_token=NULL'), 'Check constraint');
+$reject(fn() => $pdo->exec('UPDATE pending_claim_fixture SET lease_until=NULL'), 'Check constraint');
+$pdo->exec("UPDATE pending_claim_fixture SET status='pending',claim_token=NULL,lease_until=NULL");
+$pdo->exec('DROP TABLE pending_claim_fixture');
+fwrite(STDOUT, "PASS fresh notification claim fencing: processing requires both token and lease\n");
+
 // Only fixture setup bypasses the two new-entity guards. All foreign keys,
 // CHECKs and other guards remain enabled, and both triggers are restored.
 $pdo->exec('DROP TRIGGER trg_bookings_insert_guard');
