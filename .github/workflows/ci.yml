@@ -256,8 +256,15 @@ jobs:
                   CREATE TRIGGER trg_line_room_test_audit_failure
                   BEFORE INSERT ON audit_logs FOR EACH ROW
                   BEGIN
-                    IF NEW.action=COALESCE(@line_room_test_fail_audit_action,'') THEN
+                    IF CAST(NEW.action AS BINARY)=CAST(COALESCE(@line_room_test_fail_audit_action,'') AS BINARY) THEN
                       SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Simulated room binding audit failure';
+                    END IF;
+                  END//
+                  CREATE TRIGGER trg_line_room_test_notice_failure
+                  BEFORE INSERT ON line_notice_outbox FOR EACH ROW
+                  BEGIN
+                    IF COALESCE(@line_room_test_fail_notice_insert,0)=1 THEN
+                      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Simulated room binding notice failure';
                     END IF;
                   END//"
             fi
@@ -284,6 +291,35 @@ jobs:
                 "$image" "$line_script"
             done
           done
+
+          # Readiness tests use a separate schema so missing-table/index probes
+          # cannot change the business lifecycle database. Only the test parent
+          # receives DDL credentials; its HTTP child uses the runtime account.
+          healthz_database=appj_healthz_test_readiness
+          healthz_username=healthz_test_readiness
+          docker exec \
+            --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+            "$database" mysql --host=127.0.0.1 --user=root \
+            --execute="CREATE DATABASE ${healthz_database} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+          run_database_setup "$healthz_database" "$healthz_username"
+          docker run --rm \
+            --network "$network" \
+            --entrypoint php \
+            --env APP_ENV=testing \
+            --env APP_DEBUG=false \
+            --env APP_URL=http://localhost \
+            --env APP_TIMEZONE=Asia/Bangkok \
+            --env APP_KEY="$CI_APP_KEY" \
+            --env FORCE_HTTPS=false \
+            --env DB_HOST="$database" \
+            --env DB_PORT=3306 \
+            --env DB_DATABASE="$healthz_database" \
+            --env DB_USERNAME="$healthz_username" \
+            --env DB_PASSWORD="$CI_DB_PASSWORD" \
+            --env DB_SSL=false \
+            --env HEALTHZ_SCHEMA_USERNAME=root \
+            --env HEALTHZ_SCHEMA_PASSWORD="$CI_DBA_PASSWORD" \
+            "$image" tests/healthz_mysql.php
 
           # Exercise the complete business lifecycle with the same
           # least-privileged runtime account used by the web service.

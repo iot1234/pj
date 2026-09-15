@@ -36,14 +36,42 @@ try {
         'audit_logs',
         'rate_limits',
     ];
-    $placeholders = implode(',', array_fill(0, count($tables), '?'));
+    $linePlatformTables = [
+        'line_official_accounts',
+        'line_room_bindings',
+        'line_room_policies',
+        'line_admin_recipients',
+        'line_notice_outbox',
+    ];
+    $requiredTables = array_merge($tables, $linePlatformTables);
+    $placeholders = implode(',', array_fill(0, count($requiredTables), '?'));
     $schema = $pdo->prepare(
-        'SELECT COUNT(*) FROM information_schema.tables'
-        . ' WHERE table_schema=? AND table_name IN (' . $placeholders . ')'
+        'SELECT table_name FROM information_schema.tables'
+        . " WHERE table_schema=? AND table_type='BASE TABLE' AND table_name IN (" . $placeholders . ')'
     );
-    $schema->execute(array_merge([$app->config->require('DB_DATABASE')], $tables));
-    if ((int) $schema->fetchColumn() !== count($tables)) {
-        throw new RuntimeException('schema readiness check failed');
+    $schema->execute(array_merge([$app->config->require('DB_DATABASE')], $requiredTables));
+    $actualTables = $schema->fetchAll(PDO::FETCH_COLUMN);
+    $missingTables = array_diff($tables, $actualTables);
+    if ($missingTables !== []) {
+        // Only names from the checked-in allowlist reach the server log. The
+        // public response below remains generic and never exposes metadata.
+        throw new RuntimeException('schema readiness check failed; missing tables: ' . implode(', ', $missingTables));
+    }
+    $missingLineTables = array_diff($linePlatformTables, $actualTables);
+    if ($missingLineTables !== []) {
+        throw new RuntimeException(
+            'schema LINE platform readiness check failed; migration 014 required; missing tables: '
+            . implode(', ', $missingLineTables),
+        );
+    }
+    // Share the canonical migration-014 checks with the deployment checker so
+    // room bindings, OA routing and delivery guards cannot drift independently.
+    $lineSchemaErrors = Dormitory\Support\LinePlatformSchema::errors($pdo);
+    if ($lineSchemaErrors !== []) {
+        throw new RuntimeException(
+            'schema LINE platform readiness check failed; check migration 014: '
+            . implode('; ', array_slice($lineSchemaErrors, 0, 3)),
+        );
     }
 
     // A table-count-only probe can stay green while application code expects
@@ -436,7 +464,7 @@ try {
         'payments.uq_payments_slip_hmac' => ['slip_hmac'],
         'payments.uq_payments_transaction_ref' => ['transaction_ref'],
         'payments.uq_payments_one_active_per_bill' => ['active_bill_id'],
-        'notification_outbox.uq_notification_outbox_bill_purpose' => ['bill_id', 'purpose'],
+        'notification_outbox.uq_notification_outbox_bill_binding' => ['bill_id', 'purpose', 'line_delivery_key'],
         'notification_outbox.uq_notification_outbox_retry_key' => ['retry_key'],
         'line_link_codes.uq_line_link_codes_code_hash' => ['code_hash'],
         'line_link_codes.uq_line_link_codes_pending_resident' => ['pending_resident_id'],

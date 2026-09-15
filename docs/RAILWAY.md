@@ -82,25 +82,27 @@ MySQL และทดสอบ restore ก่อน แล้วใช้ Railwa
 snapshot/backup อีกครั้งแล้วรัน `006_remove_resident_pin.sql` เพื่อลบ
 `residents.pin_hash` Migration 006 รันซ้ำได้แต่ห้ามรันขณะยังมีแอปรุ่น PIN หลังลบ
 คอลัมน์แล้วแอปรุ่น PIN เดิม rollback ไม่ได้โดยไม่ restore schema/backup และ
-**ห้าม deploy source ปัจจุบันในจุดนี้** เพราะ source ปัจจุบันต้องใช้ schema 007–012
+**ห้าม deploy source ปัจจุบันในจุดนี้** เพราะ source ปัจจุบันต้องใช้ schema 007–014
 ครบก่อน
 
 ปิด public traffic/การเขียน, หยุด worker ทุก replica และ disable/pause schedule ของ
 `monthly-billing` ตลอด maintenance window จากนั้นรัน
 `007_notification_worker_fencing.sql` → `008_resident_access_credentials.sql` →
 `009_occupancy_meter_baselines.sql` → `010_line_self_service_binding.sql` →
-`011_line_add_friend_identity.sql` → `012_move_in_request_hash.sql` → `013_trigger_collation_pinning.sql` ตามลำดับ Migration `013` จำเป็นบน Railway เสมอ เพราะฐานที่ Railway สร้างให้ใช้ collation ปริยาย `utf8mb4_0900_ai_ci` ซึ่งทำให้การออกบิลล้มด้วย error 1267 จนกว่าจะรัน Migration `007` จะคืนงาน `processing`
+`011_line_add_friend_identity.sql` → `012_move_in_request_hash.sql` → `013_trigger_collation_pinning.sql` → `014_line_platform.sql` ตามลำดับ Migration `013` แก้ trigger ให้ใช้ collation เดียวกัน ป้องกันการออกบิลล้มด้วย error 1267 บนฐานที่มี collation ต่างกัน ส่วน `014` เพิ่มตาราง LINE 5 ตารางและเปลี่ยนดัชนีการส่งบิลให้แยกตามบัญชีที่ผูกไว้ โดยเก็บการตั้งค่า LINE เดิมไว้บน OA 0 Migration `007` จะคืนงาน `processing`
 รุ่นเก่าที่ไม่มี claim/lease เป็น `pending` โดยไม่เปลี่ยน retry key ส่วน `009`
 จะหยุดเมื่อ lifecycle/meter legacy ไม่สอดคล้องและเปลี่ยนกฎการเขียนมิเตอร์ ต้อง
 reconcile จนรันซ้ำผ่านก่อน deploy source ปัจจุบัน Fresh database จาก `install.sql`
-มีโครงสร้างล่าสุดอยู่แล้วและไม่ต้องรัน `006`–`012`
+มีโครงสร้างล่าสุดอยู่แล้วและไม่ต้องรัน `006`–`014`
 
-เมื่อ 012 ผ่าน ให้ deploy source ปัจจุบันโดยยังปิด public traffic และยังไม่เริ่ม
+ถ้าฐานเดิมผ่าน `013` แล้ว ให้สำรองข้อมูลและหยุด traffic/worker/cron ตามข้างต้น แล้วรันเฉพาะ `014_line_platform.sql` โดยไม่ย้อนรัน migrations เก่า
+
+เมื่อ 014 ผ่าน ให้ deploy source ปัจจุบันโดยยังปิด public traffic และยังไม่เริ่ม
 worker/cron จากนั้นให้ Owner เข้า Admin ผ่านช่องทาง maintenance ที่จำกัดผู้ดูแล:
 
 1. reissue activation code ให้ resident ที่ active เดิมทุกคนซึ่งยังไม่มี password/code
    และส่งมอบรหัสผ่านช่องทางส่วนตัว
-2. ตรวจ/บันทึก billing settings และ PromptPay/LINE/slip integrations รวม LINE Official Account Basic ID ให้ครบ
+2. ตรวจ/บันทึก billing settings และ PromptPay/slip integrations ที่หน้า Settings และคีย์ LINE/Basic ID ที่หน้า “บัญชี LINE OA” ให้ครบ
 3. สร้าง isolated one-shot schema-audit job ชั่วคราว โดย map `DB_USERNAME` และ
    `DB_PASSWORD` ของ job นี้ไปยังค่า schema owner จาก `DB_DBA_USERNAME`/
    `DB_DBA_PASSWORD` แล้วรัน `php scripts/check_requirements.php --schema-audit`;
@@ -109,9 +111,34 @@ worker/cron จากนั้นให้ Owner เข้า Admin ผ่าน
    user จนไม่มี error/warning
 
 `/healthz.php` ตรวจ schema/readiness ของ web แต่ไม่แทน data gate ข้างต้น จึงห้ามเปิด
-traffic เพียงเพราะ Railway healthcheck ผ่าน เมื่อ strict gate ผ่านและตรวจพบ 16 ตาราง,
-19 triggers พร้อม body ตรง canonical และ CHECK 86 รายการแล้ว จึงเปิด traffic, เริ่ม worker, เปิด
+traffic เพียงเพราะ Railway healthcheck ผ่าน เมื่อ strict gate ผ่านและตรวจพบ 21 ตาราง,
+23 triggers พร้อม body ตรง canonical และ CHECK 116 รายการแล้ว จึงเปิด traffic, เริ่ม worker, เปิด
 monthly-billing schedule และลบ migration job/`DB_DBA_*`
+
+### ถ้า `/healthz.php` ตอบ 503 หลัง deploy
+
+ดูข้อความ `readiness check failed` ใน deployment log ของ web รุ่นใหม่จะระบุชื่อ
+ตารางที่ขาดเฉพาะใน server log ส่วนผลตอบกลับสาธารณะยังเป็น `{"status":"unavailable"}`
+
+- `schema readiness check failed; missing tables: ...` หมายถึงบัญชี runtime มองไม่เห็นตารางพื้นฐานที่จำเป็น ตรวจว่าค่า `DB_DATABASE` ชี้ฐานถูกต้อง ตารางติดตั้งครบ และ runtime มีสิทธิ์บนฐานนั้น
+- `migration 014 required; missing tables: ...` หมายถึงตาราง LINE ใหม่ไม่ครบ ตรวจ schema ด้วยบัญชี migration และอัปเกรดตามลำดับข้างต้น
+- `LINE unique index mismatch: notification_outbox.uq_notification_outbox_bill_binding` หมายถึงดัชนีต้องเป็น `(bill_id,purpose,line_delivery_key)` ให้ตรวจว่า migration `014` สำเร็จครบ
+
+ข้อความจากรุ่นเก่าที่มีเพียง `schema readiness check failed` ยังบอกไม่ได้ว่าขาด
+ตารางใด และไม่ได้ยืนยันว่ารันเฉพาะ `014` แล้วจะหาย ใช้บัญชี runtime ของ web ตรวจ
+ข้อมูลโครงสร้างก่อนโดยไม่แก้ข้อมูลผู้เช่าหรือบิล:
+
+```sql
+SELECT DATABASE() AS current_database;
+SELECT table_name
+FROM information_schema.tables
+WHERE table_schema=DATABASE() AND table_type='BASE TABLE'
+ORDER BY table_name;
+```
+
+ฐานใหม่ที่ว่างใช้ขั้นตอน one-time setup ส่วนฐานเดิมใช้ migration ที่ยังขาด
+หากตารางมีครบเมื่อดูด้วย DBA แต่ runtime มองไม่เห็น ให้แก้สิทธิ์เฉพาะฐานให้ถูกต้อง
+ก่อนลอง deploy อีกครั้ง ไม่เปลี่ยน healthcheck ให้ตอบ 200 เมื่อ schema ยังไม่พร้อม
 
 ## 3. ตั้งค่า web
 
@@ -205,8 +232,8 @@ printf '%s' "$ADMIN_PASSWORD" | php scripts/create_admin.php \
 ```
 
 ลบ `ADMIN_PASSWORD` ทันทีเมื่อสำเร็จ ห้ามเก็บไว้กับ process ระยะยาว จากนั้น login
-เข้า Admin → Settings เพื่อตั้ง billing, PromptPay receiver, LINE Channel access
-token/Channel secret และ provider credentials ที่ระบบใช้งานจริง ค่าลับทั้งหมดนี้เก็บ
+เข้า Admin → Settings เพื่อตั้ง billing, PromptPay receiver และ provider credentials
+แล้วเข้า Admin → บัญชี LINE OA เพื่อตั้ง Basic ID, Channel access token และ Channel secret ของแต่ละบัญชี ค่าลับทั้งหมดนี้เก็บ
 เข้ารหัสใน MySQL ไม่ต้องเพิ่มเป็น Railway Variables เมื่อค่าจำเป็นครบและ
 `ADMIN_PASSWORD` ถูกลบแล้วจึงรัน production gate:
 
@@ -217,11 +244,14 @@ php scripts/check_requirements.php --db --strict --production
 โหมด `--strict` จะจบด้วย exit code ที่ไม่ใช่ศูนย์เมื่อยังมี warning จึงห้ามตีความว่า
 deploy พร้อมใช้งานจนกว่าคำสั่งนี้จะผ่าน
 
-ใน LINE Developers Console ให้ตั้ง Webhook URL เป็น
-`https://<web-domain>/api/webhooks/line` (URL เดียวกับที่หน้า Settings แสดง) แล้วเปิด
+ใน LINE Developers Console ให้คัดลอก Webhook URL ของแต่ละบัญชีจากหน้า “บัญชี LINE OA”
+ซึ่งมีรูปแบบ `https://<web-domain>/api/webhooks/line/oa/<route-token>` แล้วเปิด
 **Use webhook** และ **Webhook redelivery** จากนั้นกด **Verify** ต้องใช้ domain ของ `web` และ `APP_URL` ต้องตรง HTTPS origin นี้พอดี
 route นี้รับ request จาก LINE โดยตรวจ `X-Line-Signature` ด้วย Channel secret จึงไม่ต้อง
 และไม่ควรตั้ง public domain ให้ worker
+
+บัญชีเดิม OA 0 ยังใช้ `/api/webhooks/line` ได้เมื่อเปิดเส้นทางเดิมไว้ ดูขั้นตอนสร้างคีย์
+ผูกห้อง ยกเลิก และตรวจสถานะใน [คู่มือ LINE](LINE_BINDING.md)
 
 ## 5. ตั้งค่า worker
 
