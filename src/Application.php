@@ -10,6 +10,10 @@ use Dormitory\Domain\BookingService;
 use Dormitory\Domain\MeterService;
 use Dormitory\Domain\LineBindingService;
 use Dormitory\Domain\LineWebhookService;
+use Dormitory\Domain\LineOfficialAccountService;
+use Dormitory\Domain\LineRoomBindingService;
+use Dormitory\Domain\LineAdminRecipientService;
+use Dormitory\Domain\LineNoticeService;
 use Dormitory\Domain\NotificationService;
 use Dormitory\Domain\PaymentService;
 use Dormitory\Domain\RoomService;
@@ -40,6 +44,10 @@ final class Application
     private NotificationService $notifications;
     private LineBindingService $lineBindings;
     private LineWebhookService $lineWebhook;
+    private LineOfficialAccountService $lineOfficialAccounts;
+    private LineRoomBindingService $lineRoomBindings;
+    private LineAdminRecipientService $lineAdminRecipients;
+    private LineNoticeService $lineNotices;
     private PaymentService $payments;
     /** @var array<string,mixed>|null|false */
     private array|null|false $actorCache = false;
@@ -63,6 +71,10 @@ final class Application
         $this->notifications = new NotificationService($this);
         $this->lineBindings = new LineBindingService($this);
         $this->lineWebhook = new LineWebhookService($this);
+        $this->lineOfficialAccounts = new LineOfficialAccountService($this);
+        $this->lineRoomBindings = new LineRoomBindingService($this);
+        $this->lineAdminRecipients = new LineAdminRecipientService($this);
+        $this->lineNotices = new LineNoticeService($this);
         $this->payments = new PaymentService($this);
     }
 
@@ -83,6 +95,10 @@ final class Application
     public function notifications(): NotificationService { return $this->notifications; }
     public function lineBindings(): LineBindingService { return $this->lineBindings; }
     public function lineWebhook(): LineWebhookService { return $this->lineWebhook; }
+    public function lineOfficialAccounts(): LineOfficialAccountService { return $this->lineOfficialAccounts; }
+    public function lineRoomBindings(): LineRoomBindingService { return $this->lineRoomBindings; }
+    public function lineAdminRecipients(): LineAdminRecipientService { return $this->lineAdminRecipients; }
+    public function lineNotices(): LineNoticeService { return $this->lineNotices; }
     public function payments(): PaymentService { return $this->payments; }
 
     /** @return array<string,mixed>|null */
@@ -111,7 +127,7 @@ final class Application
             }
         }
 
-        $signedLineWebhook = $request->method === 'POST' && $request->path === '/api/webhooks/line';
+        $signedLineWebhook = $request->method === 'POST' && Request::isLineWebhookPath($request->path);
         if ($request->isMutation() && str_starts_with($request->path, '/api/') && !$signedLineWebhook) {
             $this->security->assertMutation($request);
         }

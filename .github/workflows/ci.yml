@@ -13,6 +13,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Verify browser JavaScript and interaction regressions
+        run: |
+          docker run --rm --volume "$PWD:/workspace:ro" --workdir /workspace \
+            node:24-bookworm-slim sh -ec '
+              node --check public/assets/js/app.js
+              node --test tests/*.test.js
+            '
+
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -102,6 +117,8 @@ jobs:
             -e DB_USERNAME=testing \
             -e DB_PASSWORD=testing-only \
             dormitory-ci:${{ github.sha }} tests/run.php
+          docker run --rm --entrypoint php dormitory-ci:${{ github.sha }} \
+            tests/line_bot.php
 
       - name: Run worker, billing CLI, and install bundle contract tests
         run: |
@@ -162,6 +179,8 @@ jobs:
           fi
 
           run_database_setup() {
+            local setup_database="${1:-$CI_DB_DATABASE}"
+            local setup_username="${2:-$CI_DB_USERNAME}"
             docker run --rm \
               --network "$network" \
               --entrypoint bash \
@@ -172,8 +191,8 @@ jobs:
               --env DB_DBA_PASSWORD="$CI_DBA_PASSWORD" \
               --env DB_HOST="$database" \
               --env DB_PORT=3306 \
-              --env DB_DATABASE="$CI_DB_DATABASE" \
-              --env DB_USERNAME="$CI_DB_USERNAME" \
+              --env DB_DATABASE="$setup_database" \
+              --env DB_USERNAME="$setup_username" \
               --env DB_PASSWORD="$CI_DB_PASSWORD" \
               "$image" scripts/setup-database.sh
           }
@@ -202,7 +221,7 @@ jobs:
                   WHERE constraint_schema='dormitory'
                     AND constraint_type='CHECK')
               )")"
-          [ "$install_shape" = '16|19|86' ]
+          [ "$install_shape" = '21|23|116' ]
           set +e
           docker exec --interactive \
             --env MYSQL_PWD="$CI_DBA_PASSWORD" \
@@ -216,6 +235,55 @@ jobs:
           fi
           grep --quiet 'DORMITORY_INSTALL_ABORT_DATABASE_NOT_EMPTY' \
             /tmp/ci-install-reimport.log
+
+          # Each LINE suite requires its own fresh schema and runtime account.
+          # The provisioner escapes schema underscores and verifies exact grants.
+          for line_suite in binding bot room_binding oa platform; do
+            line_database="appj_line_test_${line_suite}"
+            line_username="line_test_${line_suite}"
+            docker exec \
+              --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+              "$database" mysql --host=127.0.0.1 --user=root \
+              --execute="CREATE DATABASE ${line_database} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+            run_database_setup "$line_database" "$line_username"
+            if [ "$line_suite" = room_binding ]; then
+              # Test-only fault injection is installed by the schema owner.
+              # The runtime account keeps SELECT/INSERT/UPDATE privileges.
+              docker exec \
+                --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+                "$database" mysql --host=127.0.0.1 --user=root \
+                --database="$line_database" --delimiter='//' --execute="
+                  CREATE TRIGGER trg_line_room_test_audit_failure
+                  BEFORE INSERT ON audit_logs FOR EACH ROW
+                  BEGIN
+                    IF NEW.action=COALESCE(@line_room_test_fail_audit_action,'') THEN
+                      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Simulated room binding audit failure';
+                    END IF;
+                  END//"
+            fi
+            line_scripts=("tests/line_${line_suite}_mysql.php")
+            if [ "$line_suite" = platform ]; then
+              line_scripts+=(tests/billing_line_delivery_mysql.php)
+            fi
+            for line_script in "${line_scripts[@]}"; do
+              docker run --rm \
+                --network "$network" \
+                --entrypoint php \
+                --env APP_ENV=testing \
+                --env APP_DEBUG=false \
+                --env APP_URL=http://localhost \
+                --env APP_TIMEZONE=Asia/Bangkok \
+                --env APP_KEY="$CI_APP_KEY" \
+                --env FORCE_HTTPS=false \
+                --env DB_HOST="$database" \
+                --env DB_PORT=3306 \
+                --env DB_DATABASE="$line_database" \
+                --env DB_USERNAME="$line_username" \
+                --env DB_PASSWORD="$CI_DB_PASSWORD" \
+                --env DB_SSL=false \
+                "$image" "$line_script"
+            done
+          done
 
           # Exercise the complete business lifecycle with the same
           # least-privileged runtime account used by the web service.

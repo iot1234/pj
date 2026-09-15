@@ -6,6 +6,7 @@ use Dormitory\Domain\BillingService;
 use Dormitory\Domain\AdminUserService;
 use Dormitory\Domain\LineDeliveryException;
 use Dormitory\Domain\LineWebhookService;
+use Dormitory\Domain\LineBindingService;
 use Dormitory\Domain\NotificationService;
 use Dormitory\Domain\PaymentService;
 use Dormitory\Domain\SystemSettingsService;
@@ -264,6 +265,8 @@ $test('empty-body mutation routes reject unknown JSON fields before side effects
         ['POST','/api/resident/bills/1/slip'],
         ['DELETE','/api/admin/users/1'],
         ['DELETE','/api/admin/rooms/1'],
+        ['POST','/api/admin/residents/1/line/code'],
+        ['POST','/api/admin/residents/1/line/unlink'],
         ['POST','/api/admin/residents/1/access/reissue'],
         ['POST','/api/admin/bookings/1/confirm'],
         ['POST','/api/admin/bills/1/line'],
@@ -289,7 +292,7 @@ $test('FR-10 resident lifecycle endpoints are explicitly allowlisted',function()
     $routes=$property->getValue(Dormitory\Http\Routes::build($app));
     $methods=[];
     foreach($routes as$route){if(str_contains($route['regex'],'api/admin/residents'))$methods[]=$route['method'];}
-    $same(['GET','POST','PUT','POST','POST'],$methods);
+    $same(['GET','GET','POST','POST','POST','PUT','POST','POST'],$methods);
 });
 $test('FR-16 payment recovery has no manual paid endpoint',function()use($same,$app):void{
     $property=new ReflectionProperty(Dormitory\Http\Router::class,'routes');
@@ -302,7 +305,7 @@ $test('FR-16 payment recovery has no manual paid endpoint',function()use($same,$
 $test('all SQL bootstraps include the expected integrity triggers',function()use($same):void{
     $root=dirname(__DIR__);
     foreach([
-        'database/schema.sql'=>19,
+        'database/schema.sql'=>23,
         'database/migrations/002_operational_hardening.sql'=>15,
     ]as$file=>$expected){
         $sql=file_get_contents($root.'/'.$file);if(!is_string($sql))throw new RuntimeException("cannot read {$file}");
@@ -312,7 +315,7 @@ $test('all SQL bootstraps include the expected integrity triggers',function()use
     $repair=file_get_contents($root.'/database/migrations/003_append_only_guards.sql');if(!is_string($repair))throw new RuntimeException('cannot read migration 003');
     preg_match_all('/^CREATE TRIGGER\s+([a-z0-9_]+)/mi',$repair,$matches);$same(4,count(array_unique($matches[1])));
     $installer=file_get_contents($root.'/database/install.sql');if(!is_string($installer))throw new RuntimeException('cannot read fresh installer');
-    preg_match_all('/^CREATE TRIGGER\s+([a-z0-9_]+)/mi',$installer,$matches);$same(19,count(array_unique($matches[1])));
+    preg_match_all('/^CREATE TRIGGER\s+([a-z0-9_]+)/mi',$installer,$matches);$same(23,count(array_unique($matches[1])));
     $schema=file_get_contents($root.'/database/schema.sql');if(!is_string($schema))throw new RuntimeException('cannot read fresh schema');
     foreach([
         'trg_bookings_insert_guard',
@@ -1490,7 +1493,7 @@ $test('LINE outbox retries preserve identity, payload bytes, and retry UUID',fun
     $same(true,str_contains($source,"\$existing['status']==='pending'&&(int)\$existing['attempts']===0"));
     $same(true,str_contains($source,"line_request_id=NULL,line_accepted_request_id=NULL"));
     $same(true,str_contains($source,'created_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP()'));
-    $same(true,str_contains($source,'SELECT id,resident_id,retry_key,attempts,recipient,payload'));
+    $same(true,str_contains($source,'SELECT id,resident_id,line_oa_id,line_binding_id,retry_key,attempts,recipient,payload'));
     $same(true,str_contains($source,'retry_generation_expired'));
 });
 $test('LINE delivery response classification is fail closed and provider IDs are retained',function()use($same):void{
@@ -1739,9 +1742,10 @@ $test('LINE and slip safety states are wired through UI, routes, and schema',fun
     $same(true,str_contains($js,"integrations.line_webhook_url"));
     $same(true,str_contains($js,'เปิด Use webhook และ Webhook redelivery แล้วกด Verify'));
     $same(false,str_contains($js,'Webhook พร้อมใช้งาน'));
-    $same(true,str_contains($admin,'name="line_channel_secret" type="password"'));
-    $same(true,str_contains($admin,'name="line_basic_id"'));
-    $same(true,str_contains($admin,'data-line-webhook-url readonly'));
+    $same(true,str_contains($admin,'name="channel_secret" type="password"'));
+    $same(true,str_contains($admin,'name="basic_id"'));
+    $same(true,str_contains($admin,'id="line-oa-diagnostics"'));
+    $same(false,str_contains($admin,'name="line_channel_secret"'));
     $same(false,str_contains($settingsService,'curl_error('));
     foreach(['curlFailureMessage','CURLE_OPERATION_TIMEDOUT','CURLE_SSL_CACERT','ตรวจ CA certificate ของเซิร์ฟเวอร์']as$item)$same(true,str_contains($settingsService,$item));
 
@@ -1757,9 +1761,12 @@ $test('LINE and slip safety states are wired through UI, routes, and schema',fun
 
     $routes=new ReflectionProperty(Dormitory\Http\Router::class,'routes');$registered=$routes->getValue(Dormitory\Http\Routes::build($app));
     $webhooks=array_values(array_filter($registered,static fn(array$route):bool=>str_contains($route['regex'],'api/webhooks/line')));
-    $same(1,count($webhooks));$same('POST',$webhooks[0]['method']);$same([],$webhooks[0]['options']);
+    $same(2,count($webhooks));foreach($webhooks as$webhook){$same('POST',$webhook['method']);$same([],$webhook['options']);}
     $application=file_get_contents($root.'/src/Application.php');if(!is_string($application))throw new RuntimeException('cannot read Application');
-    $same(true,str_contains($application,"\$request->method === 'POST' && \$request->path === '/api/webhooks/line'"));
+    $same(true,str_contains($application,"\$request->method === 'POST' && Request::isLineWebhookPath(\$request->path)"));
+    $same(true,Request::isLineWebhookPath('/api/webhooks/line'));
+    $same(true,Request::isLineWebhookPath('/api/webhooks/line/oa/'.str_repeat('a',48)));
+    $same(false,Request::isLineWebhookPath('/api/webhooks/line/oa/not-a-route-token'));
     $health=file_get_contents($root.'/public/healthz.php');if(!is_string($health))throw new RuntimeException('cannot read health check');
     foreach(['line_channel_secret_enc','line_request_id','line_accepted_request_id']as$column)$same(true,str_contains($health,$column));
 });
@@ -1816,9 +1823,9 @@ $test('runtime readiness rejects legacy PIN schemas and incomplete unique guards
         'normalizeTriggerAction',
         'expectedTriggerActions',
         'event/timing/body',
-        'triggers 19 รายการ',
+        'triggers 23 รายการ',
     ]as$bodyAuditGuard)$same(true,str_contains($requirements,$bodyAuditGuard));
-    $same(true,str_contains($bootstrap,'actual_trigger_count" == 19'));
+    $same(true,str_contains($bootstrap,'actual_trigger_count" == 23'));
     $same(true,str_contains($bootstrap,'trg_bookings_insert_guard|BEFORE|INSERT|bookings'));
     $same(true,str_contains($bootstrap,'trg_occupancies_relationship_guard|BEFORE|INSERT|occupancies'));
 });
@@ -1916,9 +1923,9 @@ $test('container runtime command dispatches by fail-closed role',function()use($
     $roleGuard=strpos($setup,'RUNTIME_ROLE:-');
     $bootstrapCall=strpos($setup,'bootstrap_database.sh');
     $same(true,$roleGuard!==false&&$bootstrapCall!==false&&$roleGuard<$bootstrapCall);
-    $same(true,str_contains($provision,"[[ \"\$readiness\" == '16|1|1' ]]"));
+    $same(true,str_contains($provision,"[[ \"\$readiness\" == '21|1|1' ]]"));
     $same(false,str_contains($provision,"[[ \"\$readiness\" == '15|1|1' ]]"));
-    $same(true,str_contains($workflow,"[ \"\$install_shape\" = '16|19|86' ]"));
+    $same(true,str_contains($workflow,"[ \"\$install_shape\" = '21|23|116' ]"));
     $same(false,str_contains($workflow,"[ \"\$install_shape\" = '15|19|80' ]"));
     $checker=file_get_contents(dirname(__DIR__).'/scripts/check_requirements.php');if(!is_string($checker))throw new RuntimeException('cannot read requirement checker');
     $same(true,str_contains($checker,"\$runtimeRole=(string)envValue(\$env,'RUNTIME_ROLE','all')"));
@@ -1988,7 +1995,7 @@ $test('public LINE contact exposes only a strictly validated public identity',fu
     $supportEnd=$supportStart===false?false:strpos($js,'function initPublicRooms()',$supportStart);
     if($supportStart===false||$supportEnd===false)throw new RuntimeException('cannot isolate public support loader');
     $support=substr($js,$supportStart,$supportEnd-$supportStart);
-    $same(true,str_contains($support,'/^https:\/\/line\.me\/R\/ti\/p\/@[A-Za-z0-9._-]{1,32}$/'));
+    $same(true,str_contains($support,'/^https:\/\/line\.me\/R\/ti\/p\/(?:@|%40)[A-Za-z0-9._-]{1,32}$/'));
     $same(true,str_contains($support,'if (!url) return;'));
     $same(true,str_contains($support,'link.href = url'));
     foreach([$public,$residentLogin]as$template){
@@ -2232,7 +2239,7 @@ $test('admin bill status and LINE queues honor the deterministic latest payment'
     $latestPaymentLock=strpos($enqueue,'SELECT status FROM payments WHERE bill_id=? ORDER BY id DESC LIMIT 1 FOR UPDATE');
     $pendingGuard=strpos($enqueue,"if(\$paymentStatus==='pending')");
     $verifiedGuard=strpos($enqueue,"if(\$paymentStatus==='verified')");
-    $lineConfiguration=strpos($enqueue,'line_channel_access_token');
+    $lineConfiguration=strpos($enqueue,'lineOfficialAccounts()->credentials((int)$target[\'oa_id\'])');
     $outboxWrite=strpos($enqueue,'INSERT INTO notification_outbox');
     $same(true,$billLock!==false&&$latestPaymentLock!==false&&$pendingGuard!==false&&$verifiedGuard!==false&&$lineConfiguration!==false&&$outboxWrite!==false
         &&$billLock<$latestPaymentLock&&$latestPaymentLock<$pendingGuard&&$pendingGuard<$verifiedGuard&&$verifiedGuard<$lineConfiguration&&$lineConfiguration<$outboxWrite);
@@ -2315,7 +2322,8 @@ $test('admin console opens on an overview that surfaces pending work and worker 
     $same(true,str_contains($admin,'<section class="admin-view is-active" data-admin-view="overview" aria-labelledby="overview-title">'));
     $same(true,str_contains($admin,'<section class="admin-view" data-admin-view="rooms" aria-labelledby="rooms-title" hidden>'));
     $same(1,preg_match_all('/class="admin-view is-active"/',$admin));
-    $same(9,preg_match_all('/data-admin-view="/',$admin));
+    $same(11,preg_match_all('/data-admin-view="/',$admin));
+    foreach(['line-oas','line-bindings']as$view)$same(true,str_contains($admin,'class="admin-view" data-admin-view="'.$view.'"'));
 
     // Work that costs money must be visible without opening the view first.
     foreach(['id="booking-nav-count"','id="payment-nav-count"','id="booking-bottom-count"','id="payment-bottom-count"']as$badge)$same(true,str_contains($admin,$badge));
@@ -2375,7 +2383,7 @@ $test('trigger local variables pin their collation instead of inheriting the dat
     foreach(['database/schema.sql','database/install.sql']as$file){
         $sql=file_get_contents($root.'/'.$file);
         if(!is_string($sql))throw new RuntimeException("cannot read {$file}");
-        $same(19,preg_match_all($bodyPattern,$sql,$bodies,PREG_SET_ORDER));
+        $same(23,preg_match_all($bodyPattern,$sql,$bodies,PREG_SET_ORDER));
         foreach($bodies as $trigger)$same(false,str_contains($trigger[2],'--'));
     }
 
@@ -2410,6 +2418,54 @@ $test('trigger local variables pin their collation instead of inheriting the dat
         'trg_bill_items_insert_guard',
         'trg_payments_relationship_guard',
     ]as$trigger)$same($body($schema,$trigger),$body($migration,$trigger));
+});
+
+$test('LINE account links use the official encoded OA chat with the exact one-time code',function()use($same):void{
+    $code='BIND-'.str_repeat('A',32);
+    $links=LineBindingService::officialAccountLinks('@dorm.flow_1-2',$code);
+    $same('https://line.me/R/ti/p/%40dorm.flow_1-2',$links['line_add_friend_url']);
+    $same('https://line.me/R/oaMessage/%40dorm.flow_1-2/?'.$code,$links['line_message_url']);
+    $same(null,LineBindingService::officialAccountLinks('@dorm.flow_1-2')['line_message_url']);
+    foreach(['https://example.test/@dorm','@dorm/../other','@dorm?message=secret','@dorm#fragment',"@dorm\n",[],null]as$invalid){
+        $same(['line_add_friend_url'=>null,'line_message_url'=>null],LineBindingService::officialAccountLinks($invalid,$code));
+    }
+    foreach(['BIND-'.str_repeat('a',32),$code.'&extra=1','prefix '.$code,$code."\n"]as$invalidCode){
+        $same(null,LineBindingService::officialAccountLinks('@dorm',$invalidCode)['line_message_url']);
+    }
+});
+
+$test('admin LINE status, issuance and unlink routes require admin access',function()use($same,$app):void{
+    $router=Routes::build($app);
+    $registered=(new ReflectionProperty(Router::class,'routes'))->getValue($router);
+    foreach([
+        ['GET','/api/admin/residents/17/line'],
+        ['POST','/api/admin/residents/17/line/code'],
+        ['POST','/api/admin/residents/17/line/unlink'],
+    ]as[$method,$path]){
+        $matches=array_values(array_filter($registered,static fn(array$route):bool=>$route['method']===$method&&preg_match($route['regex'],$path)===1));
+        $same(1,count($matches));
+        $same('admin',$matches[0]['options']['auth']??null);
+        $same(false,array_key_exists('role',$matches[0]['options']));
+    }
+});
+
+$test('bill delivery aggregation never reports partial delivery as completely sent',function()use($same):void{
+    $summary=new ReflectionMethod(BillingService::class,'summarizeLineDeliveries');
+    $empty=$summary->invoke(null,[]);$same(null,$empty['line_status']);$same(0,$empty['line_delivery_counts']['total']);
+    $sent=['status'=>'sent','attempts'=>1,'sent_at'=>'2026-09-15 10:00:00','line_request_id'=>'one-request','line_accepted_request_id'=>'accepted'];
+    $single=$summary->invoke(null,[$sent]);$same('sent',$single['line_status']);$same('accepted',$single['line_accepted_request_id']);
+    $mixed=$summary->invoke(null,[$sent,['status'=>'failed','attempts'=>3,'last_error'=>'test failure'],['status'=>'pending','attempts'=>0]]);
+    $same('failed',$mixed['line_status']);$same(['total'=>3,'pending'=>1,'processing'=>0,'sent'=>1,'failed'=>1],$mixed['line_delivery_counts']);
+    $same('test failure',$mixed['line_last_error']);$same(null,$mixed['line_accepted_request_id']);$same(null,$mixed['line_sent_at']);
+    $processing=$summary->invoke(null,[$sent,['status'=>'processing'],['status'=>'pending']]);$same('processing',$processing['line_status']);
+    $pending=$summary->invoke(null,[$sent,['status'=>'pending']]);$same('pending',$pending['line_status']);
+});
+$test('LINE binding lock rejects an unbounded wait before touching MySQL',function()use($app):void{
+    foreach([-1,13,PHP_INT_MAX]as$seconds){
+        try{$app->notifications()->withLineBindingLock(1,static fn()=>null,$seconds);}
+        catch(InvalidArgumentException){continue;}
+        throw new RuntimeException('Invalid LINE lock timeout was accepted');
+    }
 });
 
 fwrite(STDOUT,"\n{$passed} passed, {$failed} failed".PHP_EOL);exit($failed===0?0:1);

@@ -29,9 +29,7 @@ final class ResidentService
             JOIN rooms rm ON rm.id=o.room_id AND rm.deleted_at IS NULL
             WHERE o.status='active'
             ORDER BY rm.floor,rm.room_code")->fetchAll();
-        $bindings=[];foreach($rows as $row)$bindings[]=['resident_id'=>(int)$row['id'],'line_user_id'=>$row['line_user_id']??null];
-        $verified=$this->app->notifications()->verifiedLineBindings($bindings);
-        foreach($rows as &$row){$row['id']=(int)$row['id'];$row['occupancy_id']=(int)$row['occupancy_id'];$row['room_id']=$row['room_id']!==null?(int)$row['room_id']:null;$row['active']=(bool)$row['active'];$row['access_active']=(bool)$row['access_active'];$row['activation_pending']=(bool)$row['activation_pending'];$row['line_verified']=$verified[$row['id']]??false;$row['line_user_id_hint']=is_string($row['line_user_id'])&&$row['line_user_id']!==''?'•••'.substr($row['line_user_id'],-6):null;unset($row['line_user_id']);}
+        foreach($rows as &$row){$row['id']=(int)$row['id'];$row['occupancy_id']=(int)$row['occupancy_id'];$row['room_id']=$row['room_id']!==null?(int)$row['room_id']:null;$row['active']=(bool)$row['active'];$row['access_active']=(bool)$row['access_active'];$row['activation_pending']=(bool)$row['activation_pending'];$row=array_replace($row,$this->app->lineRoomBindings()->status($row['id']));unset($row['line_user_id']);}
         return $rows;
     }
 
@@ -40,11 +38,36 @@ final class ResidentService
     {
         $statement=$this->app->database()->pdo()->prepare("SELECT r.id,r.full_name,r.phone_norm AS phone,r.email,r.line_user_id,r.auth_version,rm.id AS room_id,rm.room_code FROM residents r JOIN occupancies o ON o.resident_id=r.id AND o.status='active' JOIN rooms rm ON rm.id=o.room_id AND rm.deleted_at IS NULL WHERE r.id=? AND r.active=1 ORDER BY o.id DESC LIMIT 2");
         $statement->execute([$id]);$rows=$statement->fetchAll();$row=count($rows)===1?$rows[0]:false;if(!$row)throw new HttpException(404,'Resident not found','RESIDENT_NOT_FOUND');$row['id']=(int)$row['id'];$row['room_id']=(int)$row['room_id'];$row['line_verified']=$this->app->notifications()->isLineBindingVerified($row['id'],$row['line_user_id']??null);
-        $row['line_user_id_hint']=is_string($row['line_user_id']??null)&&$row['line_user_id']!==''?'•••'.substr($row['line_user_id'],-6):null;
-        $lineBasicId=$this->app->settings()->value('LINE_BASIC_ID');
-        $row['line_add_friend_url']=is_string($lineBasicId)&&preg_match('/^@[A-Za-z0-9._-]{1,32}$/D',$lineBasicId)
-            ?'https://line.me/R/ti/p/'.$lineBasicId:null;
+        $row=array_replace($row,$this->app->lineRoomBindings()->status($id));
+        $selfServiceOa=$this->app->lineOfficialAccounts()->get(0);
+        $row['line_add_friend_url']=$selfServiceOa['line_add_friend_url']??null;
+        $row['line_binding_ready']=($selfServiceOa['line_binding_ready']??false)===true;
         unset($row['line_user_id'],$row['auth_version']);return $row;
+    }
+
+    /** Safe LINE status for the administrative resident dialog; never returns a code. */
+    public function lineStatus(int $id): array
+    {
+        return $this->app->database()->transaction(function (PDO $pdo) use ($id): array {
+            $profile=$this->profile($id);
+            $statement=$pdo->prepare("SELECT expires_at FROM line_link_codes
+                WHERE resident_id=? AND status='pending' AND expires_at>UTC_TIMESTAMP(6)
+                ORDER BY id DESC LIMIT 1");
+            $statement->execute([$id]);
+            $expires=$statement->fetchColumn();
+            return [
+                'resident_id'=>$id,
+                'full_name'=>$profile['full_name'],
+                'room_code'=>$profile['room_code'],
+                'line_verified'=>$profile['line_verified'],
+                'line_user_id_hint'=>$profile['line_user_id_hint'],
+                'line_bound_count'=>$profile['line_bound_count'],
+                'line_blocked'=>$profile['line_blocked'],
+                'line_add_friend_url'=>$profile['line_add_friend_url'],
+                'line_binding_ready'=>$profile['line_binding_ready'],
+                'pending_expires_at'=>$expires===false?null:(string)$expires,
+            ];
+        });
     }
 
     /** @return array<string,mixed> */
@@ -141,6 +164,7 @@ final class ResidentService
                 throw $error;
             }
 
+            if($phoneChanged){$this->app->lineBindings()->revokePending($id);$this->app->lineRoomBindings()->revokeForIdentity($id);}
             $profile=$this->profile($id);
             $profile['changed_fields']=$changed;
             $profile['sessions_revoked']=$phoneChanged;
@@ -197,6 +221,8 @@ final class ResidentService
             // the previous resident session. The HTTP route also holds the
             // resident LINE advisory lock so this cannot race webhook consume.
             $this->app->lineBindings()->revokePending($id);
+            $this->app->lineRoomBindings()->revokeForIdentity($id);
+            LineAdminEvents::enqueue($this->app,'security.access_reissued',hash('sha256',$id.':'.$nextAuthVersion));
             $expiry=$pdo->prepare('SELECT activation_expires_at FROM residents WHERE id=?');
             $expiry->execute([$id]);
             return [
@@ -232,7 +258,8 @@ final class ResidentService
         $this->activeAuthVersion($id,true);
         $statement=$this->app->database()->pdo()->prepare('UPDATE residents SET line_user_id=NULL,updated_at=UTC_TIMESTAMP() WHERE id=? AND active=1');
         $statement->execute([$id]);
-        if($statement->rowCount()===0)$this->profile($id);
+        $this->app->lineBindings()->revokePending($id);
+        $this->app->lineRoomBindings()->revokeForIdentity($id);
         return $this->profile($id);
     }
 
@@ -345,8 +372,11 @@ final class ResidentService
                 WHERE id=? AND active=1');
             $deactivate->execute([$id]);
             if($deactivate->rowCount()!==1)throw new HttpException(409,'สถานะผู้พักเปลี่ยนแปลงแล้ว กรุณารีเฟรช','RESIDENT_CHANGED');
+            $this->app->lineBindings()->revokePending($id);
+            $this->app->lineRoomBindings()->revokeForIdentity($id);
 
             $lineUserId=is_string($occupancy['line_user_id']??null)?(string)$occupancy['line_user_id']:'';
+            LineAdminEvents::enqueue($this->app,'tenancy.moved_out',(int)$occupancy['occupancy_id']);
             return [
                 'resident_id'=>$id,
                 'occupancy_id'=>(int)$occupancy['occupancy_id'],

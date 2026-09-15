@@ -463,6 +463,12 @@
     }
   }
 
+  function safeLineMessageUrl(value, code) {
+    if (typeof value !== 'string' || !/^BIND-[A-F0-9]{32}$/.test(String(code || ''))) return '';
+    const match = value.match(/^https:\/\/line\.me\/R\/oaMessage\/%40[A-Za-z0-9._-]{1,32}\/\?(BIND-[A-F0-9]{32})$/);
+    return match && match[1] === code ? value : '';
+  }
+
   function safeRoomImage(room) {
     const allowed = new Set(['room-standard.jpg', 'room-deluxe.jpg', 'room-suite.jpg', 'room-studio.jpg']);
     const key = allowed.has(String(room?.image_key)) ? room.image_key : 'room-standard.jpg';
@@ -548,7 +554,7 @@
     try {
       const contact = objectFrom(await api('/api/public/contact'));
       const url = typeof contact.line_add_friend_url === 'string'
-        && /^https:\/\/line\.me\/R\/ti\/p\/@[A-Za-z0-9._-]{1,32}$/.test(contact.line_add_friend_url)
+        && /^https:\/\/line\.me\/R\/ti\/p\/(?:@|%40)[A-Za-z0-9._-]{1,32}$/.test(contact.line_add_friend_url)
         ? contact.line_add_friend_url
         : '';
       if (!url) return;
@@ -819,7 +825,7 @@
     const state = {
       profile: {}, bills: [], filter: 'all', currentBillId: null, billDetailRequest: 0, qrRequest: 0,
       loadRequest: 0, lineCodeExpiresAt: 0, lineStatusRequest: false, billRefreshRequest: false,
-      profileRevision: 0,
+      profileRevision: 0, lineStateRevision: 0, lineIssueRequest: false,
       slipMaxBytes: 4 * 1024 * 1024, slipReady: false, paymentReady: false,
     };
     const profileForm = $('#resident-profile-form');
@@ -827,6 +833,8 @@
     const lineCodePanel = $('#resident-line-code-panel');
     const lineCodeInput = $('#resident-line-code');
     const lineCodeCopyButton = $('#resident-line-code-copy');
+    const lineCodeRenewButton = $('#resident-line-code-renew');
+    const lineOpenMessage = $('#resident-line-open-message');
     const lineCodeQr = $('#resident-line-code-qr');
     const lineCodeQrFallback = $('#resident-line-code-qr-fallback');
     const lineAddFriendLink = $('#resident-line-add-friend');
@@ -839,6 +847,7 @@
     let lineExpiryTimer = null;
     let linePollTimer = null;
     let residentLogoutInProgress = false;
+    let lastLineReturnRefresh = 0;
 
     function billStatus(bill) {
       const payment = String(bill.payment_status || bill.payment?.status || '').toLowerCase();
@@ -857,7 +866,10 @@
       linePollTimer = null;
       state.lineCodeExpiresAt = 0;
       if (clearCode) {
+        state.lineStateRevision += 1;
         lineCodeInput.value = '';
+        lineOpenMessage.hidden = true;
+        lineOpenMessage.removeAttribute('href');
         lineCodePanel.hidden = true;
         lineCodeQr.hidden = true;
         lineCodeQrFallback.hidden = true;
@@ -888,31 +900,42 @@
         ? `${raw.replace(' ', 'T')}Z`
         : raw;
       const parsed = new Date(normalized).getTime();
-      state.lineCodeExpiresAt = Number.isFinite(parsed) ? parsed : Date.now() + (10 * 60 * 1000);
+      if (!Number.isFinite(parsed) || parsed <= Date.now()) {
+        stopLineCodeTracking(true);
+        return false;
+      }
+      state.lineCodeExpiresAt = parsed;
       updateLineCodeCountdown();
       lineExpiryTimer = window.setInterval(updateLineCodeCountdown, 1000);
-      linePollTimer = window.setInterval(() => refreshLineStatus(true), 5000);
+      linePollTimer = window.setInterval(() => { if (doc.visibilityState === 'visible') refreshLineStatus(true); }, 5000);
+      return true;
     }
 
     async function refreshLineStatus(silent = false) {
       if (state.lineStatusRequest) return false;
       state.lineStatusRequest = true;
       const profileRevision = state.profileRevision;
+      const lineRevision = state.lineStateRevision;
       if (!silent) setBusy(lineStatusRefreshButton, true, 'กำลังตรวจสอบ…');
       try {
         const data = await api('/api/resident/profile');
         if (profileRevision !== state.profileRevision) return false;
+        if (lineRevision !== state.lineStateRevision) return false;
         const latestProfile = objectFrom(data, 'profile');
+        const wasLinked = state.profile.line_verified === true && state.profile.line_blocked !== true;
         state.profile = {
           ...state.profile,
           line_verified: latestProfile.line_verified,
           line_user_id_hint: latestProfile.line_user_id_hint,
           line_add_friend_url: latestProfile.line_add_friend_url,
+          line_binding_ready: latestProfile.line_binding_ready,
+          line_bound_count: latestProfile.line_bound_count,
+          line_blocked: latestProfile.line_blocked,
         };
-        const linked = state.profile.line_verified === true && Boolean(state.profile.line_user_id_hint);
+        const linked = state.profile.line_verified === true && state.profile.line_blocked !== true;
         renderLineStatus();
-        if (linked) toast('ผูกบัญชี LINE สำเร็จแล้ว');
-        else if (!silent) toast('ยังไม่พบการยืนยัน กรุณาส่งรหัสให้ LINE Bot แล้วลองอีกครั้ง', 'error');
+        if (linked && !wasLinked) toast('ผูกบัญชี LINE สำเร็จแล้ว');
+        else if (!linked && !silent) toast(state.profile.line_blocked === true ? 'บัญชีนี้ถูกระงับการผูก LINE กรุณาติดต่อผู้ดูแล' : 'ยังไม่พบการยืนยัน กรุณาส่งรหัสให้ LINE Bot แล้วลองอีกครั้ง', 'error');
         return linked;
       } catch (errorValue) {
         if (!silent) showFormError($('#resident-line-error'), errorMessage(errorValue));
@@ -993,20 +1016,27 @@
     function renderLineStatus() {
       const profile = state.profile;
       const lineHint = typeof profile.line_user_id_hint === 'string' ? profile.line_user_id_hint : '';
-      const hasLine = lineHint.length > 0;
-      const linked = hasLine && profile.line_verified === true;
-      const addFriendUrl = typeof profile.line_add_friend_url === 'string' && /^https:\/\/line\.me\/R\/ti\/p\/@[A-Za-z0-9._-]{1,32}$/.test(profile.line_add_friend_url)
+      const blocked = profile.line_blocked === true;
+      const linked = profile.line_verified === true && !blocked;
+      const hasLine = !blocked && (linked || lineHint.length > 0 || Number(profile.line_bound_count) > 0);
+      const lineLabel = Number(profile.line_bound_count) > 1 ? `${Number(profile.line_bound_count)} บัญชี` : lineHint;
+      const addFriendUrl = typeof profile.line_add_friend_url === 'string' && /^https:\/\/line\.me\/R\/ti\/p\/(?:@|%40)[A-Za-z0-9._-]{1,32}$/.test(profile.line_add_friend_url)
         ? profile.line_add_friend_url
         : '';
-      lineAddFriendLink.hidden = addFriendUrl === '' || hasLine;
+      lineAddFriendLink.hidden = addFriendUrl === '' || hasLine || blocked;
       if (addFriendUrl) lineAddFriendLink.href = addFriendUrl;
       else lineAddFriendLink.removeAttribute('href');
-      $('#resident-line-status').textContent = linked ? `ยืนยันแล้ว ${lineHint}`
+      $('#resident-line-status').textContent = blocked ? 'ผู้ดูแลระงับการผูก LINE กรุณาติดต่อผู้ดูแล' : linked ? `ยืนยันแล้ว ${lineLabel}`
         : (hasLine ? `บัญชี ${lineHint} ยังไม่ผ่านการยืนยัน กรุณายกเลิกแล้วผูกใหม่` : (state.lineCodeExpiresAt ? 'สร้างรหัสแล้ว รอส่งรหัสให้ LINE Bot' : 'ยังไม่ได้ผูกบัญชี LINE'));
       const hasActiveCode = state.lineCodeExpiresAt > Date.now() && /^BIND-[A-F0-9]{32}$/.test(lineCodeInput.value);
-      lineStartForm.hidden = hasLine || hasActiveCode;
+      lineStartForm.hidden = hasLine || hasActiveCode || blocked;
+      const ready = profile.line_binding_ready === true && !blocked;
+      lineStartForm.querySelector('[type="submit"]').disabled = !ready || state.lineIssueRequest;
+      lineCodeRenewButton.disabled = !ready || state.lineIssueRequest;
+      $('#resident-line-readiness').hidden = ready || hasLine;
+      $('#resident-line-readiness').textContent = blocked ? 'บัญชีนี้ถูกระงับการผูก LINE กรุณาติดต่อผู้ดูแลเพื่อปลดระงับ' : 'ระบบยังตั้งค่า LINE ไม่ครบ กรุณาติดต่อผู้ดูแลก่อนสร้างรหัส';
       lineUnlinkButton.hidden = !hasLine;
-      if (hasLine) {
+      if (hasLine || blocked) {
         stopLineCodeTracking(true);
       }
     }
@@ -1017,6 +1047,8 @@
         if (profileForm.elements[name]) profileForm.elements[name].value = profile[name] || (name === 'room_code' ? profile.room?.room_code || '' : '');
       });
       renderLineStatus();
+      $('#resident-profile-fields').disabled = false;
+      $('#resident-profile-load-state').hidden = true;
     }
 
     async function loadAll() {
@@ -1026,7 +1058,11 @@
       errorBox.hidden = true;
       const [profileResult, billsResult] = await Promise.allSettled([api('/api/resident/profile'), api('/api/resident/bills')]);
       if (request !== state.loadRequest) return;
-      if (profileResult.status === 'fulfilled' && profileRevision === state.profileRevision) { state.profile = objectFrom(profileResult.value, 'profile'); fillProfile(); }
+      if (profileResult.status === 'fulfilled' && profileRevision === state.profileRevision) {
+        const draft = profileForm.dataset.dirty === 'true' ? { full_name: profileForm.elements.full_name.value, email: profileForm.elements.email.value } : null;
+        state.profile = objectFrom(profileResult.value, 'profile'); fillProfile();
+        if (draft) Object.entries(draft).forEach(([name, value]) => { profileForm.elements[name].value = value; });
+      }
       if (billsResult.status === 'fulfilled') { state.bills = listFrom(billsResult.value, 'bills'); renderBills(); }
       else {
         $('#resident-bill-list').setAttribute('aria-busy', 'false');
@@ -1036,6 +1072,7 @@
       if (rejected.length) {
         errorBox.hidden = false;
         $('[data-error-message]', errorBox).textContent = (rejected.length === 2 ? 'โหลดข้อมูลผู้พักไม่สำเร็จ: ' : 'โหลดข้อมูลบางส่วนไม่สำเร็จ: ') + errorMessage(rejected[0].reason);
+        if ($('#resident-profile-fields').disabled) $('#resident-profile-load-state').textContent = 'ยังโหลดข้อมูลส่วนตัวไม่ได้ กรุณากดลองอีกครั้งด้านบนก่อนแก้ไข';
       }
     }
 
@@ -1114,7 +1151,7 @@
         const notices = [];
         if (payment) {
           notices.push(payment.status === 'rejected'
-            ? `สลิปถูกปฏิเสธ: ${text(payment.rejection_reason, 'ข้อมูลในสลิปไม่ตรงกับบิล')}`
+            ? `สลิปถูกปฏิเสธ: ${text(payment.rejection_reason, 'ข้อมูลในสลิปไม่ตรงกับบิล')} หากโอนเงินจริงแล้ว กรุณาติดต่อผู้ดูแลเพื่อตรวจยอดก่อนโอนซ้ำ การส่งไฟล์เดิมจะได้ผลเดิม`
             : payment.status === 'verified' ? 'สลิปผ่านการตรวจสอบแล้ว ไม่ต้องชำระซ้ำ' : 'สลิปอยู่ระหว่างตรวจสอบ กรุณารอผลและอย่าโอนซ้ำ');
         }
         if (paymentBlocked) {
@@ -1185,58 +1222,85 @@
         toast(errorMessage(errorValue, 'ออกจากระบบไม่สำเร็จ กรุณาลองอีกครั้ง'), 'error');
       }
     }));
+    profileForm.addEventListener('input', () => { profileForm.dataset.dirty = 'true'; });
     profileForm.addEventListener('submit', async (event) => {
       event.preventDefault();
       const error = $('#resident-profile-error');
       showFormError(error);
-      if (!profileForm.reportValidity()) return;
+      if ($('#resident-profile-fields').disabled || !profileForm.reportValidity()) return;
       const button = profileForm.querySelector('[type="submit"]');
       const values = Object.fromEntries(new FormData(profileForm).entries());
       const profileRevision = ++state.profileRevision;
+      setFormFieldsBusy(profileForm, true);
       setBusy(button, true, 'กำลังบันทึก…');
       try {
         const data = await api('/api/resident/profile', { method: 'PUT', body: { full_name: values.full_name, email: values.email } });
         if (profileRevision !== state.profileRevision) return;
         state.profile = objectFrom(data, 'profile');
+        profileForm.dataset.dirty = 'false';
         fillProfile();
         $('#resident-sidebar-name').textContent = text(state.profile.full_name);
         $('#resident-topbar-name').textContent = text(state.profile.full_name);
         $('#resident-dashboard-title').textContent = `สวัสดี ${text(state.profile.full_name)}`;
         toast('บันทึกข้อมูลแล้ว');
       } catch (errorValue) { showFormError(error, errorMessage(errorValue)); }
-      finally { setBusy(button, false); }
+      finally { setFormFieldsBusy(profileForm, false); setBusy(button, false); }
     });
     lineStartForm.addEventListener('submit', async (event) => {
       event.preventDefault();
+      await issueResidentLineCode();
+    });
+    lineCodeRenewButton.addEventListener('click', () => issueResidentLineCode(true));
+
+    async function issueResidentLineCode(rotate = false) {
+      if (state.lineIssueRequest || state.profile.line_binding_ready !== true || state.profile.line_blocked === true || state.profile.line_verified === true) return;
+      state.lineIssueRequest = true;
       const error = $('#resident-line-error');
       showFormError(error);
       const button = lineStartForm.querySelector('[type="submit"]');
-      setBusy(button, true, 'กำลังสร้างรหัส…');
       try {
+        if (rotate && !await confirmAction('สร้างรหัสผูก LINE ใหม่', 'รหัสและ QR เดิมจะใช้ไม่ได้หลังสร้างรหัสใหม่ ต้องการยกเลิกรหัสเดิมหรือไม่?', 'ยกเลิกรหัสเดิมและสร้างใหม่', true)) return;
+        setBusy(button, true, 'กำลังสร้างรหัส…');
+        setBusy(lineCodeRenewButton, true, 'กำลังสร้างรหัส…');
+        stopLineCodeTracking(true);
+        renderLineStatus();
+        const revision = state.lineStateRevision;
         const result = objectFrom(await api('/api/resident/profile/line/code', { method: 'POST', body: {} }), 'LINE link code');
+        if (revision !== state.lineStateRevision) return;
         if (!/^BIND-[A-F0-9]{32}$/.test(String(result.code || ''))) throw new ApiError('ระบบสร้างรหัสผูก LINE ไม่ถูกต้อง');
         lineCodeInput.value = result.code;
         lineStartForm.hidden = true;
         lineCodePanel.hidden = false;
         lineCodeQr.hidden = true;
         lineCodeQrFallback.hidden = true;
-        startLineCodeTracking(result.expires_at);
-        const qrLibrary = await getQrLibrary();
-        if (qrLibrary?.toCanvas) {
+        const messageUrl = safeLineMessageUrl(result.line_message_url, result.code);
+        lineOpenMessage.hidden = !messageUrl;
+        if (messageUrl) lineOpenMessage.href = messageUrl;
+        else lineOpenMessage.removeAttribute('href');
+        if (!startLineCodeTracking(result.expires_at)) throw new ApiError('รหัสผูก LINE หมดอายุหรือไม่มีวันหมดอายุที่ถูกต้อง กรุณาสร้างใหม่');
+        const qrLibrary = messageUrl ? await getQrLibrary() : null;
+        if (revision !== state.lineStateRevision || lineCodeInput.value !== result.code) return;
+        if (messageUrl && qrLibrary?.toCanvas) {
           try {
-            await renderQrCanvas(qrLibrary, lineCodeQr, result.code, { width: 220, margin: 2, errorCorrectionLevel: 'M' });
+            await renderQrCanvas(qrLibrary, lineCodeQr, messageUrl, { width: 220, margin: 2, errorCorrectionLevel: 'M' });
+            if (revision !== state.lineStateRevision || lineCodeInput.value !== result.code) return;
             lineCodeQr.hidden = false;
           } catch (_) { lineCodeQr.hidden = true; lineCodeQrFallback.hidden = false; }
         } else lineCodeQrFallback.hidden = false;
-        $('#resident-line-status').textContent = 'สร้างรหัสแล้ว รอส่งรหัสให้ LINE Bot';
+        if (revision !== state.lineStateRevision || lineCodeInput.value !== result.code) return;
+        $('#resident-line-status').textContent = 'รอคุณกดส่งรหัสใน LINE แล้วระบบจะยืนยันให้อัตโนมัติ';
         lineCodeInput.focus();
         lineCodeInput.select();
-        toast('สร้างรหัสแล้ว กรุณาคัดลอกไปส่งให้ LINE Bot');
+        toast('สร้างรหัสแล้ว เปิด LINE พร้อมรหัสแล้วกดส่งในแชตของหอพัก');
       } catch (errorValue) {
         showFormError(error, errorMessage(errorValue));
       }
-      finally { setBusy(button, false); }
-    });
+      finally {
+        state.lineIssueRequest = false;
+        setBusy(button, false); setBusy(lineCodeRenewButton, false);
+        renderLineStatus();
+      }
+    }
 
     lineCodeCopyButton.addEventListener('click', async () => {
       const code = String(lineCodeInput.value || '');
@@ -1262,13 +1326,23 @@
       const error = $('#resident-line-error');
       showFormError(error);
       const profileRevision = ++state.profileRevision;
+      state.lineStateRevision += 1;
       setBusy(lineUnlinkButton, true, 'กำลังยกเลิก…');
       try {
         const data = await api('/api/resident/profile/line/unlink', { method: 'POST', body: {} });
         if (profileRevision !== state.profileRevision) return;
-        state.profile = objectFrom(data, 'profile');
+        const latestProfile = objectFrom(data, 'profile');
+        state.profile = {
+          ...state.profile,
+          line_verified: latestProfile.line_verified,
+          line_user_id_hint: latestProfile.line_user_id_hint,
+          line_add_friend_url: latestProfile.line_add_friend_url,
+          line_binding_ready: latestProfile.line_binding_ready,
+          line_bound_count: latestProfile.line_bound_count,
+          line_blocked: latestProfile.line_blocked,
+        };
         stopLineCodeTracking(true);
-        fillProfile();
+        renderLineStatus();
         toast('ยกเลิกการผูก LINE แล้ว');
       } catch (errorValue) { showFormError(error, errorMessage(errorValue)); }
       finally { setBusy(lineUnlinkButton, false); }
@@ -1354,8 +1428,230 @@
     }, 30_000);
     doc.addEventListener('visibilitychange', () => {
       if (doc.visibilityState === 'visible') refreshVerifyingBills(true);
+      refreshResidentLineOnReturn();
     });
+    function refreshResidentLineOnReturn() {
+      if (doc.visibilityState !== 'visible' || Date.now() - lastLineReturnRefresh < 1000) return;
+      lastLineReturnRefresh = Date.now();
+      refreshLineStatus(true);
+    }
+    window.addEventListener('focus', refreshResidentLineOnReturn);
     loadAll();
+  }
+
+  function initAdminLineBinding(onStatus) {
+    const dialog = $('#admin-line-dialog');
+    if (!dialog) return { open() {} };
+    const codeInput = $('#admin-line-code');
+    const codePanel = $('#admin-line-code-panel');
+    const openMessage = $('#admin-line-open-message');
+    const qrCanvas = $('#admin-line-qr');
+    const qrFallback = $('#admin-line-qr-fallback');
+    const issueButton = $('#admin-line-issue');
+    const refreshButton = $('#admin-line-refresh');
+    const unlinkButton = $('#admin-line-unlink');
+    const errorNode = $('#admin-line-error');
+    let residentId = null;
+    let currentStatus = null;
+    let epoch = 0;
+    let codeRevision = 0;
+    let expiresAt = 0;
+    let mutation = false;
+    let statusRequest = null;
+    let pollTimer = null;
+    let expiryTimer = null;
+    let lastReturnRefresh = 0;
+
+    function clearCode() {
+      codeRevision += 1;
+      expiresAt = 0;
+      if (expiryTimer !== null) window.clearInterval(expiryTimer);
+      expiryTimer = null;
+      codeInput.value = '';
+      codePanel.hidden = true;
+      openMessage.hidden = true; openMessage.removeAttribute('href');
+      qrCanvas.hidden = true; qrFallback.hidden = true;
+      qrCanvas.getContext?.('2d')?.clearRect(0, 0, qrCanvas.width, qrCanvas.height);
+      $('#admin-line-expiry').textContent = '';
+    }
+
+    function renderStatus() {
+      const blocked = currentStatus?.line_blocked === true;
+      const linked = currentStatus?.line_verified === true && !blocked;
+      const hasLine = !blocked && (linked || Boolean(currentStatus?.line_user_id_hint) || Number(currentStatus?.line_bound_count) > 0);
+      const ready = currentStatus?.line_binding_ready === true && !blocked;
+      const pending = currentStatus?.pending_expires_at;
+      $('#admin-line-status').textContent = !currentStatus ? 'กำลังตรวจสอบสถานะ…'
+        : blocked ? 'ผู้พักถูกระงับการผูก LINE ปลดระงับได้ในหน้า “การผูก LINE ผู้พัก”' : linked ? `ผูก LINE แล้ว ${Number(currentStatus.line_bound_count) > 1 ? `${Number(currentStatus.line_bound_count)} บัญชี` : currentStatus.line_user_id_hint || ''}`
+          : hasLine ? 'บัญชี LINE เดิมยังไม่ผ่านการยืนยัน กรุณายกเลิกแล้วผูกใหม่'
+            : pending ? `รอผู้พักส่งรหัสใน LINE · หมดอายุ ${formatDateTime(pending)} น.` : 'ยังไม่ผูก LINE';
+      $('#admin-line-readiness').hidden = !currentStatus || ready || hasLine;
+      $('#admin-line-readiness').textContent = blocked ? 'ปลดระงับในหน้า “การผูก LINE ผู้พัก” ก่อนสร้างรหัสใหม่' : 'ระบบยังตั้งค่า LINE ไม่ครบ กรุณาตรวจบัญชี LINE OA';
+      issueButton.disabled = mutation || !ready || hasLine;
+      if (!mutation) issueButton.textContent = pending || codeInput.value ? 'สร้างรหัสใหม่' : 'สร้างรหัสผูก LINE';
+      unlinkButton.hidden = !hasLine;
+      unlinkButton.disabled = mutation;
+      refreshButton.disabled = mutation || Boolean(statusRequest);
+      const friendLink = $('#admin-line-add-friend');
+      const friendUrl = currentStatus?.line_add_friend_url;
+      const validFriend = typeof friendUrl === 'string' && /^https:\/\/line\.me\/R\/ti\/p\/(?:@|%40)[A-Za-z0-9._-]{1,32}$/.test(friendUrl);
+      friendLink.hidden = !validFriend || hasLine || blocked;
+      if (validFriend) friendLink.href = friendUrl;
+      else friendLink.removeAttribute('href');
+    }
+
+    function applyStatus(status) {
+      if (String(status?.resident_id) !== String(residentId)) throw new ApiError('สถานะ LINE ไม่ตรงกับผู้พักที่เลือก กรุณาเปิดรายการใหม่');
+      const wasLinked = currentStatus?.line_verified === true && currentStatus?.line_blocked !== true;
+      const knownStatus = currentStatus !== null;
+      currentStatus = status;
+      const linked = status.line_verified === true && status.line_blocked !== true;
+      if (status.line_user_id_hint || linked || status.line_blocked) clearCode();
+      renderStatus();
+      onStatus?.(status);
+      if (knownStatus && linked && !wasLinked) toast('ผู้พักผูก LINE สำเร็จแล้ว');
+    }
+
+    async function refreshStatus(silent = false) {
+      if (!dialog.open || residentId === null || mutation || statusRequest) return false;
+      const request = { epoch, residentId };
+      statusRequest = request;
+      if (!silent) { showFormError(errorNode); setBusy(refreshButton, true, 'กำลังตรวจสอบ…'); }
+      try {
+        const result = await api(`/api/admin/residents/${encodeURIComponent(request.residentId)}/line`);
+        if (statusRequest !== request || epoch !== request.epoch || !dialog.open) return false;
+        applyStatus(objectFrom(result));
+        return true;
+      } catch (error) {
+        if (statusRequest === request && epoch === request.epoch && !silent) showFormError(errorNode, errorMessage(error));
+        return false;
+      } finally {
+        if (statusRequest === request) {
+          statusRequest = null;
+          if (!silent) setBusy(refreshButton, false);
+          renderStatus();
+        }
+      }
+    }
+
+    function updateCountdown() {
+      if (!expiresAt) return;
+      const seconds = Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
+      if (seconds === 0) {
+        clearCode();
+        if (currentStatus) currentStatus.pending_expires_at = null;
+        renderStatus();
+        toast('รหัสผูก LINE หมดอายุแล้ว สามารถสร้างรหัสใหม่ได้', 'error');
+        return;
+      }
+      $('#admin-line-expiry').textContent = `เหลือ ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')} · ใช้ครั้งเดียว ผู้พักต้องกดส่งรหัสใน LINE`;
+    }
+
+    async function issueCode() {
+      if (mutation || !currentStatus || currentStatus.line_binding_ready !== true || currentStatus.line_user_id_hint || currentStatus.line_verified === true || currentStatus.line_blocked === true) return;
+      const request = { epoch, residentId };
+      mutation = true;
+      try {
+        if ((codeInput.value || currentStatus.pending_expires_at)
+          && !await confirmAction('สร้างรหัสผูก LINE ใหม่', 'รหัสและ QR เดิมของผู้พักรายนี้จะใช้ไม่ได้หลังสร้างรหัสใหม่ ต้องการดำเนินการหรือไม่?', 'ยกเลิกรหัสเดิมและสร้างใหม่', true)) return;
+        if (epoch !== request.epoch || !dialog.open) return;
+        statusRequest = null;
+        setBusy(refreshButton, false); showFormError(errorNode);
+        clearCode();
+        const revision = codeRevision;
+        setDialogBusy(dialog, true); setBusy(issueButton, true, 'กำลังสร้างรหัส…'); renderStatus();
+        const result = objectFrom(await api(`/api/admin/residents/${encodeURIComponent(request.residentId)}/line/code`, { method: 'POST', body: {} }));
+        if (epoch !== request.epoch || !dialog.open) return;
+        if (!/^BIND-[A-F0-9]{32}$/.test(String(result.code || ''))) throw new ApiError('ระบบส่งรหัสผูก LINE ไม่ถูกต้อง กรุณาสร้างใหม่');
+        const rawExpiry = String(result.expires_at || '');
+        expiresAt = new Date(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(rawExpiry) ? `${rawExpiry.replace(' ', 'T')}Z` : rawExpiry).getTime();
+        if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) { clearCode(); throw new ApiError('รหัสผูก LINE หมดอายุหรือไม่มีวันหมดอายุที่ถูกต้อง กรุณาสร้างใหม่'); }
+        codeInput.value = result.code;
+        codePanel.hidden = false;
+        currentStatus.pending_expires_at = result.expires_at;
+        const messageUrl = safeLineMessageUrl(result.line_message_url, result.code);
+        openMessage.hidden = !messageUrl;
+        if (messageUrl) openMessage.href = messageUrl;
+        updateCountdown(); expiryTimer = window.setInterval(updateCountdown, 1000);
+        const qrLibrary = messageUrl ? await getQrLibrary() : null;
+        if (epoch !== request.epoch || revision !== codeRevision || codeInput.value !== result.code) return;
+        if (messageUrl && qrLibrary?.toCanvas) {
+          try {
+            await renderQrCanvas(qrLibrary, qrCanvas, messageUrl, { width: 220, margin: 2, errorCorrectionLevel: 'M' });
+            if (epoch !== request.epoch || revision !== codeRevision || codeInput.value !== result.code) return;
+            qrCanvas.hidden = false;
+          } catch (_) { qrFallback.hidden = false; }
+        } else qrFallback.hidden = false;
+        if (epoch !== request.epoch || revision !== codeRevision || codeInput.value !== result.code) return;
+        codeInput.focus(); codeInput.select();
+        toast('สร้างรหัสแล้ว ให้ผู้พักเปิด LINE ของตนเองและกดส่งรหัส');
+      } catch (error) {
+        if (epoch === request.epoch) showFormError(errorNode, errorMessage(error));
+      } finally {
+        if (epoch === request.epoch) {
+          mutation = false; setDialogBusy(dialog, false); setBusy(issueButton, false); renderStatus();
+          refreshStatus(true);
+        }
+      }
+    }
+
+    issueButton.addEventListener('click', issueCode);
+    refreshButton.addEventListener('click', () => refreshStatus(false));
+    $('#admin-line-copy').addEventListener('click', async () => {
+      const code = codeInput.value;
+      if (!/^BIND-[A-F0-9]{32}$/.test(code) || expiresAt <= Date.now()) return;
+      try {
+        let copied = false;
+        if (navigator.clipboard?.writeText && window.isSecureContext) { await navigator.clipboard.writeText(code); copied = true; }
+        else { codeInput.focus(); codeInput.select(); copied = doc.execCommand('copy'); }
+        if (!copied) throw new Error('Copy unavailable');
+        toast('คัดลอกรหัสแล้ว ส่งให้ผู้พักรายนี้โดยตรง');
+      } catch (_) { showFormError(errorNode, 'คัดลอกอัตโนมัติไม่ได้ กรุณาเลือกรหัสแล้วคัดลอกด้วยตนเอง'); }
+    });
+    unlinkButton.addEventListener('click', async () => {
+      if (mutation || !currentStatus?.line_user_id_hint) return;
+      const request = { epoch, residentId };
+      mutation = true;
+      try {
+        if (!await confirmAction('ยกเลิก LINE ของผู้พัก', 'บัญชี LINE นี้จะดูห้องและบิลของผู้พักไม่ได้ และจะไม่ได้รับบิลใหม่จนกว่าจะผูกอีกครั้ง ต้องการยกเลิกหรือไม่?', 'ยกเลิกการผูก', true)) return;
+        if (epoch !== request.epoch || !dialog.open) return;
+        statusRequest = null;
+        setBusy(refreshButton, false); showFormError(errorNode);
+        setDialogBusy(dialog, true); setBusy(unlinkButton, true, 'กำลังยกเลิก…'); renderStatus();
+        const result = await api(`/api/admin/residents/${encodeURIComponent(request.residentId)}/line/unlink`, { method: 'POST', body: {} });
+        if (epoch !== request.epoch || !dialog.open) return;
+        clearCode(); applyStatus(objectFrom(result));
+        toast('ยกเลิก LINE ของผู้พักรายนี้แล้ว');
+      } catch (error) { if (epoch === request.epoch) showFormError(errorNode, errorMessage(error)); }
+      finally {
+        if (epoch === request.epoch) { mutation = false; setDialogBusy(dialog, false); setBusy(unlinkButton, false); renderStatus(); }
+      }
+    });
+    dialog.addEventListener('close', () => {
+      epoch += 1; residentId = null; currentStatus = null; statusRequest = null; mutation = false;
+      clearCode();
+      if (pollTimer !== null) window.clearInterval(pollTimer);
+      pollTimer = null;
+    });
+    const onReturn = () => {
+      if (!dialog.open || doc.visibilityState !== 'visible' || Date.now() - lastReturnRefresh < 1000) return;
+      lastReturnRefresh = Date.now(); refreshStatus(true);
+    };
+    doc.addEventListener('visibilitychange', onReturn);
+    window.addEventListener('focus', onReturn);
+    return {
+      open(resident) {
+        if (mutation) return;
+        epoch += 1; residentId = resident.id; currentStatus = null; statusRequest = null;
+        clearCode(); showFormError(errorNode);
+        setBusy(refreshButton, false); setBusy(issueButton, false); setBusy(unlinkButton, false);
+        $('#admin-line-summary').textContent = `${text(resident.full_name)} · ห้อง ${text(resident.room_code || resident.room?.room_code)}`;
+        renderStatus(); openDialog(dialog);
+        if (pollTimer !== null) window.clearInterval(pollTimer);
+        pollTimer = window.setInterval(() => { if (dialog.open && doc.visibilityState === 'visible') refreshStatus(true); }, 5000);
+        refreshStatus(false);
+      },
+    };
   }
 
   function initAdminConsole() {
@@ -1369,7 +1665,7 @@
       paymentPendingCount: 0, overviewController: null,
     };
     const role = body.dataset.userRole || 'admin';
-    const titles = { overview: 'ภาพรวม', rooms: 'ห้องพัก', bookings: 'การจอง', residents: 'ผู้พักอาศัย', meters: 'จดมิเตอร์', bills: 'ใบแจ้งหนี้', payments: 'การชำระเงิน', users: 'ผู้ดูแลระบบ', settings: 'ตั้งค่า' };
+    const titles = { overview: 'ภาพรวม', rooms: 'ห้องพัก', bookings: 'การจอง', residents: 'ผู้พักอาศัย', meters: 'จดมิเตอร์', bills: 'ใบแจ้งหนี้', payments: 'การชำระเงิน', users: 'ผู้ดูแลระบบ', settings: 'ตั้งค่า', 'line-oas': 'บัญชี LINE OA', 'line-bindings': 'การผูก LINE ผู้พัก' };
     const homeView = 'overview';
     const loaders = {};
     const menuToggles = $$('[data-admin-menu-toggle]');
@@ -1385,6 +1681,19 @@
     let settingsSaveInProgress = false;
     let settingsLoadGeneration = 0;
     let lastVisibilityRefreshAt = 0;
+    const adminLineBinding = initAdminLineBinding((status) => {
+      const resident = state.residents.find((item) => String(item.id) === String(status.resident_id));
+      if (resident) {
+        resident.line_verified = status.line_verified;
+        resident.line_user_id_hint = status.line_user_id_hint;
+        resident.line_bound_count = status.line_bound_count;
+        resident.line_blocked = status.line_blocked;
+        renderResidents();
+      }
+    });
+    const linePlatform = window.DormLinePlatform?.init({ $, $$, create, api, toast, errorMessage, showFormError, formatDateTime, openDialog, closeDialog, setDialogBusy, setFormFieldsBusy, confirmAction, getQrLibrary, renderQrCanvas });
+    loaders['line-oas'] = () => linePlatform?.loadOas();
+    loaders['line-bindings'] = () => linePlatform?.loadBindings();
 
     function clearResidentAccess() {
       residentActivationSecret = '';
@@ -1509,8 +1818,11 @@
         if (billingSettingsForm?.dataset.dirty === 'true') renderBillingSettings(state.settings);
         if (integrationSettingsForm?.dataset.dirty === 'true') renderIntegrationSettings(objectFrom(state.settings.integrations));
       }
-      if (activeView === 'meters' && name !== 'meters' && hasDirtyMeterRows()) {
-        if (!window.confirm('มีเลขมิเตอร์ที่แก้ไขแต่ยังไม่ได้บันทึก ต้องการออกจากหน้านี้และทิ้งค่าที่กรอกหรือไม่?')) return false;
+      if (activeView === 'meters' && hasDirtyMeterRows()) {
+        const message = name === 'meters'
+          ? 'มีเลขมิเตอร์ที่แก้ไขแต่ยังไม่ได้บันทึก ต้องการโหลดข้อมูลใหม่และทิ้งค่าที่กรอกหรือไม่?'
+          : 'มีเลขมิเตอร์ที่แก้ไขแต่ยังไม่ได้บันทึก ต้องการออกจากหน้านี้และทิ้งค่าที่กรอกหรือไม่?';
+        if (!window.confirm(message)) return false;
         renderMeters();
       }
       const menuWasOpen = mobileMenu.matches && app.classList.contains('sidebar-open');
@@ -1730,11 +2042,20 @@
       event.preventDefault(); const form = event.currentTarget; const error = $('#move-in-error'); showFormError(error); if (!form.reportValidity()) return;
       const values = Object.fromEntries(new FormData(form).entries());
       const id = values.booking_id; delete values.booking_id;
+      const summary = $('#move-in-summary').textContent;
+      const dialog = $('#move-in-dialog');
       const button = form.querySelector('[type="submit"]'); setBusy(button, true, 'กำลังรับเข้าพัก…');
+      setDialogBusy(dialog, true);
+      let busyReleased = false;
+      const releaseBusy = () => {
+        if (busyReleased) return;
+        busyReleased = true;
+        setDialogBusy(dialog, false); setBusy(button, false);
+      };
       try {
         const result = await api(`/api/admin/bookings/${encodeURIComponent(id)}/move-in`, { method: 'POST', body: values });
-        const summary = $('#move-in-summary').textContent;
-        closeDialog($('#move-in-dialog')); form.reset();
+        releaseBusy();
+        closeDialog(dialog); form.reset();
         showResidentAccess(result, summary);
         toast(result?.idempotent_replay ? 'พบรายการรับเข้าพักเดิมและคืนผลเดิมแล้ว' : 'รับเข้าพักและสร้างบัญชีแล้ว');
         state.loaded.delete('residents');
@@ -1747,7 +2068,7 @@
           $('#move-in-reuse-field').hidden = false; $('#move-in-reuse-help').hidden = false; reuseInput.focus();
         }
         showFormError(error, errorMessage(requestError));
-      } finally { setBusy(button, false); }
+      } finally { releaseBusy(); }
     });
 
     function resetResidentCreateReuse(form) {
@@ -1795,7 +2116,7 @@
       const visible = state.residents.filter((resident) => !query || `${resident.full_name} ${resident.phone} ${resident.room_code || resident.room?.room_code} ${resident.line_user_id_hint || ''}`.toLocaleLowerCase('th').includes(query));
       visible.forEach((resident) => {
         const tr = create('tr'); const person = create('span', 'person-cell'); person.append(create('strong', '', text(resident.full_name)), create('small', '', text(resident.email, 'ไม่ระบุอีเมล')));
-        const line = resident.line_verified === true ? pill('active', `ยืนยันแล้ว ${text(resident.line_user_id_hint)}`)
+        const line = resident.line_blocked === true ? pill('inactive', 'ระงับการผูก') : resident.line_verified === true ? pill('active', `ยืนยันแล้ว ${Number(resident.line_bound_count) > 1 ? `${Number(resident.line_bound_count)} บัญชี` : text(resident.line_user_id_hint)}`)
           : (resident.line_user_id_hint ? pill('pending', 'รอยืนยันใหม่') : pill('neutral', 'ยังไม่ผูก'));
         const active = !(resident.active === false || resident.active === 0);
         const access = !active
@@ -1806,6 +2127,7 @@
               ? pill('pending', 'รอเปิดใช้งาน')
               : pill('danger', 'ต้องออกคีย์')));
         const actions = active ? rowActions(
+          actionButton(resident.line_verified || resident.line_user_id_hint || resident.line_blocked ? 'สถานะ LINE' : 'ผูก LINE', 'resident-line', resident.id, 'button-secondary', `จัดการ LINE ของ ${text(resident.full_name)}`),
           actionButton('แก้ข้อมูล', 'edit-resident', resident.id, 'button-ghost', `แก้ข้อมูลผู้พัก ${text(resident.full_name)}`),
           actionButton('ออกคีย์ใหม่', 'reissue-resident-access', resident.id, 'button-secondary', `ออกคีย์ใหม่ให้ ${text(resident.full_name)}`),
           actionButton('ย้ายออก', 'move-out-resident', resident.id, 'button-danger-text', `ย้าย ${text(resident.full_name)} ออกจากห้อง`),
@@ -1829,12 +2151,22 @@
       if (!form.reportValidity()) return;
       const values = Object.fromEntries(new FormData(form).entries());
       values.room_id = Number(values.room_id);
+      const room = state.rooms.find((item) => String(item.id) === String(values.room_id));
+      const summary = `${text(values.full_name)} · ห้อง ${text(room?.room_code)}`;
+      const dialog = $('#resident-create-dialog');
       const button = form.querySelector('[type="submit"]'); setBusy(button, true, 'กำลังรับเข้าพัก…');
+      setDialogBusy(dialog, true);
+      let busyReleased = false;
+      const releaseBusy = () => {
+        if (busyReleased) return;
+        busyReleased = true;
+        setDialogBusy(dialog, false); setBusy(button, false);
+        button.disabled = state.rooms.every((room) => room.status !== 'available');
+      };
       try {
         const result = await api('/api/admin/residents', { method: 'POST', body: values });
-        const room = state.rooms.find((item) => String(item.id) === String(values.room_id));
-        const summary = `${text(values.full_name)} · ห้อง ${text(room?.room_code)}`;
-        closeDialog($('#resident-create-dialog')); form.reset();
+        releaseBusy();
+        closeDialog(dialog); form.reset();
         showResidentAccess(result, summary);
         toast(result?.idempotent_replay ? 'พบรายการรับเข้าพักเดิมและแสดงผลเดิมแล้ว' : 'เพิ่มผู้พักหลักและเปิดบัญชีห้องแล้ว');
         await Promise.all([loadResidents(), loadRooms(), loadBookings()]);
@@ -1852,14 +2184,14 @@
         }
         showFormError(error, errorMessage(requestError));
       } finally {
-        setBusy(button, false);
-        button.disabled = state.rooms.every((room) => room.status !== 'available');
+        releaseBusy();
       }
     });
     $('#resident-rows').addEventListener('click', async (event) => {
       const button = event.target.closest('[data-action]'); if (!button) return;
       const resident = state.residents.find((item) => String(item.id) === button.dataset.id); if (!resident) return;
       const summary = `${text(resident.full_name)} · ห้อง ${text(resident.room_code || resident.room?.room_code)}`;
+      if (button.dataset.action === 'resident-line') { adminLineBinding.open(resident); return; }
       if (button.dataset.action === 'reissue-resident-access') {
         if (!await confirmAction(
           'ออก activation code ใหม่',
@@ -1898,15 +2230,24 @@
       if (original && String(values.phone).replace(/[^0-9+]/g, '') !== String(original.phone).replace(/[^0-9+]/g, '')) {
         if (!await confirmAction('เปลี่ยนเบอร์เข้าสู่ระบบ', 'ยืนยันว่าได้ตรวจสอบตัวตนผู้พักแล้วหรือไม่? เซสชันและรหัสผ่านเดิมจะถูกยกเลิกทันที แล้วระบบจะออก activation code ใหม่', 'ยืนยันและบันทึก', false)) return;
       }
+      const dialog = $('#resident-edit-dialog');
       const button = form.querySelector('[type="submit"]'); setBusy(button, true, 'กำลังบันทึก…');
+      setDialogBusy(dialog, true);
+      let busyReleased = false;
+      const releaseBusy = () => {
+        if (busyReleased) return;
+        busyReleased = true;
+        setDialogBusy(dialog, false); setBusy(button, false);
+      };
       try {
         const updated = await api(`/api/admin/residents/${encodeURIComponent(id)}`, { method: 'PUT', body: values });
         const summary = `${text(updated?.full_name || values.full_name)} · ห้อง ${text(updated?.room_code || original?.room_code || original?.room?.room_code)}`;
-        closeDialog($('#resident-edit-dialog')); form.reset();
+        releaseBusy();
+        closeDialog(dialog); form.reset();
         if (updated?.resident_access) showResidentAccess(updated, summary);
         toast(updated?.sessions_revoked ? 'บันทึกแล้ว ยกเลิกสิทธิ์เดิม และออก activation code ใหม่' : 'บันทึกข้อมูลผู้พักแล้ว');
         await loadResidents();
-      } catch (requestError) { showFormError(error, errorMessage(requestError)); } finally { setBusy(button, false); }
+      } catch (requestError) { showFormError(error, errorMessage(requestError)); } finally { releaseBusy(); }
     });
     $('#resident-move-out-form').addEventListener('submit', async (event) => {
       event.preventDefault(); const form = event.currentTarget; const error = $('#resident-move-out-error'); showFormError(error); if (!form.reportValidity()) return;
@@ -2011,16 +2352,45 @@
       });
       tr.classList.remove('meter-row-baseline'); tr.classList.toggle('meter-row-dirty', hasUnsavedEdit); tr.dataset.dirty = String(hasUnsavedEdit);
     }
+    function setMeterTableLoading(loading) {
+      const rows = $('#meter-rows');
+      rows.toggleAttribute('inert', loading);
+      rows.setAttribute('aria-busy', String(loading));
+      $$('input, button[data-action="save-meter"]', rows).forEach((control) => {
+        if (control.tagName === 'BUTTON') {
+          // A save may finish while the read is pending. Its own busy flag,
+          // rather than the state at read start, decides when it can be reused.
+          control.disabled = loading || control.getAttribute('aria-busy') === 'true';
+        } else if (loading) {
+          if (control.dataset.meterLoadWasDisabled === undefined) control.dataset.meterLoadWasDisabled = String(control.disabled);
+          control.disabled = true;
+        } else if (control.dataset.meterLoadWasDisabled !== undefined) {
+          control.disabled = control.dataset.meterLoadWasDisabled === 'true';
+          delete control.dataset.meterLoadWasDisabled;
+        }
+      });
+    }
     async function loadMeters() {
       const period = $('#meter-period').value || todayPeriod(); $('#meter-period').value = period;
       state.meterController?.abort(); const controller = new AbortController(); state.meterController = controller;
+      if (state.meterPeriod !== period) $('#meter-rows').replaceChildren();
+      setMeterTableLoading(true);
       setTableState($('#meter-state'), 'loading');
       try {
         const data = await api(`/api/admin/meters?period=${encodeURIComponent(period)}`, { signal: controller.signal });
         if (state.meterController !== controller || $('#meter-period').value !== period) return;
         state.meterPeriod = period; state.meters = listFrom(data, 'meters'); state.loaded.add('meters'); renderMeters();
-      } catch (error) { if (error?.name !== 'AbortError') setTableState($('#meter-state'), 'error', errorMessage(error)); }
-      finally { if (state.meterController === controller) state.meterController = null; }
+      } catch (error) {
+        if (state.meterController === controller && $('#meter-period').value === period && error?.name !== 'AbortError') {
+          setTableState($('#meter-state'), 'error', errorMessage(error));
+        }
+      } finally {
+        if (state.meterController === controller) {
+          state.meterController = null;
+          if (state.meterPeriod !== $('#meter-period').value) $('#meter-rows').replaceChildren();
+          setMeterTableLoading(false);
+        }
+      }
     }
     loaders.meters = loadMeters;
     $('#meter-period').value = todayPeriod();
@@ -2034,6 +2404,7 @@
       await loadMeters();
     });
     async function saveMeterRow(button, confirmLargeUsage = false) {
+      if (state.meterController) { toast('กำลังโหลดเลขมิเตอร์ กรุณารอข้อมูลล่าสุดก่อนบันทึก', 'error'); return; }
       const tr = button.closest('tr'); const inputs = $$('input', tr);
       const editableInputs = inputs.filter((input) => !input.disabled);
       if (tr.dataset.period !== $('#meter-period').value) { toast('รอบเดือนเปลี่ยนแล้ว ระบบจะโหลดข้อมูลใหม่เพื่อป้องกันการบันทึกผิดเดือน', 'error'); await loadMeters(); return; }
@@ -2146,8 +2517,14 @@
         const line = create('div', 'line-delivery');
         const paymentStatus = String(bill.payment_status || '').toLowerCase();
         const paymentLocksLine = paymentStatus === 'pending' || paymentStatus === 'verified';
+        const billLineReady = typeof bill.line_ready === 'boolean' ? bill.line_ready : lineReady;
+        const deliveryCounts = objectFrom(bill.line_delivery_counts);
         const lineLabels = { pending: 'รอส่ง', processing: 'กำลังส่ง', sent: 'LINE รับคำขอแล้ว', failed: 'ส่งไม่สำเร็จ' };
         if (bill.line_status) line.append(pill(bill.line_status, lineLabels[bill.line_status] || text(bill.line_status)));
+        if (Number(deliveryCounts.total) > 1) {
+          const parts = [['sent', 'LINE รับแล้ว'], ['pending', 'รอส่ง'], ['processing', 'กำลังส่ง'], ['failed', 'ไม่สำเร็จ']].filter(([key]) => Number(deliveryCounts[key]) > 0).map(([key, label]) => `${label} ${Number(deliveryCounts[key])}`);
+          line.append(create('small', 'muted', `${Number(deliveryCounts.total)} ผู้รับ · ${parts.join(' · ')}`));
+        }
         if (bill.line_status === 'failed' && bill.line_last_error) {
           const failure = create('small', 'line-error', text(bill.line_last_error));
           failure.title = text(bill.line_last_error);
@@ -2156,13 +2533,13 @@
         if (bill.line_status === 'sent' && (bill.line_accepted_request_id || bill.line_request_id)) {
           line.append(create('small', 'muted', `LINE ref ${text(bill.line_accepted_request_id || bill.line_request_id)}`));
         }
-        const mayQueue = bill.status === 'pending' && !paymentLocksLine && bill.line_linked === true && lineReady && (!bill.line_status || bill.line_status === 'failed');
+        const mayQueue = typeof bill.line_can_queue === 'boolean' ? bill.line_can_queue && bill.status === 'pending' && !paymentLocksLine : bill.status === 'pending' && !paymentLocksLine && bill.line_linked === true && billLineReady && (!bill.line_status || bill.line_status === 'failed');
         if (mayQueue) { line.append(actionButton(bill.line_status === 'failed' ? 'เข้าคิวใหม่' : 'เข้าคิว', 'send-line', bill.id, 'button-secondary', `ส่งบิล ${text(bill.bill_no || bill.id)} เข้า LINE`)); eligibleForLine++; }
         else if (!bill.line_status && paymentStatus === 'pending') line.append(create('small', 'muted', 'กำลังตรวจสลิป ไม่ส่งแจ้งชำระซ้ำ'));
         else if (!bill.line_status && paymentStatus === 'verified') line.append(create('small', 'muted', 'ชำระแล้ว ไม่ส่งซ้ำ'));
         else if (!bill.line_status && bill.status !== 'pending') line.append(create('small', 'muted', 'ชำระแล้ว ไม่ส่งซ้ำ'));
         else if (!bill.line_status && !bill.line_linked) line.append(create('small', 'muted', 'ผู้พักยังไม่ผูก LINE'));
-        else if (!bill.line_status && !lineReady) line.append(create('small', 'muted', 'ตั้งค่า LINE ยังไม่ครบ'));
+        else if (!bill.line_status && !billLineReady) line.append(create('small', 'muted', 'OA ที่ผูกยังไม่พร้อมรับบิล'));
         const displayStatus = paymentStatus === 'pending' ? 'verifying' : (paymentStatus === 'verified' ? 'paid' : (bill.display_status || bill.status));
         const billStatusLabel = displayStatus === 'overdue' ? 'เลยกำหนด'
           : (displayStatus === 'verifying' ? 'กำลังตรวจสลิป' : (displayStatus === 'paid' ? 'ชำระแล้ว' : (displayStatus === 'pending' ? 'รอชำระ' : '')));
@@ -2170,8 +2547,8 @@
         rows.append(tr);
       });
       const bulkButton = $('#line-bulk-button');
-      bulkButton.disabled = !lineReady || eligibleForLine === 0;
-      bulkButton.title = !lineReady ? 'ตั้งค่า LINE Channel access token ในหน้า “ตั้งค่า” ก่อน' : (eligibleForLine === 0 ? 'ไม่มีบิลค้างชำระที่ผูก LINE และพร้อมเข้าคิว' : 'เข้าคิวบิลค้างชำระที่พร้อมส่ง');
+      bulkButton.disabled = eligibleForLine === 0;
+      bulkButton.title = eligibleForLine === 0 ? 'ไม่มีบิลค้างชำระที่ผูก LINE กับ OA ที่พร้อมเข้าคิว' : 'เข้าคิวบิลค้างชำระที่พร้อมส่ง';
       const statuses = state.bills.map(effectiveBillStatus);
       setStat('[data-bill-stat="all"]', state.bills.length);
       setStat('[data-bill-stat="pending"]', statuses.filter((value) => value === 'pending' || value === 'overdue').length);
@@ -2566,7 +2943,7 @@
       const values = Object.fromEntries(new FormData(form).entries()); const button = form.querySelector('[type="submit"]'); setBusy(button, true, 'กำลังปิด…');
       try {
         await api(`/api/admin/payments/${encodeURIComponent(values.payment_id)}/close`, { method: 'POST', body: { reason: values.reason } });
-        closeDialog($('#payment-close-dialog')); form.reset(); toast('ปิดรายการแล้ว ผู้พักสามารถส่งสลิปใหม่ได้'); await Promise.all([loadPayments(), loadBills()]);
+        closeDialog($('#payment-close-dialog')); form.reset(); toast('ปิดรายการถาวรแล้ว หากผู้พักโอนเงินจริงแล้ว ให้ตรวจยอดก่อนโอนซ้ำ'); await Promise.all([loadPayments(), loadBills()]);
       } catch (requestError) { showFormError(error, errorMessage(requestError)); } finally { setBusy(button, false); }
     });
     function renderUsers() { const rows = $('#user-rows'); rows.replaceChildren(); state.users.forEach((user) => { const tr = create('tr'); const status = user.is_active === false || user.is_active === 0 ? 'inactive' : 'active'; const actions = [actionButton('แก้ไข', 'edit-user', user.id, 'button-ghost', `แก้ไขผู้ดูแล ${text(user.username)}`)]; if (status === 'active') actions.push(actionButton('ปิดใช้งาน', 'delete-user', user.id, 'button-danger-text', `ปิดใช้งานผู้ดูแล ${text(user.username)}`)); tr.append(td(text(user.username)), td(text(user.role === 'owner' ? 'เจ้าของ' : 'ผู้ดูแล')), td(pill(status)), td(formatDate(user.updated_at)), td(rowActions(...actions), 'align-right')); rows.append(tr); }); setTableState($('#user-state'), state.users.length ? 'ready' : 'empty', 'ยังไม่มีบัญชีผู้ดูแล'); }
@@ -2609,7 +2986,7 @@
       if (settingsSaveInProgress || !form.reportValidity()) return;
       const values = Object.fromEntries(new FormData(form).entries());
       ['line_max_attempts', 'notification_batch_size', 'slip_max_bytes', 'slip_time_tolerance_seconds'].forEach((key) => { values[key] = Number(values[key]); });
-      ['line_channel_access_token_clear', 'line_channel_secret_clear', 'slipok_api_key_clear', 'easyslip_api_key_clear'].forEach((key) => { values[key] = !form.elements[key].disabled && form.elements[key].checked; });
+      ['slipok_api_key_clear', 'easyslip_api_key_clear'].forEach((key) => { if (form.elements[key]) values[key] = !form.elements[key].disabled && form.elements[key].checked; });
       const button = form.querySelector('[type="submit"]');
       settingsSaveInProgress = true;
       setFormFieldsBusy(form, true);

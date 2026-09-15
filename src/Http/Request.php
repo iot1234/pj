@@ -30,6 +30,12 @@ final class Request
     ) {
     }
 
+    public static function isLineWebhookPath(string $path): bool
+    {
+        return $path === '/api/webhooks/line'
+            || preg_match('#^/api/webhooks/line/oa/[a-f0-9]{48}$#D', $path) === 1;
+    }
+
     public static function capture(): self
     {
         $method = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
@@ -52,7 +58,7 @@ final class Request
             }
         }
 
-        $lineWebhook = $method === 'POST' && $path === '/api/webhooks/line';
+        $lineWebhook = $method === 'POST' && self::isLineWebhookPath($path);
         $bodyLimit = $lineWebhook
             ? self::MAX_LINE_WEBHOOK_BYTES
             : self::MAX_BODY_BYTES;

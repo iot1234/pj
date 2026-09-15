@@ -91,12 +91,15 @@ $residentInitial = preg_match('/^./us', $residentName, $initialMatch) === 1 ? $i
         <div class="profile-layout">
           <form class="card-block stack-form" id="resident-profile-form" novalidate>
             <div class="card-heading"><div><h3>ข้อมูลติดต่อ</h3><p>ข้อมูลนี้ใช้บนบิลและการติดต่อจากหอพัก</p></div></div>
+            <p id="resident-profile-load-state" class="field-hint" role="status">กำลังโหลดข้อมูลส่วนตัว…</p>
+            <fieldset class="stack-form resident-profile-fields" id="resident-profile-fields" disabled aria-label="ข้อมูลส่วนตัว">
             <label class="field"><span>ชื่อ–นามสกุล</span><input name="full_name" type="text" minlength="2" maxlength="120" autocomplete="name" required></label>
             <label class="field"><span>อีเมล</span><input name="email" type="email" maxlength="190" autocomplete="email" placeholder="name@example.com"></label>
             <label class="field"><span>เบอร์โทรศัพท์</span><input name="phone" type="tel" readonly aria-readonly="true"><small>หากต้องเปลี่ยนเบอร์ กรุณาติดต่อผู้ดูแลเพื่อยืนยันตัวตน</small></label>
             <label class="field"><span>ห้อง</span><input name="room_code" type="text" readonly aria-readonly="true"></label>
             <div class="form-error" id="resident-profile-error" role="alert" hidden></div>
             <button class="button button-primary" type="submit" data-submit-label="บันทึกข้อมูล">บันทึกข้อมูล</button>
+            </fieldset>
           </form>
 
           <div class="card-block stack-form" id="resident-line-card">
@@ -104,19 +107,24 @@ $residentInitial = preg_match('/^./us', $residentName, $initialMatch) === 1 ? $i
             <form class="stack-form" id="resident-line-start-form" novalidate>
               <ol class="field-hint line-link-steps">
                 <li>เพิ่มเพื่อนและเปิดแชต LINE Official Account ที่หอพักแจ้งไว้</li>
-                <li>กดสร้างรหัส แล้วคัดลอกไปส่งในแชตส่วนตัว</li>
+                <li>กดสร้างรหัส แล้วเลือก “เปิด LINE พร้อมรหัส”</li>
+                <li>ตรวจว่าเป็นแชตของหอพัก แล้วกดส่งรหัสใน LINE ด้วยตนเอง</li>
                 <li>รอข้อความยืนยันจาก Bot หน้านี้จะตรวจสถานะให้อัตโนมัติ</li>
               </ol>
               <a class="button button-secondary" id="resident-line-add-friend" href="#" target="_blank" rel="noopener noreferrer" hidden>เพิ่มเพื่อน LINE Official Account</a>
-              <button class="button button-secondary" type="submit">สร้างรหัสผูก LINE</button>
+              <button class="button button-secondary" type="submit" disabled>สร้างรหัสผูก LINE</button>
             </form>
             <div class="stack-form" id="resident-line-code-panel" hidden>
               <label class="field"><span>รหัสสำหรับส่งให้ LINE Bot</span><input id="resident-line-code" type="text" readonly aria-readonly="true" autocomplete="off" spellcheck="false"></label>
               <p class="field-hint" id="resident-line-code-expiry">รหัสใช้ได้ 10 นาที แสดงให้เห็นเพียงครั้งเดียว</p>
-              <canvas class="line-code-qr" id="resident-line-code-qr" width="220" height="220" role="img" aria-label="QR รหัสผูก LINE" hidden></canvas>
-              <p class="field-hint" id="resident-line-code-qr-fallback" role="status" hidden>อุปกรณ์นี้สร้าง QR ไม่สำเร็จ กรุณากดคัดลอกรหัสแทน</p>
-              <div class="form-actions"><button class="button button-primary" id="resident-line-code-copy" type="button">คัดลอกรหัส</button><button class="button button-secondary" id="resident-line-status-refresh" type="button">ตรวจสอบสถานะ</button></div>
+              <a class="button button-primary" id="resident-line-open-message" target="_blank" rel="noopener noreferrer" hidden>เปิด LINE พร้อมรหัส</a>
+              <p class="field-hint">ลิงก์และ QR จะเปิดแชตพร้อมรหัสเท่านั้น คุณต้องกด “ส่ง” ใน LINE จึงจะผูกบัญชีสำเร็จ ใช้ LINE ของผู้พักห้องนี้เท่านั้น</p>
+              <canvas class="line-code-qr" id="resident-line-code-qr" width="220" height="220" role="img" aria-label="QR เปิดแชต LINE พร้อมรหัสผูกบัญชี" hidden></canvas>
+              <p class="field-hint" id="resident-line-code-qr-fallback" role="status" hidden>เปิด LINE หรือสร้าง QR อัตโนมัติไม่ได้ กรุณาคัดลอกรหัสแล้วส่งในแชต LINE ของหอพัก</p>
+              <div class="form-actions"><button class="button button-secondary" id="resident-line-code-copy" type="button">คัดลอกรหัส</button><button class="button button-ghost" id="resident-line-code-renew" type="button">สร้างรหัสใหม่</button></div>
             </div>
+            <button class="button button-secondary" id="resident-line-status-refresh" type="button">ตรวจสอบสถานะ</button>
+            <p class="field-hint" id="resident-line-readiness" role="status" hidden>ผู้ดูแลยังตั้งค่า LINE ไม่ครบ กรุณาติดต่อหอพัก</p>
             <button class="button button-ghost" id="resident-line-unlink" type="button" hidden>ยกเลิกการผูก LINE</button>
             <div class="form-error" id="resident-line-error" role="alert" hidden></div>
           </div>

@@ -1,0 +1,209 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const source = fs.readFileSync(path.join(__dirname, '../public/assets/js/admin-line-platform.js'), 'utf8');
+const appSource = fs.readFileSync(path.join(__dirname, '../public/assets/js/app.js'), 'utf8');
+const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
+const settle = () => new Promise(setImmediate);
+const codeA = 'BIND-' + 'A'.repeat(32), codeB = 'BIND-' + 'B'.repeat(32);
+const message = (code) => 'https://line.me/R/oaMessage/%40dorm.test/?' + code;
+const readyOas = { rows: [{ id: 0, name: 'เดิม', enabled: true, is_default: true, line_binding_ready: true }, { id: 2, name: 'OA ใหม่', enabled: true, line_binding_ready: true }], default_oa_id: 0 };
+const detail = (id = 1, overrides = {}) => ({ resident_id: id, full_name: 'ผู้พัก ' + id, room_code: 'A' + id, blocked: false, bound_count: 0, pending_codes: [], bound_accounts: [], history: [], ...overrides });
+const pending = (code = codeA) => ({ id: code === codeA ? 10 : 11, oa_id: 0, oa_name: 'เดิม', code, expires_at: new Date(Date.now() + 7 * 86400000).toISOString(), line_message_url: message(code) });
+
+class Node {
+  constructor(tag = 'div', value = '') { this.tagName = tag.toUpperCase(); this._text = value; this.children = []; this.parentNode = null; this.dataset = {}; this.attributes = new Map(); this.listeners = new Map(); this.value = ''; this.defaultValue = ''; this.disabled = false; this.checked = false; this.hidden = false; this.open = false; this.width = 220; this.height = 220; }
+  get textContent() { return this._text + this.children.map((node) => node.textContent).join(''); }
+  set textContent(value) { this._text = String(value); this.children = []; }
+  get options() { return this.children.filter((node) => node.tagName === 'OPTION'); }
+  append(...nodes) { for (const node of nodes) { node.parentNode = this; this.children.push(node); if (this.tagName === 'SELECT' && this.children.length === 1) this.value = node.value; } }
+  replaceChildren(...nodes) { this._text = ''; this.children = []; if (this.tagName === 'SELECT') this.value = ''; this.append(...nodes); }
+  setAttribute(key, value) { this.attributes.set(key, String(value)); }
+  getAttribute(key) { return this.attributes.get(key) ?? null; }
+  hasAttribute(key) { return this.attributes.has(key); }
+  removeAttribute(key) { this.attributes.delete(key); if (key === 'href') delete this.href; }
+  addEventListener(name, fn) { if (!this.listeners.has(name)) this.listeners.set(name, []); this.listeners.get(name).push(fn); }
+  async dispatch(name) { for (const callback of this.listeners.get(name) || []) await callback({ preventDefault() {}, currentTarget: this, target: this }); }
+  contains(node) { return node === this || this.children.some((child) => child.contains(node)); }
+  showModal() { this.open = true; }
+  close() { this.open = false; this.dispatch('close'); }
+  focus() {} select() {} reportValidity() { return true; }
+  getContext() { return { clearRect() {} }; }
+  all() { return this.children.flatMap((child) => [child, ...child.all()]); }
+  reset() { for (const node of this.all()) { node.value = node.defaultValue; node.checked = false; } }
+}
+
+function harness() {
+  const nodes = new Map(), requests = [], timers = new Map(), events = new Map();
+  const effects = { toasts: [], copied: [], qr: [], confirmations: [] };
+  let allowConfirm = true, nextTimer = 1, now = Date.now();
+  const make = (id, tag = 'div') => { const node = new Node(tag); nodes.set('#' + id, node); return node; };
+  const dialog = make('line-platform-dialog', 'dialog');
+  const selectorMatches = (node, selector) => selector.split(',').some((part) => {
+    part = part.trim();
+    if (part === 'input' || part === 'select' || part === 'textarea' || part === 'button') return node.tagName === part.toUpperCase();
+    if (part === '[data-close-dialog]') return node.hasAttribute('data-close-dialog');
+    if (part === 'button[type="submit"]') return node.tagName === 'BUTTON' && node.type === 'submit';
+    const name = /^\[name="([^"]+)"\]$/.exec(part); return name ? node.name === name[1] : false;
+  });
+  const $$ = (selector, root = dialog) => root.all().filter((node) => selectorMatches(node, selector));
+  const $ = (selector, root) => root ? $$(selector, root)[0] || null : nodes.get(selector) || make(selector.slice(1));
+  for (const id of ['line-platform-title', 'line-platform-summary', 'line-platform-error', 'line-pending-list', 'line-account-list', 'line-binding-history', 'line-recipient-code', 'line-oa-diagnostics', 'line-webhook-detail', 'line-binding-detail', 'line-oa-token-hint', 'line-oa-secret-hint', 'line-binding-policy', 'line-recipient-owner-field', 'line-recipient-enabled-field', 'line-recipient-mutes', 'line-recipient-status']) dialog.append(make(id));
+  for (const id of ['line-binding-block', 'line-binding-unblock', 'line-binding-revoke-all', 'line-recipient-delete', 'line-binding-refresh', 'line-recipient-refresh']) dialog.append(make(id, 'button'));
+  dialog.append(make('line-block-reason', 'textarea'));
+  for (const id of ['line-oa-create', 'line-recipient-create']) make(id, 'button');
+  make('line-binding-search', 'input'); make('line-binding-filter', 'select');
+  const formSpec = {
+    'line-oa-form': ['name', 'slug', 'basic_id', 'channel_id', 'description', 'add_friend_url', 'channel_access_token', 'channel_secret', 'channel_access_token_clear', 'channel_secret_clear', 'enabled'],
+    'line-binding-code-form': ['oa_id', 'ttl_days', 'replace_pending'],
+    'line-recipient-form': ['oa_id', 'label', 'is_owner', 'enabled'],
+  };
+  for (const [id, names] of Object.entries(formSpec)) {
+    const form = make(id, 'form'), fields = new Map(); form.elements = { namedItem: (key) => fields.get(key) };
+    for (const name of names) { const node = new Node(['oa_id', 'replace_pending'].includes(name) ? 'select' : 'input'); node.name = name; if (name === 'ttl_days') node.defaultValue = node.value = '7'; if (name === 'replace_pending') node.defaultValue = node.value = 'true'; fields.set(name, node); form.append(node); }
+    const submit = new Node('button', 'บันทึก'); submit.type = 'submit'; form.append(submit);
+    if (id === 'line-recipient-form') for (const category of ['booking', 'payment', 'billing']) { const node = new Node('input'); node.name = 'muted_categories'; node.value = node.defaultValue = category; form.append(node); }
+    dialog.append(form);
+  }
+  const close = new Node('button'); close.setAttribute('data-close-dialog', ''); dialog.append(close);
+  const document = { visibilityState: 'visible', execCommand: () => true, addEventListener: (name, fn) => events.set('document:' + name, fn) };
+  const window = { isSecureContext: true, setInterval: (fn, ms) => { const id = nextTimer++; timers.set(id, { fn, ms }); return id; }, clearInterval: (id) => timers.delete(id), addEventListener: (name, fn) => events.set('window:' + name, fn) };
+  const context = { window, document, Date: class extends Date { static now() { return now; } }, navigator: { clipboard: { writeText: async (value) => effects.copied.push(value) } }, $, $$ };
+  vm.createContext(context); vm.runInContext(source, context);
+  const extract = (a, b) => appSource.slice(appSource.indexOf(a), appSource.indexOf(b, appSource.indexOf(a)));
+  vm.runInContext(extract('function setBusy(', 'function showFormError(') + extract('function openDialog(', 'async function confirmAction('), context);
+  const helpers = {
+    $, $$, create: (tag, className = '', text = '') => { const node = new Node(tag, text); node.className = className; return node; },
+    api: (url, options = {}) => { const item = { ...deferred(), url, options }; requests.push(item); return item.promise; },
+    toast: (value) => effects.toasts.push(value), errorMessage: (cause) => cause.message,
+    showFormError: (node, message = '') => { node.textContent = message; node.hidden = !message; }, formatDateTime: (value) => String(value || '—'),
+    openDialog: context.openDialog, closeDialog: context.closeDialog, setDialogBusy: context.setDialogBusy, setFormFieldsBusy: context.setFormFieldsBusy,
+    confirmAction: async (...args) => { effects.confirmations.push(args); return allowConfirm; },
+    getQrLibrary: async () => ({}), renderQrCanvas: async (_library, _canvas, value) => effects.qr.push(value),
+  };
+  const controller = window.DormLinePlatform.init(helpers);
+  const form = (id) => $('#' + id);
+  const field = (id, name) => form(id).elements.namedItem(name);
+  const button = (label, root = dialog) => root.all().find((node) => node.tagName === 'BUTTON' && node.textContent === label);
+  const openBinding = async (row = detail()) => { const work = controller.openBinding(row.resident_id); requests.at(-2).resolve(row); requests.at(-1).resolve(readyOas); await work; await settle(); };
+  return { $, $$, window, document, controller, requests, effects, timers, helpers, dialog, form, field, button, openBinding, context, setConfirm: (value) => { allowConfirm = value; }, advance: (ms) => { now += ms; }, tick: (ms) => { for (const timer of [...timers.values()]) if (timer.ms === ms) timer.fn(); } };
+}
+
+test('platform chat URL accepts exact BIND/OWNER/ADMIN codes only on official OA message URLs', () => {
+  const ui = harness(), validate = ui.window.DormLinePlatform.messageUrl;
+  for (const prefix of ['BIND', 'OWNER', 'ADMIN']) { const code = prefix + '-' + 'F'.repeat(32); assert.equal(validate(message(code), code), message(code)); }
+  for (const url of ['javascript:alert(1)', message(codeA) + '#fragment', message(codeB), message(codeA).replace('line.me', 'line.me.evil.test'), message(codeA).replace('%40', '@')]) assert.equal(validate(url, codeA), '');
+});
+
+test('binding filters combine trimmed search with an exact status', () => {
+  const matches = harness().window.DormLinePlatform.matchesBinding;
+  const row = { full_name: 'สมชาย Example', room_code: 'B-12', phone: '0812345678', line_binding_status: 'pending' };
+  assert.equal(matches(row, ' example ', 'pending'), true); assert.equal(matches(row, 'B-12', ''), true); assert.equal(matches(row, '08123', 'bound'), false);
+});
+
+test('late detail from a previous resident cannot replace a newly selected resident', async () => {
+  const ui = harness(); const first = ui.controller.openBinding(1), second = ui.controller.openBinding(2);
+  ui.requests[2].resolve(detail(2)); ui.requests[3].resolve(readyOas); await second;
+  ui.requests[0].resolve(detail(1)); ui.requests[1].resolve(readyOas); await first;
+  assert.match(ui.$('#line-platform-summary').textContent, /ผู้พัก 2/);
+});
+
+test('cancel replacement preserves the existing usable code and sends no mutation', async () => {
+  const ui = harness(); await ui.openBinding(detail(1, { pending_codes: [pending()] }));
+  ui.setConfirm(false); await ui.form('line-binding-code-form').dispatch('submit');
+  assert.equal(ui.requests.length, 2); assert.equal(ui.effects.confirmations.length, 1);
+  await ui.button('คัดลอกรหัส').dispatch('click'); assert.deepEqual(ui.effects.copied, [codeA]);
+  assert.equal(ui.dialog.dataset.dialogBusy, undefined);
+});
+
+test('adding a code sends chosen OA including legacy zero, bounded TTL, and replace=false', async () => {
+  const ui = harness(); await ui.openBinding(detail(1, { pending_codes: [pending()] }));
+  ui.field('line-binding-code-form', 'replace_pending').value = 'false'; ui.field('line-binding-code-form', 'ttl_days').value = '30';
+  const work = ui.form('line-binding-code-form').dispatch('submit');
+  assert.equal(ui.requests.at(-1).url, '/api/admin/line/residents/1/codes');
+  assert.deepEqual(JSON.parse(JSON.stringify(ui.requests.at(-1).options.body)), { oa_id: 0, ttl_days: 30, replace_pending: false });
+  assert.equal(ui.dialog.dataset.dialogBusy, 'true');
+  ui.requests.at(-1).resolve({ detail: detail(1, { pending_codes: [pending(), pending(codeB)] }) }); await work;
+  assert.equal(ui.$('#line-pending-list').children.length, 2); assert.equal(ui.effects.confirmations.length, 0);
+  assert.equal(ui.dialog.dataset.dialogBusy, undefined);
+});
+
+test('invalid TTL does not create a code even if form validation is bypassed', async () => {
+  const ui = harness(); await ui.openBinding();
+  for (const value of ['0', '31', '1.5', 'NaN']) { ui.field('line-binding-code-form', 'ttl_days').value = value; await ui.form('line-binding-code-form').dispatch('submit'); }
+  assert.equal(ui.requests.length, 2); assert.match(ui.$('#line-platform-error').textContent, /1–30/);
+});
+
+test('confirmed replacement clears old code before the POST and fences an earlier status read', async () => {
+  const ui = harness(); await ui.openBinding(detail(1, { pending_codes: [pending()] }));
+  const refresh = ui.controller.refreshDialog(true), oldRead = ui.requests.at(-1);
+  const work = ui.form('line-binding-code-form').dispatch('submit'); await settle();
+  const issue = ui.requests.at(-1); assert.equal(issue.options.body.replace_pending, true);
+  assert.ok(!ui.$('#line-pending-list').textContent.includes(codeA)); assert.equal(ui.button('คัดลอกรหัส'), undefined);
+  issue.resolve({ detail: detail(1, { pending_codes: [pending(codeB)] }) }); await work;
+  oldRead.resolve(detail(1, { pending_codes: [pending()] })); await refresh;
+  await ui.button('คัดลอกรหัส').dispatch('click'); assert.deepEqual(ui.effects.copied, [codeB]);
+});
+
+test('individual revoke targets only its binding and keeps the other account', async () => {
+  const ui = harness(); await ui.openBinding(detail(1, { bound_count: 2, bound_accounts: [{ id: 0, oa_name: 'เดิม', line_user_id_hint: 'U***1111' }, { id: 24, oa_name: 'ใหม่', line_user_id_hint: 'U***2222' }] }));
+  const work = ui.button('ยกเลิกบัญชีนี้').dispatch('click'); await settle();
+  assert.equal(ui.requests.at(-1).url, '/api/admin/line/residents/1/accounts/0'); assert.equal(ui.requests.at(-1).options.method, 'DELETE');
+  ui.requests.at(-1).resolve(detail(1, { bound_count: 1, bound_accounts: [{ id: 24, oa_name: 'ใหม่', line_user_id_hint: 'U***2222' }] })); await work;
+  assert.equal(ui.$('#line-account-list').children.length, 1); assert.match(ui.$('#line-account-list').textContent, /2222/);
+});
+
+test('blocking requires a reason and confirmation; cancellation leaves all bindings intact', async () => {
+  const ui = harness(); await ui.openBinding();
+  await ui.$('#line-binding-block').dispatch('click'); assert.equal(ui.requests.length, 2); assert.match(ui.$('#line-platform-error').textContent, /เหตุผล/);
+  ui.$('#line-block-reason').value = 'ผู้พักแจ้งอุปกรณ์หาย'; ui.setConfirm(false); await ui.$('#line-binding-block').dispatch('click'); assert.equal(ui.requests.length, 2);
+  ui.setConfirm(true); const work = ui.$('#line-binding-block').dispatch('click'); await settle();
+  assert.equal(ui.requests.at(-1).url, '/api/admin/line/residents/1/block'); assert.equal(ui.requests.at(-1).options.body.reason, 'ผู้พักแจ้งอุปกรณ์หาย');
+  ui.requests.at(-1).resolve(detail(1, { blocked: true, reason: 'ผู้พักแจ้งอุปกรณ์หาย' })); await work;
+  assert.equal(ui.form('line-binding-code-form').hidden, true); assert.equal(ui.$('#line-binding-unblock').hidden, false);
+});
+
+test('expired codes clear QR, input and links without waiting for another server response', async () => {
+  const ui = harness(); const code = pending(); code.expires_at = new Date(Date.now() + 1000).toISOString();
+  await ui.openBinding(detail(1, { pending_codes: [code] }));
+  const input = ui.$('#line-pending-list').all().find((node) => node.tagName === 'INPUT'), link = ui.$('#line-pending-list').all().find((node) => node.tagName === 'A');
+  assert.equal(input.value, codeA); ui.advance(2000); ui.tick(1000);
+  assert.equal(input.value, ''); assert.equal(link.href, undefined); assert.match(ui.$('#line-pending-list').textContent, /หมดอายุ/);
+});
+
+test('late QR success after dialog close cannot reveal the code again', async () => {
+  const ui = harness(), draw = deferred(); ui.helpers.renderQrCanvas = () => draw.promise;
+  // A second independent controller uses the deferred QR implementation.
+  const fresh = ui.window.DormLinePlatform.init(ui.helpers);
+  const work = fresh.openBinding(1); ui.requests[0].resolve(detail(1, { pending_codes: [pending()] })); ui.requests[1].resolve(readyOas); await work; await settle();
+  const canvas = ui.$('#line-pending-list').all().find((node) => node.tagName === 'CANVAS');
+  ui.dialog.close(); draw.resolve(); await settle();
+  assert.equal(canvas.hidden, true); assert.equal(ui.$('#line-pending-list').children.length, 0);
+});
+
+test('recipient status refresh preserves draft label and category mutes while recognizing a claim', async () => {
+  const ui = harness(), row = { id: 9, oa_id: 0, oa_name: 'เดิม', label: 'ผู้ดูแล', enabled: true, is_owner: false, status: 'pending', muted_categories: [], code: 'ADMIN-' + 'A'.repeat(32), expires_at: new Date(Date.now() + 60000).toISOString() }; row.line_message_url = message(row.code);
+  const work = ui.controller.openRecipient(9); ui.requests[0].resolve(row); ui.requests[1].resolve(readyOas); await work;
+  ui.field('line-recipient-form', 'label').value = 'ชื่อร่าง'; ui.$$('[name="muted_categories"]', ui.form('line-recipient-form'))[0].checked = true;
+  const refresh = ui.controller.refreshDialog(true); ui.requests.at(-1).resolve({ ...row, status: 'claimed', code: undefined, line_user_id_hint: 'U***1234' }); await refresh;
+  assert.equal(ui.field('line-recipient-form', 'label').value, 'ชื่อร่าง'); assert.equal(ui.$$('[name="muted_categories"]', ui.form('line-recipient-form'))[0].checked, true);
+  assert.equal(ui.$('#line-recipient-code').children.length, 0); assert.ok(ui.effects.toasts.includes('ยืนยันบัญชีผู้รับแจ้งเตือนแล้ว'));
+});
+
+test('OA save blocks switching modal and clears secret fields before a post-save list read', async () => {
+  const ui = harness(); await ui.controller.openOa(); ui.field('line-oa-form', 'name').value = 'ใหม่'; ui.field('line-oa-form', 'slug').value = 'new'; ui.field('line-oa-form', 'channel_access_token').value = 'fake-test-token';
+  const work = ui.form('line-oa-form').dispatch('submit'); assert.equal(ui.dialog.dataset.dialogBusy, 'true');
+  await ui.controller.openBinding(2); assert.equal(ui.requests.length, 1);
+  ui.requests[0].resolve({ id: 2 }); await work;
+  assert.equal(ui.dialog.open, false); assert.equal(ui.field('line-oa-form', 'channel_access_token').value, ''); assert.equal(ui.dialog.dataset.dialogBusy, undefined);
+  assert.equal(ui.requests.filter((item) => item.url === '/api/admin/line/oas').length, 2);
+});
+
+test('polling reads only visible open detail dialogs and close clears timers', async () => {
+  const ui = harness(); await ui.openBinding(); ui.document.visibilityState = 'hidden'; ui.tick(5000); assert.equal(ui.requests.length, 2);
+  ui.document.visibilityState = 'visible'; ui.tick(5000); assert.equal(ui.requests.length, 3); ui.requests[2].resolve(detail()); await settle();
+  ui.dialog.close(); ui.tick(5000); assert.equal(ui.requests.length, 3); assert.equal(ui.timers.size, 0);
+});

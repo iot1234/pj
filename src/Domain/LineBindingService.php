@@ -19,7 +19,7 @@ final class LineBindingService
 
     public function __construct(private readonly Application $app) {}
 
-    /** @return array{code:string,expires_at:string,expires_in:int,single_use:bool} */
+    /** @return array<string,mixed> */
     public function issue(int $residentId, int $expectedAuthVersion): array
     {
         if ($residentId < 1 || $expectedAuthVersion < 1) {
@@ -30,6 +30,8 @@ final class LineBindingService
             || trim((string) $this->app->settings()->value('LINE_BASIC_ID', '')) === '') {
             throw new HttpException(503, 'ยังไม่ได้ตั้งค่า LINE Messaging, Webhook และ Basic ID ให้ครบ', 'LINE_NOT_CONFIGURED');
         }
+        if($this->app->lineRoomBindings()->isBlocked($residentId))throw new HttpException(409,'ผู้ดูแลปิดการผูก LINE ของห้องนี้ไว้','LINE_BINDING_BLOCKED');
+        $this->app->lineOfficialAccounts()->credentials(0);
 
         return $this->app->database()->transaction(function (PDO $pdo) use ($residentId, $expectedAuthVersion): array {
             $resident = $pdo->prepare(
@@ -83,7 +85,8 @@ final class LineBindingService
                         'expires_at' => (string) $expiry->fetchColumn(),
                         'expires_in' => self::TTL_SECONDS,
                         'single_use' => true,
-                    ];
+                        'line_binding_ready' => true,
+                    ] + self::officialAccountLinks($this->app->settings()->value('LINE_BASIC_ID'), $code);
                 } catch (PDOException $error) {
                     $codeCollision = MySqlError::isDuplicateKey($error, 'uq_line_link_codes_code_hash');
                     if (!$codeCollision || $attempt === 3) {
@@ -95,6 +98,44 @@ final class LineBindingService
         });
     }
 
+    /** Issue on behalf of an active resident using the current credential version. */
+    public function issueForAdmin(int $residentId): array
+    {
+        return $this->app->database()->transaction(function (PDO $pdo) use ($residentId): array {
+            $statement = $pdo->prepare("SELECT r.auth_version
+                FROM residents r
+                JOIN occupancies o ON o.resident_id=r.id AND o.status='active'
+                JOIN rooms rm ON rm.id=o.room_id AND rm.deleted_at IS NULL
+                WHERE r.id=? AND r.active=1
+                ORDER BY o.id DESC LIMIT 2 FOR UPDATE");
+            $statement->execute([$residentId]);
+            $rows = $statement->fetchAll();
+            if (count($rows) !== 1) {
+                throw new HttpException(404, 'ไม่พบผู้พักที่กำลังเข้าพัก', 'RESIDENT_NOT_FOUND');
+            }
+            return $this->issue($residentId, (int) $rows[0]['auth_version']);
+        });
+    }
+
+    /**
+     * LINE opens the OA chat with a draft; the resident must still press Send.
+     * Never accept a caller-supplied host or include the one-time URL in audit.
+     * @return array{line_add_friend_url:?string,line_message_url:?string}
+     */
+    public static function officialAccountLinks(mixed $basicId, ?string $code = null): array
+    {
+        $links = ['line_add_friend_url' => null, 'line_message_url' => null];
+        if (!is_string($basicId) || preg_match('/^@[A-Za-z0-9._-]{1,32}$/D', $basicId) !== 1) {
+            return $links;
+        }
+        $encodedId = rawurlencode($basicId);
+        $links['line_add_friend_url'] = 'https://line.me/R/ti/p/' . $encodedId;
+        if ($code !== null && preg_match(self::CODE_PATTERN, $code) === 1) {
+            $links['line_message_url'] = 'https://line.me/R/oaMessage/' . $encodedId . '/?' . rawurlencode($code);
+        }
+        return $links;
+    }
+
     /**
      * Serialize the binding mutation and its required proof callback against
      * unlink, profile identity changes, and move-out for the same resident.
@@ -102,7 +143,7 @@ final class LineBindingService
      * @param callable(array{resident_id:int,line_user_id:string,newly_bound:bool}):void $afterConsume
      * @return array{resident_id:int,line_user_id:string,newly_bound:bool}
      */
-    public function consumeSerialized(string $rawCode, string $lineUserId, callable $afterConsume): array
+    public function consumeSerialized(string $rawCode, string $lineUserId, callable $afterConsume, int $lockWaitSeconds = 12): array
     {
         $code = trim($rawCode);
         $lineUserId = trim($lineUserId);
@@ -124,10 +165,22 @@ final class LineBindingService
         return $this->app->notifications()->withLineBindingLock(
             (int) $residentId,
             function () use ($code, $lineUserId, $afterConsume): array {
-                $binding = $this->consume($code, $lineUserId);
-                $afterConsume($binding);
-                return $binding;
+                $outcome = $this->app->database()->transaction(function () use ($code, $lineUserId, $afterConsume): array {
+                    try {
+                        $binding = $this->consume($code, $lineUserId);
+                    } catch (HttpException $error) {
+                        // Expiry/revocation updates must commit before returning
+                        // their safe error. Proof failures below must roll back
+                        // the actual binding and leave the code usable.
+                        return ['error' => $error];
+                    }
+                    $afterConsume($binding);
+                    return ['binding' => $binding];
+                });
+                if (isset($outcome['error'])) throw $outcome['error'];
+                return $outcome['binding'];
             },
+            $lockWaitSeconds,
         );
     }
 
@@ -154,6 +207,7 @@ final class LineBindingService
                 return ['error' => 'invalid'];
             }
             $residentId = (int) $residentId;
+            if($this->app->lineRoomBindings()->isBlocked($residentId))return ['error'=>'invalid'];
 
             // Lock order is resident -> challenge in both issue() and consume().
             // The first non-locking lookup only discovers an immutable FK.
@@ -216,6 +270,8 @@ final class LineBindingService
             if ($owner->fetchColumn() !== false) {
                 return ['error' => 'line_in_use'];
             }
+            $newOwner=$pdo->prepare("SELECT id FROM line_room_bindings WHERE oa_id=0 AND line_user_id=? AND status='bound' LIMIT 1 FOR UPDATE");$newOwner->execute([$lineUserId]);
+            if($newOwner->fetchColumn()!==false)return ['error'=>'line_in_use'];
 
             try {
                 $bindResident = $pdo->prepare(

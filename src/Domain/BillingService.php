@@ -256,6 +256,10 @@ final class BillingService
                 }
                 $created[] = ['id' => $billId, 'bill_no' => $billNo, 'room_id' => $bill['room_id'], 'total_amount' => $bill['total_amount']];
             }
+            if ($created !== []) {
+                $ids = array_column($created,'id'); sort($ids,SORT_NUMERIC);
+                LineAdminEvents::enqueue($this->app,'billing.created',hash('sha256',implode(',',$ids)));
+            }
             return ['period' => $preview['period'], 'created' => $created, 'skipped' => $skipped];
         });
     }
@@ -276,25 +280,68 @@ final class BillingService
                       WHERE p.bill_id=b.id
                       ORDER BY p.id DESC
                       LIMIT 1) AS payment_status,
-                    res.id AS line_resident_id,res.line_user_id AS line_recipient,
-                    n.status AS line_status,n.attempts AS line_attempts,n.last_error AS line_last_error,n.sent_at AS line_sent_at,
-                    n.line_request_id,n.line_accepted_request_id
+                    res.id AS line_resident_id
                FROM bills b
                JOIN rooms r ON r.id=b.room_id
-               JOIN residents res ON res.id=b.resident_id
-               LEFT JOIN notification_outbox n ON n.bill_id=b.id AND n.purpose=\'bill_delivery\'' . $where .
+               JOIN residents res ON res.id=b.resident_id' . $where .
             ' ORDER BY b.period DESC,r.floor,r.room_code'
         );
         $statement->execute($parameters);
-        $rows=$statement->fetchAll();$bindings=[];
-        foreach($rows as $row)$bindings[]=['resident_id'=>(int)$row['line_resident_id'],'line_user_id'=>$row['line_recipient']??null];
-        $verified=$this->app->notifications()->verifiedLineBindings($bindings);
+        $rows=$statement->fetchAll();
+        if($rows===[])return [];
+        // Fetch deliveries separately: a direct one-to-many join repeats the
+        // bill and inflates both the amount due and the billing summary.
+        $deliveries=[];
+        foreach(array_chunk(array_column($rows,'id'),200) as $billIds){
+            $deliveryQuery=$this->app->database()->pdo()->prepare(
+                "SELECT bill_id,line_binding_id,line_oa_id,status,attempts,last_error,sent_at,line_request_id,line_accepted_request_id
+                 FROM notification_outbox WHERE purpose='bill_delivery' AND bill_id IN (".implode(',',array_fill(0,count($billIds),'?')).") ORDER BY id DESC");
+            $deliveryQuery->execute($billIds);
+            foreach($deliveryQuery->fetchAll() as $delivery)$deliveries[(int)$delivery['bill_id']][]=$delivery;
+        }
+        $oaReady=[];
+        foreach($this->app->lineOfficialAccounts()->all() as $oa)$oaReady[(int)$oa['id']]=($oa['line_binding_ready']??false)===true;
+        $recipients=[];
         foreach($rows as &$row){
-            $row['line_linked']=$verified[(int)$row['line_resident_id']]??false;
-            unset($row['line_resident_id'],$row['line_recipient']);
+            $residentId=(int)$row['line_resident_id'];
+            $recipients[$residentId]??=$this->app->notifications()->recipients($residentId);
+            $targets=$recipients[$residentId];
+            $readyTargets=array_values(array_filter($targets,static fn(array $target):bool=>$oaReady[(int)$target['oa_id']]??false));
+            $billDeliveries=$deliveries[(int)$row['id']]??[];
+            $row+=self::summarizeLineDeliveries($billDeliveries);
+            $row['line_linked']=$targets!==[];
+            $row['line_ready']=$readyTargets!==[];
+            $row['line_recipient_count']=count($readyTargets);
+            $deliveryStates=[];
+            foreach($billDeliveries as $delivery)$deliveryStates[(int)($delivery['line_binding_id']??0)]=$delivery['status'];
+            $needsDelivery=false;
+            foreach($readyTargets as $target){
+                $deliveryState=$deliveryStates[(int)$target['id']]??null;
+                if($deliveryState===null||$deliveryState==='failed'){$needsDelivery=true;break;}
+            }
+            $row['line_can_queue']=$row['status']==='pending'
+                && !in_array($row['payment_status'],['pending','verified'],true) && $needsDelivery;
+            unset($row['line_resident_id']);
         }
         unset($row);
         return array_map($this->mapBill(...), $rows);
+    }
+
+    /** A sent recipient must never hide another recipient's failure or pending work. */
+    private static function summarizeLineDeliveries(array $deliveries): array
+    {
+        $counts=['total'=>count($deliveries),'pending'=>0,'processing'=>0,'sent'=>0,'failed'=>0];
+        foreach($deliveries as $delivery){$status=(string)($delivery['status']??'');if(array_key_exists($status,$counts)&&$status!=='total')$counts[$status]++;}
+        $status=null;
+        foreach(['failed','processing','pending','sent'] as $candidate){if($counts[$candidate]>0){$status=$candidate;break;}}
+        $representative=null;
+        foreach($deliveries as $delivery){if(($delivery['status']??null)===$status){$representative=$delivery;break;}}
+        $single=count($deliveries)===1?$deliveries[0]:null;
+        return ['line_status'=>$status,'line_delivery_counts'=>$counts,
+            'line_attempts'=>$deliveries===[]?null:max(array_map(static fn(array $row):int=>(int)($row['attempts']??0),$deliveries)),
+            'line_last_error'=>$status==='failed'?($representative['last_error']??null):null,
+            'line_sent_at'=>$status==='sent'?max(array_map(static fn(array $row):string=>(string)($row['sent_at']??''),$deliveries)):null,
+            'line_request_id'=>$single['line_request_id']??null,'line_accepted_request_id'=>$single['line_accepted_request_id']??null];
     }
 
     /** @return list<array<string,mixed>> */

@@ -12,6 +12,7 @@ final class Routes
     public static function build(Application $app): Router
     {
         $router=new Router($app);
+        LineAdminRoutes::register($router,$app);
         $page=static function(string $template,string $title,string $pageId,?array $user=null) use($app): Response {
             return Response::html($app->view()->render($template,['title'=>$title,'page'=>$pageId,'csrfToken'=>$app->security()->csrfToken(),'user'=>$user??[],'appTimezone'=>(string)$app->config->get('APP_TIMEZONE','Asia/Bangkok')]));
         };
@@ -30,6 +31,10 @@ final class Routes
         $router->get('/api/public/contact',fn(Request $r)=>Response::json($app->settings()->publicContact()));
         $router->post('/api/public/bookings',function(Request $r)use($app):Response{$clientIp=$app->security()->clientIp($r);$app->limiter()->hit('public-booking-attempt-ip',$clientIp,60,3600,3600);$app->bookings()->expirePublicPhoneHolds($r->body['phone']??null);$outcome=$app->database()->transaction(function()use($app,$r,$clientIp):array{$outcome=$app->bookings()->createPublicOutcome($r->body,$clientIp);$replay=($outcome['idempotent_replay']??false)===true;if(!$app->bookings()->isErrorOutcome($outcome)&&!$replay)$app->audit()->writeStrict($r,$app->actor(),'booking.create','booking',$outcome['id'],['room_id'=>$outcome['room_id']]);return $outcome;});$data=$app->bookings()->resolveOutcome($outcome);$replay=($data['idempotent_replay']??false)===true;return Response::json($data,$replay?200:201,$replay?'Existing booking returned':'Booking request received');});
         $router->post('/api/webhooks/line',fn(Request $r)=>Response::json($app->lineWebhook()->handle($r),200,'LINE webhook accepted'));
+        $router->post('/api/webhooks/line/oa/{routeToken}',function(Request $r)use($app):Response{
+            $oa=$app->lineOfficialAccounts()->byRouteToken((string)$r->param('routeToken'));
+            return Response::json((new \Dormitory\Domain\LineWebhookService($app,null,(int)$oa['id']))->handle($r),200,'LINE webhook accepted');
+        });
 
         $router->post('/api/auth/admin/login',fn(Request $r)=>Response::json(['user'=>$app->auth()->adminLogin($r,$r->body),'csrf_token'=>$app->session()->csrfToken()]));
         $router->post('/api/auth/admin/logout',function(Request $r)use($app):Response{Validator::only($r->body,[]);$app->auth()->logout($r);return Response::json(null,200,'Logged out');},['auth'=>'admin']);
@@ -39,7 +44,19 @@ final class Routes
 
         $router->get('/api/resident/profile',fn(Request $r)=>Response::json($app->residents()->profile((int)$app->actor()['id'])),['auth'=>'resident']);
         $router->put('/api/resident/profile',function(Request $r)use($app):Response{$residentId=(int)$app->actor()['id'];$data=$app->database()->transaction(function()use($app,$r,$residentId):array{$data=$app->residents()->updateProfile($residentId,$r->body);$app->audit()->writeStrict($r,$app->actor(),'resident.profile_update','resident',$data['id']);return $data;});return Response::json($data);},['auth'=>'resident']);
-        $router->post('/api/resident/profile/line/code',function(Request $r)use($app):Response{Validator::only($r->body,[]);$actor=$app->actor();$residentId=(int)$actor['id'];$app->limiter()->hit('resident-line-code-issue',(string)$residentId,5,3600,600);$app->session()->clearLineLinkChallenge();$data=$app->notifications()->withLineBindingLock($residentId,fn():array=>$app->lineBindings()->issue($residentId,(int)$actor['auth_version']));$app->audit()->write($r,$actor,'resident.line_link_code_issued','resident',$residentId,['expires_at'=>$data['expires_at'],'single_use'=>true]);return Response::json($data,201,'LINE link code created');},['auth'=>'resident']);
+        $router->post('/api/resident/profile/line/code',function(Request $r)use($app):Response{
+            Validator::only($r->body,[]);$actor=$app->actor();$residentId=(int)$actor['id'];
+            $app->limiter()->hit('resident-line-code-issue',(string)$residentId,5,3600,600);
+            $app->session()->clearLineLinkChallenge();
+            $data=$app->notifications()->withLineBindingLock($residentId,function()use($app,$r,$actor,$residentId):array{
+                return $app->database()->transaction(function()use($app,$r,$actor,$residentId):array{
+                    $data=$app->lineBindings()->issue($residentId,(int)$actor['auth_version']);
+                    $app->audit()->writeStrict($r,$actor,'resident.line_link_code_issued','resident',$residentId,['expires_at'=>$data['expires_at'],'single_use'=>true]);
+                    return $data;
+                });
+            });
+            return Response::json($data,201,'LINE link code created');
+        },['auth'=>'resident']);
         $router->post('/api/resident/profile/line/unlink',function(Request $r)use($app):Response{Validator::only($r->body,[]);$actor=$app->actor();$residentId=(int)$actor['id'];$app->limiter()->hit('resident-line-unlink',(string)$residentId,5,3600,3600);$data=$app->notifications()->withLineBindingLock($residentId,function()use($app,$r,$actor,$residentId):array{return $app->database()->transaction(function()use($app,$r,$actor,$residentId):array{$data=$app->residents()->unlinkLine($residentId,$r->body);$app->lineBindings()->revokePending($residentId);$app->audit()->writeStrict($r,$actor,'resident.line_unlinked','resident',$residentId);return $data;});});$app->session()->clearLineLinkChallenge();return Response::json($data,200,'LINE account unlinked');},['auth'=>'resident']);
         $router->get('/api/resident/bills',fn(Request $r)=>Response::json($app->billing()->residentList((int)$app->actor()['id'])),['auth'=>'resident']);
         $router->get('/api/resident/bills/{id}',fn(Request $r)=>Response::json($app->billing()->residentDetail((int)$app->actor()['id'],$id($r))),['auth'=>'resident']);
@@ -75,6 +92,34 @@ final class Routes
         $router->put('/api/admin/rooms/{id}',function(Request $r)use($app,$id):Response{$target=$id($r);$data=$app->database()->transaction(function()use($app,$r,$target):array{$data=$app->rooms()->update($target,$r->body);$app->audit()->writeStrict($r,$app->actor(),'room.update','room',$data['id']);return $data;});return Response::json($data);},$admin);
         $router->delete('/api/admin/rooms/{id}',function(Request $r)use($app,$id):Response{Validator::only($r->body,[]);$target=$id($r);$app->database()->transaction(function()use($app,$r,$target):void{$app->rooms()->delete($target);$app->audit()->writeStrict($r,$app->actor(),'room.delete','room',$target);});return Response::json(null,200,'Room deleted');},$admin);
         $router->get('/api/admin/residents',fn(Request $r)=>Response::json($app->residents()->list()),$admin);
+        $router->get('/api/admin/residents/{id}/line',fn(Request $r)=>Response::json($app->residents()->lineStatus($id($r))),$admin);
+        $router->post('/api/admin/residents/{id}/line/code',function(Request $r)use($app,$id):Response{
+            Validator::only($r->body,[]);$actor=$app->actor();$target=$id($r);
+            $app->limiter()->hit('admin-line-code-issue',(string)$actor['id'],30,3600,600);
+            $app->limiter()->hit('resident-line-code-issue',(string)$target,5,3600,600);
+            $data=$app->notifications()->withLineBindingLock($target,function()use($app,$r,$actor,$target):array{
+                return $app->database()->transaction(function()use($app,$r,$actor,$target):array{
+                    $data=$app->lineBindings()->issueForAdmin($target);
+                    $app->audit()->writeStrict($r,$actor,'resident.line_link_code_issued','resident',$target,['expires_at'=>$data['expires_at'],'single_use'=>true,'issued_by_admin'=>true]);
+                    return ['resident_id'=>$target]+$data;
+                });
+            });
+            return Response::json($data,201,'Resident LINE link code created');
+        },$admin);
+        $router->post('/api/admin/residents/{id}/line/unlink',function(Request $r)use($app,$id):Response{
+            Validator::only($r->body,[]);$actor=$app->actor();$target=$id($r);
+            $app->limiter()->hit('admin-line-unlink',(string)$actor['id'],30,3600,600);
+            $app->limiter()->hit('resident-line-unlink',(string)$target,5,3600,600);
+            $data=$app->notifications()->withLineBindingLock($target,function()use($app,$r,$actor,$target):array{
+                return $app->database()->transaction(function()use($app,$r,$actor,$target):array{
+                    $app->residents()->unlinkLine($target,[]);
+                    $app->lineBindings()->revokePending($target);
+                    $app->audit()->writeStrict($r,$actor,'resident.line_unlinked','resident',$target,['reason'=>'admin_unlink']);
+                    return $app->residents()->lineStatus($target);
+                });
+            });
+            return Response::json($data,200,'Resident LINE account unlinked');
+        },$admin);
         $router->post('/api/admin/residents',function(Request $r)use($app):Response{$adminId=(int)$app->actor()['id'];$app->limiter()->hit('resident-admin-create',(string)$adminId,60,3600,300);$app->bookings()->expirePublicPhoneHolds($r->body['phone']??null);$data=$app->database()->transaction(function()use($app,$r,$adminId):array{$data=$app->bookings()->createAdminResident($adminId,$r->body);$replay=($data['idempotent_replay']??false)===true;if(!$replay)$app->audit()->writeStrict($r,$app->actor(),'resident.admin_create','resident',$data['resident_id'],['booking_id'=>$data['booking_id'],'occupancy_id'=>$data['occupancy_id'],'room_id'=>$data['room_id'],'move_in_date'=>$data['move_in_date'],'opening_water_reading'=>$r->body['opening_water_reading']??null,'opening_electric_reading'=>$r->body['opening_electric_reading']??null]);return $data;});$replay=($data['idempotent_replay']??false)===true;return Response::json($data,$replay?200:201,$replay?'Existing resident check-in returned':'Resident checked in');},$admin);
         $router->put('/api/admin/residents/{id}',function(Request $r)use($app,$id):Response{$target=$id($r);$data=$app->notifications()->withLineBindingLock($target,function()use($app,$r,$target):array{return $app->database()->transaction(function()use($app,$r,$target):array{$data=$app->residents()->updateByAdmin($target,$r->body);$lineAudit=is_array($data['_line_unlinked_audit']??null)?$data['_line_unlinked_audit']:null;unset($data['_line_unlinked_audit']);if(($data['sessions_revoked']??false)===true)$app->lineBindings()->revokePending($target);if($lineAudit!==null)$app->audit()->writeStrict($r,$app->actor(),'resident.line_unlinked','resident',$target,$lineAudit);$app->audit()->writeStrict($r,$app->actor(),'resident.admin_update','resident',$target,['changed_fields'=>$data['changed_fields'],'sessions_revoked'=>$data['sessions_revoked']]);return $data;});});return Response::json($data);},$admin);
         $router->post('/api/admin/residents/{id}/access/reissue',function(Request $r)use($app,$id):Response{Validator::only($r->body,[]);$target=$id($r);$adminId=(int)$app->actor()['id'];$app->limiter()->hit('resident-access-reissue',(string)$adminId,30,3600,600);$data=$app->notifications()->withLineBindingLock($target,function()use($app,$r,$target):array{return $app->database()->transaction(function()use($app,$r,$target):array{$data=$app->residents()->reissueAccess($target);$app->audit()->writeStrict($r,$app->actor(),'resident.access_reissued','resident',$target,['sessions_revoked'=>true,'activation_expires_at'=>$data['resident_access']['expires_at']??null]);return $data;});});return Response::json($data,200,'Resident access reissued');},$admin);
@@ -89,8 +134,8 @@ final class Routes
         $router->post('/api/admin/bills/bulk',function(Request $r)use($app):Response{$data=$app->database()->transaction(function()use($app,$r):array{$data=$app->billing()->bulk($r->body,(int)$app->actor()['id']);$app->audit()->writeStrict($r,$app->actor(),'bill.bulk_create','bill',null,['period'=>$data['period'],'created'=>count($data['created'])]);return $data;});return Response::json($data,201);},$admin);
         $router->post('/api/admin/bills/generate-closed',function(Request $r)use($app):Response{Validator::only($r->body,['period','due_date']);$period=Validator::period($r->body['period']??null);$dueDate=array_key_exists('due_date',$r->body)?Validator::date($r->body['due_date'],'due_date'):null;$adminId=(int)$app->actor()['id'];$data=$app->billing()->generateClosedPeriod($period,$adminId,$dueDate,function(array $result)use($app,$r,$period):void{$app->audit()->writeStrict($r,$app->actor(),'bill.monthly_generate','bill',null,['period'=>$period,'created'=>count($result['created']??[]),'skipped'=>count($result['skipped']??[])]);});return Response::json($data,200,'Completed month generated');},$admin);
         $router->get('/api/admin/bills',fn(Request $r)=>Response::json($app->billing()->adminList($queryString($r->query,'period'))),$admin);
-        $router->post('/api/admin/bills/{id}/line',function(Request $r)use($app,$id):Response{Validator::only($r->body,[]);$billId=$id($r);$data=$app->database()->transaction(function()use($app,$r,$billId):array{$data=$app->notifications()->enqueueBill($billId);$app->audit()->writeStrict($r,$app->actor(),'line.enqueue','notification',$data['id'],['bill_id'=>$data['bill_id'],'enqueue_state'=>$data['enqueue_state']??null]);return $data;});return Response::json($data,202);},$admin);
-        $router->post('/api/admin/bills/line-bulk',function(Request $r)use($app):Response{$data=$app->database()->transaction(function()use($app,$r):array{$data=$app->notifications()->enqueuePeriod($r->body);$app->audit()->writeStrict($r,$app->actor(),'line.enqueue_bulk','notification',null,['period'=>$data['period'],'queued'=>count($data['queued']),'already'=>count($data['already']??[])]);return $data;});return Response::json($data,202);},$admin);
+        $router->post('/api/admin/bills/{id}/line',function(Request $r)use($app,$id):Response{Validator::only($r->body,[]);$billId=$id($r);$data=$app->lineOfficialAccounts()->withRegistryLock(fn()=>$app->database()->transaction(function()use($app,$r,$billId):array{$data=$app->notifications()->enqueueBill($billId);$app->audit()->writeStrict($r,$app->actor(),'line.enqueue','notification',$data['id'],['bill_id'=>$data['bill_id'],'enqueue_state'=>$data['enqueue_state']??null]);return $data;}));return Response::json($data,202);},$admin);
+        $router->post('/api/admin/bills/line-bulk',function(Request $r)use($app):Response{$data=$app->lineOfficialAccounts()->withRegistryLock(fn()=>$app->database()->transaction(function()use($app,$r):array{$data=$app->notifications()->enqueuePeriod($r->body);$app->audit()->writeStrict($r,$app->actor(),'line.enqueue_bulk','notification',null,['period'=>$data['period'],'queued'=>count($data['queued']),'already'=>count($data['already']??[])]);return $data;}));return Response::json($data,202);},$admin);
         $router->get('/api/admin/payments',function(Request $r)use($app,$queryString,$queryInteger):Response{
             return Response::json($app->payments()->list($queryString($r->query,'status'),$queryInteger($r->query,'offset',0),$queryInteger($r->query,'limit',100)));
         },$admin);
@@ -99,7 +144,10 @@ final class Routes
         $router->post('/api/admin/payments/{id}/close',function(Request $r)use($app,$id):Response{$target=$id($r);$data=$app->database()->transaction(function()use($app,$r,$target):array{$data=$app->payments()->closePending($target,$r->body);$app->audit()->writeStrict($r,$app->actor(),'payment.close_pending','payment',$target,['bill_id'=>$data['bill_id'],'status'=>$data['status']]);return $data;});return Response::json($data,200,'Pending payment closed');},$admin);
         $router->get('/api/admin/settings',function(Request $r)use($app):Response{$settings=$app->billing()->settings();$settings['integrations']=$app->settings()->publicSettings();return Response::json($settings);},$admin);
         $router->put('/api/admin/settings',function(Request $r)use($app):Response{$data=$app->database()->transaction(function()use($app,$r):array{$data=$app->billing()->updateSettings($r->body,(int)$app->actor()['id']);$app->audit()->writeStrict($r,$app->actor(),'billing_settings.update','billing_settings',1,$data);return $data;});return Response::json($data);},$admin);
-        $router->put('/api/admin/settings/integrations',function(Request $r)use($app):Response{$data=$app->database()->transaction(function()use($app,$r):array{$data=$app->settings()->update($r->body,(int)$app->actor()['id']);$app->audit()->writeStrict($r,$app->actor(),'integration_settings.update','integration_settings',1,['configured_fields'=>$data['configured_fields']??[],'readiness'=>$data['readiness']??[]]);return $data;});return Response::json($data);},$owner);
+        $router->put('/api/admin/settings/integrations',function(Request $r)use($app):Response{
+            if(array_intersect(array_keys($r->body),['line_basic_id','line_channel_access_token','line_channel_access_token_clear','line_channel_secret','line_channel_secret_clear'])!==[])throw new HttpException(422,'กรุณาตั้งค่าคีย์ LINE ในหน้าบัญชี LINE OA','LINE_MANAGED_SEPARATELY');
+            $data=$app->database()->transaction(function()use($app,$r):array{$data=$app->settings()->update($r->body,(int)$app->actor()['id']);$app->audit()->writeStrict($r,$app->actor(),'integration_settings.update','integration_settings',1,['configured_fields'=>$data['configured_fields']??[],'readiness'=>$data['readiness']??[]]);return $data;});return Response::json($data);
+        },$owner);
         $router->post('/api/admin/settings/integrations/test',function(Request $r)use($app,$audit):Response{Validator::only($r->body,['integration']);$app->limiter()->hit('integration-test',(string)$app->actor()['id'],30,3600,300);$integration=Validator::string($r->body['integration']??null,'integration',1,20);$data=$app->settings()->testConnection($integration);$audit($r,'integration_settings.test','integration_settings',1,['integration'=>$integration,'ready'=>$data['ready']??false]);return Response::json($data);},$owner);
         $router->get('/api/admin/operations/health',fn(Request $r)=>Response::json([
             'notifications'=>$app->notifications()->workerHealth(),

@@ -11,6 +11,7 @@ $root = dirname(__DIR__);
 require_once $root . '/src/Config.php';
 require_once $root . '/src/Security/SecretCipher.php';
 require_once $root . '/src/Support/SchemaGuard.php';
+require_once $root . '/src/Support/LinePlatformSchema.php';
 
 $arguments = array_slice($argv, 1);
 $productionMode = in_array('--production', $arguments, true);
@@ -536,6 +537,7 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
             'admin_users', 'residents', 'line_link_codes', 'rooms', 'bookings', 'occupancies',
             'meter_readings', 'billing_settings', 'integration_settings', 'bills', 'bill_items', 'payments',
             'notification_outbox', 'notification_worker_heartbeats', 'audit_logs', 'rate_limits',
+            'line_official_accounts','line_room_bindings','line_room_policies','line_admin_recipients','line_notice_outbox',
         ];
         $statement = $pdo->prepare(
             'SELECT table_name FROM information_schema.tables WHERE table_schema=? AND table_name IN ('
@@ -547,7 +549,10 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
         }, $statement->fetchAll());
         $missing = array_values(array_diff($expectedTables, $found));
         if ($missing === []) {
-            addResult($successes, 'พบตารางระบบครบ 16 ตาราง รวม LINE binding code และ notification worker heartbeat');
+            addResult($successes, 'พบตารางระบบครบ 21 ตาราง รวม LINE OA และผู้รับหลายบัญชี');
+            $lineSchemaErrors=\Dormitory\Support\LinePlatformSchema::errors($pdo);
+            if($lineSchemaErrors===[])addResult($successes,'LINE platform columns, generated guards, indexes, foreign keys, CHECK constraints และ legacy OA ถูกต้อง');
+            else foreach($lineSchemaErrors as$lineSchemaError)addResult($errors,$lineSchemaError);
         } else {
             addResult($errors, 'schema ไม่ครบ; ขาดตาราง: ' . implode(', ', $missing));
         }
@@ -599,6 +604,10 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
             'trg_notification_relationship_guard_update' => ['UPDATE', 'BEFORE', 'notification_outbox'],
             'trg_audit_logs_no_update' => ['UPDATE', 'BEFORE', 'audit_logs'],
             'trg_audit_logs_no_delete' => ['DELETE', 'BEFORE', 'audit_logs'],
+            'trg_line_room_bindings_insert_guard' => ['INSERT','BEFORE','line_room_bindings'],
+            'trg_line_room_bindings_update_guard' => ['UPDATE','BEFORE','line_room_bindings'],
+            'trg_line_notice_relationship_guard' => ['INSERT','BEFORE','line_notice_outbox'],
+            'trg_line_notice_relationship_guard_update' => ['UPDATE','BEFORE','line_notice_outbox'],
         ];
         $expectedTriggerBodies=expectedTriggerActions($root.'/database/schema.sql');
         $triggerStatement = $pdo->prepare('SELECT trigger_name,event_manipulation,action_timing,event_object_table,action_statement FROM information_schema.triggers WHERE trigger_schema=?');
@@ -630,12 +639,12 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
         if(count($expectedTriggerBodies)!==count($expectedTriggers)){
             addResult($errors,'อ่าน canonical trigger bodies จาก database/schema.sql ไม่ครบ');
         }elseif ($invalidTriggers === []&&$invalidTriggerBodies===[]) {
-            addResult($successes, 'พบ integrity triggers พร้อม event/timing/body ตรง canonical ครบ 19 รายการ');
+            addResult($successes, 'พบ integrity triggers พร้อม event/timing/body ตรง canonical ครบ 23 รายการ');
         } elseif ($schemaAudit || $grantInspection['can_read_all_triggers']) {
             $invalid=array_values(array_unique(array_merge($invalidTriggers,$invalidTriggerBodies)));
             addResult($errors, 'schema ขาด trigger หรือ event/timing/body ไม่ตรง canonical: ' . implode(', ', $invalid));
         } else {
-            addResult($skips, 'MySQL ซ่อน trigger metadata/body จากบัญชี runtime-only; รัน --schema-audit ด้วยบัญชี DBA เพื่อรับรอง triggers 19 รายการ');
+            addResult($skips, 'MySQL ซ่อน trigger metadata/body จากบัญชี runtime-only; รัน --schema-audit ด้วยบัญชี DBA เพื่อรับรอง triggers 23 รายการ');
         }
 
         $indexStatement = $pdo->prepare(
@@ -730,8 +739,8 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
         $checkStatement=$pdo->prepare("SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema=? AND constraint_type='CHECK'");
         $checkStatement->execute([$database]);
         $checkCount=(int)$checkStatement->fetchColumn();
-        if($checkCount>=86)addResult($successes,'พบ CHECK constraints ครบอย่างน้อย 86 รายการ');
-        else addResult($errors,'schema มี CHECK constraints ไม่ครบ; พบ '.$checkCount.' จากอย่างน้อย 86');
+        if($checkCount>=116)addResult($successes,'พบ CHECK constraints ครบอย่างน้อย 116 รายการ');
+        else addResult($errors,'schema มี CHECK constraints ไม่ครบ; พบ '.$checkCount.' จากอย่างน้อย 116');
 
         // A generated UNIQUE guard is ineffective when its expression has been
         // changed to always return NULL. Verify the complete definition of all
@@ -1459,14 +1468,27 @@ SQL
                     $errors,
                 );
 
-                if ($lineReady) addResult($successes, 'ตั้ง LINE Channel access token แบบเข้ารหัสและตรวจสอบความถูกต้องแล้ว');
-                else addResult($warnings, 'ยังไม่ได้ตั้ง LINE token จากหลังบ้าน; worker จะยังส่งบิลไม่ได้');
-                if ($lineReady && $lineChannelSecretReady) addResult($successes, 'ตั้ง LINE Channel secret แล้ว; signed webhook พร้อมตรวจสอบลายเซ็น');
-                else addResult($warnings, 'ยังตั้ง LINE webhook ไม่ครบ; ต้องมีทั้ง Channel access token และ Channel secret');
-                $lineBasicIdReady = is_string($integration['line_basic_id'] ?? null)
-                    && preg_match('/^@[A-Za-z0-9._-]{1,32}$/D', (string) $integration['line_basic_id']) === 1;
-                if ($lineBasicIdReady) addResult($successes, 'ตั้ง LINE Official Account Basic ID แล้ว; ผู้พักเปิดหน้าเพิ่มเพื่อนได้');
-                else addResult($warnings, 'ยังไม่ได้ตั้ง LINE Basic ID; ผู้พักจะยังสร้างรหัสผูก LINE ไม่ได้');
+                $lineAnyTokenReady=false;$lineAnyWebhookReady=false;$lineDefaultBindingReady=false;
+                if(in_array('line_official_accounts',$found,true)){
+                    $lineAccounts=$pdo->query('SELECT id,enabled,is_default,basic_id,access_token_enc,channel_secret_enc FROM line_official_accounts WHERE deleted_at IS NULL')->fetchAll(PDO::FETCH_ASSOC);
+                    foreach($lineAccounts as$lineAccount){
+                        if((int)$lineAccount['enabled']!==1)continue;
+                        $oaId=(int)$lineAccount['id'];
+                        $oaToken=$oaId===0?$lineReady:configuredIntegrationSecret($lineAccount['access_token_enc'],'line_oa_'.$oaId.'_access_token',$secretCipher,$errors);
+                        $oaSecret=$oaId===0?$lineChannelSecretReady:configuredIntegrationSecret($lineAccount['channel_secret_enc'],'line_oa_'.$oaId.'_channel_secret',$secretCipher,$errors);
+                        $oaBasic=$oaId===0?($integration['line_basic_id']??null):$lineAccount['basic_id'];
+                        $oaBasicReady=is_string($oaBasic)&&preg_match('/^@[A-Za-z0-9._-]{1,32}$/D',$oaBasic)===1;
+                        $lineAnyTokenReady=$lineAnyTokenReady||$oaToken;
+                        $lineAnyWebhookReady=$lineAnyWebhookReady||($oaToken&&$oaSecret);
+                        if((int)$lineAccount['is_default']===1)$lineDefaultBindingReady=$oaToken&&$oaSecret&&$oaBasicReady;
+                    }
+                }
+                if ($lineAnyTokenReady) addResult($successes, 'มี LINE OA ที่เปิดใช้งานและเก็บ Channel access token แบบเข้ารหัสถูกต้อง');
+                else addResult($warnings, 'ยังไม่มี LINE OA ที่เปิดใช้งานพร้อม token; worker จะยังส่งบิลไม่ได้');
+                if ($lineAnyWebhookReady) addResult($successes, 'มี LINE OA ที่ตั้ง token และ Channel secret พร้อมตรวจ signed webhook');
+                else addResult($warnings, 'ยังไม่มี LINE OA ที่ตั้ง token และ Channel secret ครบ');
+                if ($lineDefaultBindingReady) addResult($successes, 'LINE OA เริ่มต้นเปิดใช้งานและตั้ง Basic ID พร้อมสร้างรหัสผูกบัญชี');
+                else addResult($warnings, 'ยังไม่มี LINE OA เริ่มต้นที่พร้อมสร้างรหัสผูกบัญชี');
 
                 $provider = (string) ($integration['slip_provider'] ?? 'none');
                 // PromptPay is intentionally not a receiver-account fallback:

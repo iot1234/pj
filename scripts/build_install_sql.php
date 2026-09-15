@@ -8,6 +8,38 @@ if (PHP_SAPI !== 'cli') {
 
 $root = dirname(__DIR__);
 $target = $root . '/database/install.sql';
+$checkOnly = in_array('--check', array_slice($argv, 1), true);
+
+// Keep one editable LINE schema source, with self-contained generated copies
+// for phpMyAdmin schema imports and existing-install maintenance migrations.
+$platform = file_get_contents($root . '/database/line_platform.sql');
+$schema = file_get_contents($root . '/database/schema.sql');
+if (!is_string($platform) || !is_string($schema)) {
+    fwrite(STDERR, "Cannot read the canonical schema sources\n"); exit(1);
+}
+$platform = rtrim(str_replace(["\r\n", "\r"], "\n", $platform)) . "\n";
+$schema = str_replace(["\r\n", "\r"], "\n", $schema);
+$marker = '-- BEGIN GENERATED LINE PLATFORM';
+$base = strstr($schema, $marker, true);
+if ($base === false) {
+    $base = preg_replace('/CREATE TRIGGER trg_notification_relationship_guard(?:_update)?\s+BEFORE\s+(?:INSERT|UPDATE)\s+ON\s+notification_outbox\s+FOR\s+EACH\s+ROW\s+BEGIN.*?\bEND\$\$\s*/s', '', $schema);
+    if (!is_string($base)) { fwrite(STDERR, "Cannot prepare LINE schema extension\n"); exit(1); }
+}
+$generatedSchema = rtrim($base) . "\n\n{$marker}\n{$platform}-- END GENERATED LINE PLATFORM\n";
+$generatedMigration = "-- AUTO-GENERATED FROM database/line_platform.sql. DO NOT EDIT.\n"
+    . "-- Apply after migrations 001-013 with web and worker stopped.\n"
+    . "-- Existing LINE credentials, verified residents and deliveries stay on OA 0.\n"
+    . $platform;
+foreach (['database/schema.sql'=>$generatedSchema,'database/migrations/014_line_platform.sql'=>$generatedMigration] as $relative=>$generated) {
+    $existing = is_file($root.'/'.$relative) ? file_get_contents($root.'/'.$relative) : false;
+    if ($checkOnly) {
+        if (!is_string($existing) || str_replace(["\r\n", "\r"], "\n", $existing) !== $generated) {
+            fwrite(STDERR, "{$relative} is missing or out of date; run scripts/build_install_sql.php\n"); exit(1);
+        }
+    } elseif (file_put_contents($root.'/'.$relative, $generated, LOCK_EX) !== strlen($generated)) {
+        fwrite(STDERR, "Unable to generate {$relative}\n"); exit(1);
+    }
+}
 $sources = [
     'database/00-create-database.sql',
     'database/schema.sql',
@@ -68,7 +100,6 @@ $content = <<<SQL
 SQL;
 $content .= implode("\n", $sections);
 
-$checkOnly = in_array('--check', array_slice($argv, 1), true);
 if ($checkOnly) {
     $current = file_get_contents($target);
     if (!is_string($current) || !hash_equals($content, str_replace(["\r\n", "\r"], "\n", $current))) {

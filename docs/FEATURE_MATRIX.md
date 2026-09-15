@@ -1,6 +1,6 @@
 # Feature matrix: FR-01 ถึง FR-16
 
-เอกสารนี้เป็นขอบเขตอ้างอิงของ PHP/MySQL rewrite ฟีเจอร์ที่ไม่อยู่ใน FR-01–FR-16 ถือว่าไม่อยู่ในงาน แม้ระบบเดิมจะเคยมี
+เอกสารนี้เป็นขอบเขตอ้างอิงของ PHP/MySQL rewrite มีงานขยาย LINE OA/การผูกห้องและผู้รับแจ้งเตือนตามคำขอผู้ใช้เพิ่มเติม ดู [คู่มือ LINE](LINE_BINDING.md)
 
 ## Actor และสิทธิ์
 
@@ -9,7 +9,7 @@
 | Guest | ไม่ต้อง login | ดูห้องว่างและส่งจอง |
 | Resident | เบอร์โทรที่ผูกกับผู้พัก/ห้อง active + password; ครั้งแรกใช้ activation code เพื่อตั้ง password | ดู/แก้ชื่อและ email ของตน ดูบิลของตน เปิด QR และส่งสลิปของตน |
 | Admin | username + password | ห้อง การจอง ผู้เช่า มิเตอร์ บิล LINE และการชำระ |
-| Owner | Admin role `owner` | สิทธิ์ Admin ทั้งหมด จัดการบัญชีผู้ดูแล และเปลี่ยนค่า PromptPay/LINE/SlipOK/EasySlip |
+| Owner | Admin role `owner` | สิทธิ์ Admin ทั้งหมด จัดการบัญชีผู้ดูแล และเปลี่ยนค่า PromptPay/SlipOK/EasySlip (LINE OA จัดการได้ทั้ง Admin และ Owner) |
 
 สถานะห้องไม่ใช่ field ที่แก้ตรง ๆ แต่คำนวณตามลำดับ: มี `occupancy active` = `occupied`; ไม่เช่นนั้นมี booking `pending/confirmed` = `reserved`; นอกนั้น = `available`
 
@@ -44,6 +44,14 @@ Resident login ต้องใช้เบอร์ของผู้พัก a
 - จำนวนงานค้างที่กระทบเงินแสดงเป็น badge ที่เมนู “การจอง” และ “การชำระเงิน” ทั้งบน sidebar และแถบเมนูล่างบนมือถือ โดยอ่านจาก `pending_count` ของ API ไม่ใช่จำนวนแถวที่โหลดมา
 
 ## Operational settings ของ FR-14–FR-16
+
+การผูก LINE และคำสั่งห้อง/บิลเพิ่มเติมวันที่ 2026-09-15:
+
+- Admin/Owner ใช้ `/api/admin/line/oas`, `/api/admin/line/residents/{id}` และ `/api/admin/line/recipients` จัดการหลาย OA คีย์ 1–30 วัน หลายบัญชีต่อห้อง ยกเลิก/บล็อก และผู้รับแจ้งเตือน ค่า LINE ต้องแก้ผ่าน API นี้
+- แต่ละ OA ใช้ webhook `/api/webhooks/line/oa/{routeToken}` แยก signature/destination/deduplication; OA 0 รองรับ route เดิมจนหมุน URL การเปลี่ยน OA หลักไม่ย้ายปลายทางเดิม
+- Admin ใช้ `GET /api/admin/residents/{id}/line`, `POST .../line/code`, `POST .../line/unlink`; ผู้พักใช้ route โปรไฟล์เดิม ทั้งสองหน้ามีปุ่มเปิดแชตพร้อมรหัส, QR, คัดลอก, วันหมดอายุ และตรวจสถานะ
+- `เมนู`/`help`, `สถานะ`/`status`/`ห้อง`, `บิล`/`bills`/`invoice` ใช้ในแชตส่วนตัว; บอทแสดงชื่อ/ห้องหลังผูกสำเร็จ บิลล่าสุดไม่เกิน 3 รายการ และลิงก์พอร์ทัลที่ต้องเข้าสู่ระบบ
+- คำสั่งข้อมูลส่วนตัวตรวจหลักฐานการผูกและการเข้าพักปัจจุบันภายใต้ lock จนส่งเสร็จ การผูกและหลักฐาน audit commit เป็นชุดเดียว รายละเอียดและวิธีทดสอบจริงอยู่ที่ [LINE_BINDING.md](LINE_BINDING.md)
 
 - `GET /api/admin/settings` คืน billing settings และสถานะ integration ที่ปลอดภัย; `PUT /api/admin/settings/integrations` เปลี่ยนค่าได้เฉพาะ Owner
 - `POST /api/webhooks/line` ตรวจลายเซ็น raw body ด้วย Channel secret, deduplicate `webhookEventId`, รับรหัส `BIND-` จากข้อความตัวอักษรในแชตผู้ใช้โดยตรง และตอบผล/วิธีผูกบัญชีโดยไม่เปิดเผย LINE User ID ดิบหรือเก็บเนื้อหาข้อความ

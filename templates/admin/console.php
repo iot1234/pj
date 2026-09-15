@@ -46,6 +46,9 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                 <span aria-hidden="true">✓</span><span>การชำระเงิน</span><span class="nav-count" id="payment-nav-count" hidden>0</span>
             </button>
 
+            <p class="admin-nav-label">LINE</p>
+            <button class="admin-nav-item" type="button" data-admin-nav="line-oas"><span aria-hidden="true">L</span><span>บัญชี LINE OA</span></button>
+            <button class="admin-nav-item" type="button" data-admin-nav="line-bindings"><span aria-hidden="true">↔</span><span>การผูก LINE ผู้พัก</span></button>
             <p class="admin-nav-label">ระบบ</p>
             <button class="admin-nav-item owner-only" type="button" data-admin-nav="users" <?= $adminRole === 'owner' ? '' : 'hidden' ?>>
                 <span aria-hidden="true">⚿</span><span>ผู้ดูแลระบบ</span>
@@ -234,12 +237,26 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                 <div class="panel table-panel"><div class="table-scroll" role="region" aria-label="ตารางผู้ดูแลระบบ" tabindex="0"><table><thead><tr><th>ชื่อผู้ใช้</th><th>บทบาท</th><th>สถานะ</th><th>แก้ไขล่าสุด</th><th class="align-right">จัดการ</th></tr></thead><tbody id="user-rows"></tbody></table></div><div class="table-state" id="user-state" data-state="loading"><span class="spinner" aria-hidden="true"></span><p>กำลังโหลดผู้ดูแล…</p></div></div>
             </section>
 
+            <section class="admin-view" data-admin-view="line-oas" aria-labelledby="line-oas-title" hidden>
+                <div class="section-heading"><div><p class="eyebrow">การสื่อสารของหอพัก</p><h2 id="line-oas-title">บัญชี LINE Official Account</h2><p>แต่ละ OA มีการเชื่อมต่อและ Webhook ของตนเอง การเปลี่ยนบัญชีเริ่มต้นมีผลกับรหัสที่สร้างใหม่</p></div><div class="form-actions"><button class="button button-secondary" type="button" data-refresh="line-oas">รีเฟรช</button><button class="button button-primary" type="button" id="line-oa-create">เพิ่ม OA</button></div></div>
+                <p class="form-error" id="line-oas-error" role="alert" hidden></p>
+                <div id="line-oa-list" class="line-platform-grid" aria-live="polite"></div>
+                <div class="section-heading"><div><h3>ผู้รับแจ้งเตือนฝ่ายจัดการ</h3><p>สร้างรหัสให้เจ้าของหรือผู้ดูแล แล้วให้เจ้าตัวส่งรหัสจาก LINE ของตนเอง จึงจะเริ่มรับแจ้งเตือน</p></div><button class="button button-primary" type="button" id="line-recipient-create">เพิ่มผู้รับแจ้งเตือน</button></div>
+                <div id="line-recipient-list" class="line-platform-grid" aria-live="polite"></div>
+            </section>
+            <section class="admin-view" data-admin-view="line-bindings" aria-labelledby="line-bindings-title" hidden>
+                <div class="section-heading"><div><p class="eyebrow">บัญชีผู้พักและห้อง</p><h2 id="line-bindings-title">การผูก LINE ผู้พัก</h2><p>ดูทุกบัญชีที่ผูกกับห้อง สร้างรหัสเพิ่ม หรือยกเลิกเฉพาะรายการที่ต้องการ</p></div><button class="button button-secondary" type="button" data-refresh="line-bindings">รีเฟรช</button></div>
+                <p class="form-error" id="line-bindings-error" role="alert" hidden></p>
+                <div id="line-binding-summary" class="line-platform-summary" aria-live="polite"></div>
+                <div class="table-toolbar"><label class="field"><span>ค้นหาผู้พัก ห้อง หรือเบอร์โทร</span><input id="line-binding-search" type="search" maxlength="150" placeholder="ชื่อ / ห้อง / เบอร์โทร"></label><label class="field"><span>สถานะการผูก</span><select id="line-binding-filter"><option value="">ทุกสถานะ</option value="bound">ผูกแล้ว</option><option value="pending">รอส่งรหัส</option><option value="unbound">ยังไม่ผูก</option><option value="blocked">ระงับการผูก</option></select></label></div>
+                <div class="table-scroll"><table class="data-table"><thead><tr><th>ผู้พัก / ห้อง</th><th>สถานะ</th><th>บัญชี / รหัสรอใช้</th><th>จัดการ</th></tr></thead><tbody id="line-binding-rows"></tbody></table></div>
+            </section>
             <section class="admin-view" data-admin-view="settings" aria-labelledby="settings-title" hidden>
                 <div class="section-heading"><div><p class="eyebrow">การเรียกเก็บเงินและบริการภายนอก</p><h2 id="settings-title">ตั้งค่าระบบ</h2></div></div>
                 <div class="settings-grid">
                     <form class="panel settings-card" id="settings-form"><div class="panel-heading"><div><h3>การเรียกเก็บรายเดือน</h3><p>ต้องตรวจสอบและบันทึกอย่างน้อยหนึ่งครั้งก่อนออกบิลจริง</p></div></div><div class="form-grid"><label class="field"><span>ค่าน้ำต่อหน่วย (บาท)</span><input type="number" name="water_rate" min="0" step="0.01" required></label><label class="field"><span>ค่าไฟต่อหน่วย (บาท)</span><input type="number" name="electric_rate" min="0" step="0.01" required></label><label class="field"><span>ระยะเวลาชำระ (วัน)</span><input type="number" name="due_days" min="1" max="60" step="1" required><small>จำนวนวันจากวันออกบิลถึงวันครบกำหนด</small></label></div><p class="field-hint" id="billing-settings-status">กำลังโหลดสถานะ…</p><p class="form-error" id="settings-error" role="alert" hidden></p><div class="form-actions"><button class="button button-primary" type="submit">ยืนยันและบันทึกการตั้งค่า</button></div></form>
                     <form class="panel settings-card settings-integration-card" id="integration-settings-form" data-owner-only="<?= $canManageIntegrations ? 'true' : 'false' ?>">
-                        <div class="panel-heading"><div><h3>พร้อมเพย์, LINE Bot และตรวจสลิป</h3><p>ค่าลับถูกเข้ารหัสในฐานข้อมูลและจะไม่แสดงค่าจริงกลับมาบนหน้าเว็บ</p></div></div>
+                        <div class="panel-heading"><div><h3>พร้อมเพย์และตรวจสลิป</h3><p>ค่าลับถูกเข้ารหัสในฐานข้อมูลและจะไม่แสดงค่าจริงกลับมาบนหน้าเว็บ</p></div></div>
                         <div class="security-note"><strong>กุญแจระบบ</strong><span>ช่องค่าลับที่เว้นว่างจะเก็บค่าเดิม เลือก “ล้างค่า” เมื่อต้องการยกเลิกจริง การเปลี่ยนส่วนนี้ทำได้เฉพาะเจ้าของระบบ</span></div>
                         <div class="integration-form-grid">
                             <fieldset class="integration-fieldset">
@@ -250,15 +267,10 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                             </fieldset>
 
                             <fieldset class="integration-fieldset">
-                                <legend><span class="integration-icon">L</span> LINE Messaging API</legend>
-                                <label class="field"><span>LINE Official Account Basic ID</span><input name="line_basic_id" type="text" maxlength="33" pattern="@[A-Za-z0-9._-]{1,32}" placeholder="@youraccount"<?= $integrationDisabled ?>><small>ใช้สร้างปุ่มเพิ่มเพื่อนและปุ่มติดต่อผู้ดูแลในหน้าสาธารณะ ตรวจได้จากหน้า Basic settings ของ LINE Official Account</small></label>
-                                <label class="field"><span>Channel access token</span><input name="line_channel_access_token" type="password" maxlength="4096" autocomplete="new-password" placeholder="เว้นว่างเพื่อเก็บค่าเดิม"<?= $integrationDisabled ?>><small data-secret-status="line_channel_access_token">ยังไม่ได้โหลดสถานะ</small></label>
-                                <label class="check-field danger-check"><input name="line_channel_access_token_clear" type="checkbox" value="1"<?= $integrationDisabled ?>><span>ล้าง Channel access token ที่บันทึกไว้</span></label>
-                                <label class="field"><span>Channel secret</span><input name="line_channel_secret" type="password" maxlength="4096" autocomplete="new-password" placeholder="เว้นว่างเพื่อเก็บค่าเดิม"<?= $integrationDisabled ?>><small data-secret-status="line_channel_secret">ยังไม่ได้โหลดสถานะ</small></label>
-                                <label class="check-field danger-check"><input name="line_channel_secret_clear" type="checkbox" value="1"<?= $integrationDisabled ?>><span>ล้าง Channel secret ที่บันทึกไว้</span></label>
-                                <label class="field"><span>Webhook URL</span><input type="url" data-line-webhook-url readonly value=""><small data-line-webhook-readiness>ต้องตั้ง Token และ Channel secret ให้ครบ แล้วเปิด Use webhook และ Webhook redelivery ใน LINE Developers Console</small></label>
+                                <legend><span class="integration-icon">L</span> LINE และคิวแจ้งเตือน</legend>
+                                <p>จัดการ OA, Token, Webhook และผู้รับแจ้งเตือนได้ที่หน้า LINE สำหรับเจ้าของและผู้ดูแลทุกคน</p>
+                                <button class="button button-secondary" type="button" data-admin-nav="line-oas">เปิดบัญชี LINE OA</button>
                                 <div class="form-grid form-grid-two"><label class="field"><span>ลองส่งสูงสุด (ครั้ง)</span><input name="line_max_attempts" type="number" min="1" max="20" step="1" required<?= $integrationDisabled ?>></label><label class="field"><span>จำนวนงานต่อรอบ</span><input name="notification_batch_size" type="number" min="1" max="100" step="1" required<?= $integrationDisabled ?>></label></div>
-                                <div class="integration-status-row"><div class="integration-status-copy"><span>ความพร้อมของค่าที่บันทึก</span><small class="integration-test-result" data-integration-test-result="line">ยังไม่ได้ทดสอบค่าที่บันทึกนี้</small></div><div class="integration-status-actions"><span class="status-pill status-neutral" data-integration-status="line">กำลังโหลด</span><button class="button button-small button-secondary" type="button" data-test-integration="line" disabled>ทดสอบ Token ที่บันทึก</button></div></div>
                             </fieldset>
 
                             <fieldset class="integration-fieldset integration-fieldset-wide">
@@ -364,6 +376,74 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
     <form class="modal-card" id="resident-edit-form"><input type="hidden" name="resident_id"><div class="modal-header"><div><p class="eyebrow">ข้อมูลผู้พักที่ยืนยันแล้ว</p><h2 id="resident-edit-title">แก้ข้อมูลผู้พัก</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div><p class="modal-lead" id="resident-edit-summary"></p><div class="security-note"><strong>เบอร์โทรเป็นชื่อบัญชี ไม่ใช่รหัสผ่าน</strong><span>ตรวจสอบตัวตนก่อนเปลี่ยนเบอร์ เมื่อบันทึก ระบบจะยกเลิกเซสชันและรหัสผ่านเดิม แล้วออก activation code ใหม่ให้ส่งมอบผู้พัก</span></div><div class="form-grid form-grid-two"><label class="field"><span>ชื่อ–นามสกุล</span><input name="full_name" type="text" minlength="1" maxlength="150" required autocomplete="name"></label><label class="field"><span>เบอร์โทรศัพท์</span><input name="phone" type="tel" minlength="10" maxlength="20" required autocomplete="tel"></label><label class="field"><span>อีเมล</span><input name="email" type="email" maxlength="190" autocomplete="email"></label></div><p class="field-hint">LINE User ID เปลี่ยนได้จากบัญชีผู้พักเท่านั้น และต้องยืนยันรหัสที่ส่งผ่าน LINE</p><p class="form-error" id="resident-edit-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-primary" type="submit">บันทึกข้อมูล</button></div></form>
 </dialog>
 
+<script src="<?= e($assetUrl('/assets/js/admin-line-platform.js')) ?>" defer></script>
+<dialog class="modal" id="line-platform-dialog" aria-labelledby="line-platform-title">
+    <div class="modal-card line-platform-modal">
+        <div class="modal-header"><h2 id="line-platform-title">จัดการ LINE</h2><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div>
+        <p id="line-platform-summary" class="muted"></p><p class="form-error" id="line-platform-error" role="alert" hidden></p>
+        <form id="line-oa-form" class="stack-form" hidden>
+            <div class="form-grid form-grid-two">
+                <label class="field"><span>ชื่อ OA</span><input name="name" maxlength="120" required></label>
+                <label class="field"><span>ชื่อย่อ</span><input name="slug" maxlength="40" pattern="[a-z0-9][a-z0-9_-]{0,39}" required><small>อักษรอังกฤษตัวเล็ก ตัวเลข ขีดกลางหรือขีดล่าง</small></label>
+                <label class="field"><span>Basic ID</span><input name="basic_id" maxlength="33" pattern="@[A-Za-z0-9._-]{1,32}" placeholder="@youraccount"></label>
+                <label class="field"><span>Channel ID</span><input name="channel_id" maxlength="60"></label>
+                <label class="field"><span>คำอธิบาย</span><textarea name="description" maxlength="500" rows="2"></textarea></label>
+                <label class="field"><span>ลิงก์เพิ่มเพื่อน (ถ้ามี)</span><input name="add_friend_url" type="url" maxlength="255" placeholder="https://line.me/R/ti/p/@youraccount"></label>
+                <label class="field"><span>Channel access token</span><input name="channel_access_token" type="password" maxlength="4096" autocomplete="new-password" placeholder="เว้นว่างเพื่อเก็บค่าเดิม"><small id="line-oa-token-hint"></small></label>
+                <label class="field"><span>Channel secret</span><input name="channel_secret" type="password" maxlength="4096" autocomplete="new-password" placeholder="เว้นว่างเพื่อเก็บค่าเดิม"><small id="line-oa-secret-hint"></small></label>
+            </div>
+            <div class="form-grid form-grid-two"><label class="check-field"><input type="checkbox" name="channel_access_token_clear"><span>ล้าง Token เดิม</span></label><label class="check-field"><input type="checkbox" name="channel_secret_clear"><span>ล้าง Secret เดิม</span></label></div>
+            <label class="check-field"><input type="checkbox" name="enabled" checked><span>เปิดใช้งาน OA นี้</span></label>
+            <p class="field-hint">ค่าลับจะไม่ถูกส่งกลับมาแสดง การบันทึก Token ใหม่จะตรวจตัวตน OA กับ LINE ก่อนบันทึก</p>
+            <div id="line-oa-diagnostics" class="line-platform-diagnostics"></div>
+            <div class="form-actions"><button class="button button-primary" type="submit">บันทึก OA</button><button class="button button-secondary" type="button" data-close-dialog>ยกเลิก</button></div>
+        </form>
+        <div id="line-binding-detail" hidden>
+            <p id="line-binding-policy" class="security-note"></p>
+            <form id="line-binding-code-form" class="stack-form">
+                <div class="form-grid form-grid-two"><label class="field"><span>ส่งรหัสไปยัง OA</span><select name="oa_id" required></select></label><label class="field"><span>อายุรหัส (วัน)</span><input name="ttl_days" type="number" min="1" max="30" step="1" value="7" required><small>เลือกได้ 1–30 วัน เริ่มต้น 7 วัน</small></label></div>
+                <label class="field"><span>วิธีสร้างรหัส</span><select name="replace_pending"><option value="true">สร้างใหม่และยกเลิกรหัสรอใช้เดิม</option><option value="false">เพิ่มรหัสอีกชุด โดยเก็บรหัสรอใช้เดิม</option></select><small>บัญชีที่ผูกสำเร็จแล้วจะยังอยู่ จนกว่าจะยกเลิกบัญชีนั้น</small></label>
+                <div class="form-actions"><button class="button button-primary" type="submit">สร้างรหัสผูก LINE</button></div>
+            </form>
+            <div class="form-actions"><button class="button button-secondary" type="button" id="line-binding-refresh">ตรวจสถานะ</button></div>
+            <h3>รหัสรอใช้</h3><p class="muted">ให้ผู้พักเปิด LINE ของตนเอง แล้วกด “ส่ง” ในแชต OA ที่ระบุ ลิงก์และ QR เตรียมข้อความให้เท่านั้น</p><div id="line-pending-list" class="line-platform-grid"></div>
+            <h3>บัญชีที่ผูกแล้ว</h3><div id="line-account-list" class="line-platform-grid"></div>
+            <div class="line-platform-policy"><label class="field"><span>เหตุผลระงับการผูก</span><textarea id="line-block-reason" maxlength="500" rows="2" placeholder="ระบุเหตุผลเพื่อให้ผู้ดูแลคนอื่นเข้าใจ"></textarea></label><div class="form-actions"><button class="button button-danger" type="button" id="line-binding-block">ระงับและยกเลิกการผูกทั้งหมด</button><button class="button button-secondary" type="button" id="line-binding-unblock" hidden>ปลดการระงับ</button><button class="button button-danger" type="button" id="line-binding-revoke-all">ยกเลิกทุกบัญชีและทุกรหัส</button></div></div>
+            <details><summary>ประวัติการผูก</summary><div id="line-binding-history" class="line-platform-history"></div></details>
+        </div>
+        <form id="line-recipient-form" class="stack-form" hidden>
+            <label class="field"><span>OA ที่รับรหัส</span><select name="oa_id" required></select></label>
+            <label class="field"><span>ชื่อกำกับผู้รับ</span><input name="label" maxlength="120" required></label>
+            <label class="check-field" id="line-recipient-owner-field"><input type="checkbox" name="is_owner"><span>ผู้รับหลักของเจ้าของหอ (OWNER)</span></label>
+            <label class="check-field" id="line-recipient-enabled-field"><input type="checkbox" name="enabled" checked><span>เปิดรับแจ้งเตือน</span></label>
+            <fieldset id="line-recipient-mutes"><legend>ปิดเสียงตามประเภท</legend><div class="line-platform-mutes"><label><input type="checkbox" name="muted_categories" value="booking"> การจอง</label><label><input type="checkbox" name="muted_categories" value="payment"> ชำระเงิน</label><label><input type="checkbox" name="muted_categories" value="billing"> บิล</label><label><input type="checkbox" name="muted_categories" value="tenancy"> การเข้าพัก</label><label><input type="checkbox" name="muted_categories" value="maintenance"> การซ่อมบำรุง</label><label><input type="checkbox" name="muted_categories" value="security"> ความปลอดภัย</label><label><input type="checkbox" name="muted_categories" value="system"> ระบบ</label></div></fieldset>
+            <p id="line-recipient-status" class="muted"></p><div id="line-recipient-code"></div>
+            <div class="form-actions"><button class="button button-primary" type="submit">บันทึกผู้รับ</button><button class="button button-secondary" type="button" id="line-recipient-refresh" hidden>ตรวจสถานะ</button><button class="button button-danger" type="button" id="line-recipient-delete" hidden>ยกเลิกผู้รับนี้</button><button class="button button-secondary" type="button" data-close-dialog>ปิด</button></div>
+        </form>
+        <div id="line-webhook-detail" class="line-platform-diagnostics" hidden></div>
+    </div>
+</dialog>
+<dialog class="modal" id="admin-line-dialog" aria-labelledby="admin-line-title">
+    <div class="modal-card stack-form">
+        <div class="modal-header"><div><p class="eyebrow">รับบิลและดูข้อมูลห้องผ่าน LINE</p><h2 id="admin-line-title">ผูก LINE ของผู้พัก</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div>
+        <p class="modal-lead" id="admin-line-summary"></p>
+        <p id="admin-line-status" role="status">กำลังตรวจสอบสถานะ…</p>
+        <p class="field-hint" id="admin-line-readiness" hidden>ผู้ดูแลยังตั้งค่า LINE ไม่ครบ กรุณาตั้งค่า Token, Channel secret และ Basic ID ก่อนสร้างรหัส</p>
+        <div class="security-note"><strong>ให้ผู้พักใช้ LINE ของตนเอง</strong><span>สร้างรหัสแล้วส่งรหัสหรือ QR ให้ผู้พักโดยตรง ผู้พักต้องเปิดแชตของหอพักและกด “ส่ง” ใน LINE จึงจะผูกบัญชีสำเร็จ ลิงก์และ QR ไม่ส่งข้อความให้อัตโนมัติ</span></div>
+        <a class="button button-secondary" id="admin-line-add-friend" target="_blank" rel="noopener noreferrer" hidden>เพิ่มเพื่อน LINE ของหอพัก</a>
+        <div class="stack-form" id="admin-line-code-panel" hidden>
+            <label class="field"><span>รหัสสำหรับส่งให้ LINE Bot</span><input id="admin-line-code" type="text" readonly autocomplete="off" spellcheck="false"></label>
+            <p class="field-hint" id="admin-line-expiry"></p>
+            <a class="button button-primary" id="admin-line-open-message" target="_blank" rel="noopener noreferrer" hidden>เปิด LINE พร้อมรหัสบนอุปกรณ์ผู้พัก</a>
+            <canvas class="line-code-qr" id="admin-line-qr" width="220" height="220" role="img" aria-label="QR เปิดแชต LINE พร้อมรหัสของผู้พักรายนี้" hidden></canvas>
+            <p class="field-hint" id="admin-line-qr-fallback" role="status" hidden>เปิด LINE หรือสร้าง QR อัตโนมัติไม่ได้ กรุณาคัดลอกรหัสให้ผู้พักส่งในแชตของหอพัก</p>
+            <button class="button button-secondary" id="admin-line-copy" type="button">คัดลอกรหัสให้ผู้พัก</button>
+        </div>
+        <p class="form-error" id="admin-line-error" role="alert" hidden></p>
+        <div class="form-actions"><button class="button button-primary" id="admin-line-issue" type="button" disabled>สร้างรหัสผูก LINE</button><button class="button button-secondary" id="admin-line-refresh" type="button">ตรวจสอบสถานะ</button><button class="button button-danger-text" id="admin-line-unlink" type="button" hidden>ยกเลิกการผูก LINE</button><button class="button button-ghost" type="button" data-close-dialog>ปิด</button></div>
+    </div>
+</dialog>
+
 <dialog class="modal" id="resident-access-dialog" aria-labelledby="resident-access-title" data-require-explicit-close="true">
     <div class="modal-card">
         <div class="modal-header"><div><p class="eyebrow">ข้อมูลลับ แสดงเฉพาะครั้งนี้</p><h2 id="resident-access-title">รหัสเปิดใช้งานผู้พัก</h2></div></div>
@@ -380,7 +460,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
 </dialog>
 
 <dialog class="modal" id="payment-close-dialog" aria-labelledby="payment-close-title">
-    <form class="modal-card" id="payment-close-form"><input type="hidden" name="payment_id"><div class="modal-header"><div><p class="eyebrow">กู้รายการตรวจสลิปค้าง</p><h2 id="payment-close-title">ปิดรายการชำระนี้</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div><p class="modal-lead" id="payment-close-summary"></p><div class="security-note"><strong>การปิดรายการไม่ทำให้บิลเป็นชำระแล้ว</strong><span>หลักฐานนี้จะถูกปฏิเสธและเก็บไว้ตรวจสอบ ผู้พักจึงสามารถส่งสลิปใหม่ได้</span></div><div class="form-grid"><label class="field"><span>เหตุผล</span><textarea name="reason" minlength="3" maxlength="450" rows="4" required placeholder="เช่น ผู้ให้บริการไม่ตอบสนองหลังตรวจซ้ำแล้ว"></textarea></label></div><p class="form-error" id="payment-close-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-danger" type="submit">ปิดและให้ส่งสลิปใหม่</button></div></form>
+    <form class="modal-card" id="payment-close-form"><input type="hidden" name="payment_id"><div class="modal-header"><div><p class="eyebrow">กู้รายการตรวจสลิปค้าง</p><h2 id="payment-close-title">ปิดรายการชำระถาวร</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div><p class="modal-lead" id="payment-close-summary"></p><div class="security-note"><strong>ปิดแล้วตรวจซ้ำรายการนี้ไม่ได้ และบิลยังไม่เป็นชำระแล้ว</strong><span>สลิปจะถูกเก็บไว้พร้อมผลปฏิเสธ ส่งไฟล์เดิมอีกครั้งจะได้ผลเดิม หากผู้พักโอนแล้วหรือระบบตรวจขัดข้อง ให้ตรวจยอดและลองตรวจซ้ำก่อนปิด การปิดรายการไม่ได้หมายความว่าผู้พักต้องโอนใหม่</span></div><div class="form-grid"><label class="field"><span>เหตุผล</span><textarea name="reason" minlength="3" maxlength="450" rows="4" required placeholder="ระบุเหตุผลและผลตรวจสอบก่อนปิดรายการ"></textarea></label></div><p class="form-error" id="payment-close-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-danger" type="submit">ปิดรายการถาวร</button></div></form>
 </dialog>
 
 <dialog class="modal" id="user-dialog" aria-labelledby="user-dialog-title">

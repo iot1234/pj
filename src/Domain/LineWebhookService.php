@@ -28,16 +28,35 @@ final class LineWebhookService
     private const BIND_USER_WINDOW_SECONDS = 60;
     private const BIND_GLOBAL_MAX = 60;
     private const BIND_GLOBAL_WINDOW_SECONDS = 60;
+    private const COMMAND_USER_MAX = 12;
+    private const COMMAND_GLOBAL_MAX = 120;
 
-    public function __construct(private readonly Application $app) {}
+    /** The optional transport is an in-process test seam; HTTP routes cannot supply it. */
+    public function __construct(
+        private readonly Application $app,
+        private readonly ?\Closure $replyTransport = null,
+        private readonly int $oaId = 0,
+    ) {}
 
     /** @return array{events:int,replied:int,duplicates:int,skipped:int} */
     public function handle(Request $request): array
     {
         $deadlineNanoseconds = self::monotonicNanoseconds()
             + (self::WEBHOOK_DEADLINE_MILLISECONDS * 1_000_000);
-        $secret = trim((string) $this->app->settings()->value('LINE_CHANNEL_SECRET', ''));
-        $token = trim((string) $this->app->settings()->value('LINE_CHANNEL_ACCESS_TOKEN', ''));
+        return $this->app->lineOfficialAccounts()->withRegistryLock(fn()=>$this->handleAccount($request,$deadlineNanoseconds),1);
+    }
+
+    private function handleAccount(Request $request,int $deadlineNanoseconds): array
+    {
+        $oa=$this->app->lineOfficialAccounts()->credentials($this->oaId);
+        if($request->path==='/api/webhooks/line'){
+            if($this->oaId!==0||!($oa['legacy_route_enabled']??true))throw new HttpException(404,'Webhook route is no longer active','LINE_WEBHOOK_ROUTE_REVOKED');
+        }elseif(preg_match('#^/api/webhooks/line/oa/([a-f0-9]{48})$#D',$request->path,$path)){
+            $route=$this->app->lineOfficialAccounts()->byRouteToken($path[1]);
+            if((int)$route['id']!==$this->oaId)throw new HttpException(404,'Webhook route is no longer active','LINE_WEBHOOK_ROUTE_REVOKED');
+        }else throw new HttpException(404,'Unknown webhook route','NOT_FOUND');
+        $secret = trim((string) $oa['channel_secret']);
+        $token = trim((string) $oa['access_token']);
         if ($secret === '' || $token === '') {
             throw new HttpException(503, 'LINE webhook is not configured', 'LINE_WEBHOOK_NOT_CONFIGURED');
         }
@@ -63,6 +82,12 @@ final class LineWebhookService
         if (!is_array($events) || !array_is_list($events) || count($events) > self::MAX_EVENTS) {
             throw new HttpException(422, 'LINE webhook events are invalid', 'LINE_WEBHOOK_EVENTS_INVALID');
         }
+        if(is_string($oa['provider_user_id']??null)&&$oa['provider_user_id']!==''
+            &&(!is_string($payload['destination']??null)||!hash_equals($oa['provider_user_id'],$payload['destination']))){
+            $this->app->lineOfficialAccounts()->touchWebhook($this->oaId,'LINE_DESTINATION_MISMATCH');
+            throw new HttpException(403,'Webhook destination does not match this OA','LINE_DESTINATION_MISMATCH');
+        }
+        $this->app->lineOfficialAccounts()->touchWebhook($this->oaId);
 
         $result = ['events' => count($events), 'replied' => 0, 'duplicates' => 0, 'skipped' => 0];
         $seen = [];
@@ -71,6 +96,13 @@ final class LineWebhookService
         foreach ($events as $event) {
             $candidate = $this->replyCandidate($event);
             if ($candidate === null) {
+                $result['skipped']++;
+                continue;
+            }
+            // Staff may be chatting with residents through this OA. Only
+            // explicit commands and binding codes should cause bot replies.
+            if ($candidate['event_type'] === 'message'
+                && LineBotService::intent((string) $candidate['message_text']) === null) {
                 $result['skipped']++;
                 continue;
             }
@@ -115,29 +147,36 @@ final class LineWebhookService
                     return 'suppressed';
                 }
 
-                $reply = $this->replyTextForCandidate($request, $candidate);
-                if (!self::canStartReply($deadlineNanoseconds, $replyAttempts)) {
-                    return 'deferred';
-                }
-                $replyDisposition = $this->replyWithText(
-                    $token,
-                    $candidate['reply_token'],
-                    $reply['text'],
-                    $deadlineNanoseconds,
-                );
-                if ($replyDisposition === 'deferred') {
-                    return 'deferred';
-                }
-                $replyAttempts++;
-                $this->writeEventAudit(
-                    $request,
+                $reply = $this->replyTextForCandidate($request, $candidate, $deadlineNanoseconds);
+                return $this->withCurrentReply(
                     $candidate,
-                    $replyDisposition === 'replied'
-                        ? 'line.webhook_reply_sent'
-                        : 'line.webhook_reply_token_unavailable',
-                    $reply['outcome'],
+                    $reply,
+                    $deadlineNanoseconds,
+                    function (array $reply) use ($request, $candidate, $token, $deadlineNanoseconds, &$replyAttempts): string {
+                        if (!self::canStartReply($deadlineNanoseconds, $replyAttempts)) {
+                            return 'deferred';
+                        }
+                        $replyDisposition = $this->replyWithText(
+                            $token,
+                            $candidate['reply_token'],
+                            $reply['text'],
+                            $deadlineNanoseconds,
+                        );
+                        if ($replyDisposition === 'deferred') {
+                            return 'deferred';
+                        }
+                        $replyAttempts++;
+                        $this->writeEventAudit(
+                            $request,
+                            $candidate,
+                            $replyDisposition === 'replied'
+                                ? 'line.webhook_reply_sent'
+                                : 'line.webhook_reply_token_unavailable',
+                            $reply['outcome'],
+                        );
+                        return $replyDisposition;
+                    },
                 );
-                return $replyDisposition;
             });
             if ($disposition === 'replied') {
                 $result['replied']++;
@@ -158,6 +197,46 @@ final class LineWebhookService
             );
         }
         return $result;
+    }
+
+    /**
+     * Serialize private data validation and the actual provider call with
+     * unlink, identity changes and move-out. A reply prepared before acquiring
+     * the lock is only a hint: discard its text and read the current binding.
+     * Binding consumption/proof has already committed and released its lock,
+     * so this step never nests the same named lock or extends its transaction
+     * across an external request.
+     * @param array{line_user_id:string} $candidate
+     * @param array{text:string,outcome:string,private_resident_id?:int,private_intent?:string} $reply
+     * @param callable(array):string $deliver
+     */
+    private function withCurrentReply(array $candidate, array $reply, int $deadlineNanoseconds, callable $deliver): string
+    {
+        if (!isset($reply['private_resident_id'], $reply['private_intent'])) {
+            return $deliver($reply);
+        }
+        $residentId = $reply['private_resident_id'];
+        $intent = $reply['private_intent'];
+        if (!is_int($residentId) || $residentId < 1 || !in_array($intent, ['bound', 'status', 'bills'], true)) {
+            throw new \RuntimeException('Invalid private LINE reply context');
+        }
+        $remaining = self::remainingMilliseconds($deadlineNanoseconds);
+        if ($remaining < self::MIN_REPLY_START_MILLISECONDS) return 'deferred';
+        return $this->app->notifications()->withLineBindingLock(
+            $residentId,
+            function () use ($candidate, $reply, $residentId, $intent, $deadlineNanoseconds, $deliver): string {
+                if (self::remainingMilliseconds($deadlineNanoseconds) < self::MIN_REPLY_START_MILLISECONDS) {
+                    return 'deferred';
+                }
+                $current = (new LineBotService($this->app,$this->oaId))->command($candidate['line_user_id'], $intent, $residentId);
+                if ($current['outcome'] === 'bound' && $reply['outcome'] === 'already_bound') {
+                    $current['text'] = "บัญชีนี้ผูกเรียบร้อยแล้ว ไม่ต้องดำเนินการซ้ำ\n" . $current['text'];
+                    $current['outcome'] = 'already_bound';
+                }
+                return $deliver($current);
+            },
+            $remaining >= 2_500 ? 1 : 0,
+        );
     }
 
     private function assertSignature(Request $request, string $raw, string $secret): void
@@ -215,7 +294,7 @@ final class LineWebhookService
         $statement = $this->app->database()->pdo()->prepare(
             "SELECT 1 FROM audit_logs WHERE action IN ('line.webhook_user_id_replied','line.webhook_reply_sent','line.webhook_reply_token_unavailable','line.webhook_reply_suppressed') AND entity_type='line_webhook' AND entity_id=? LIMIT 1",
         );
-        $statement->execute([$eventId]);
+        $statement->execute([$this->eventKey($eventId)]);
         return $statement->fetchColumn() !== false;
     }
 
@@ -226,7 +305,7 @@ final class LineWebhookService
             return 'deferred';
         }
         $pdo = $this->app->database()->pdo();
-        $name = 'dormitory:line-webhook:' . substr(hash_hmac('sha256', $eventId, $this->app->config->appKey()), 0, 24);
+        $name = 'dormitory:line-webhook:' . substr(hash_hmac('sha256', $this->eventKey($eventId), $this->app->config->appKey()), 0, 24);
         $lockWaitSeconds = $remainingMilliseconds >= 2_000 ? 1 : 0;
         $acquire = $pdo->prepare('SELECT GET_LOCK(?,?)');
         $acquire->execute([$name, $lockWaitSeconds]);
@@ -247,20 +326,23 @@ final class LineWebhookService
 
     private function identityHash(string $lineUserId): string
     {
-        return hash_hmac('sha256', "line-webhook-user\0{$lineUserId}", $this->app->config->appKey());
+        return hash_hmac('sha256', "line-webhook-user\0{$this->oaId}\0{$lineUserId}", $this->app->config->appKey());
     }
+
+    private function eventKey(string $eventId): string { return $this->oaId===0?$eventId:$this->oaId.':'.$eventId; }
 
     /**
      * @param array{event_id:string,event_type:string,line_user_id:string,reply_token:string,message_text:?string} $candidate
-     * @return 'instructions'|'bind'
+     * @return 'instructions'|'bind'|'command'
      */
     private static function replyCategory(array $candidate): string
     {
-        $message = trim((string) ($candidate['message_text'] ?? ''));
-        return $candidate['event_type'] === 'message'
-            && preg_match('/^BIND-[A-F0-9]{32}$/D', $message) === 1
-                ? 'bind'
-                : 'instructions';
+        $message = LineBotService::normalize((string) ($candidate['message_text'] ?? ''));
+        if ($candidate['event_type'] !== 'message') return 'instructions';
+        if (preg_match('/^BIND-[A-F0-9]{32}$/Di', $message) === 1) return 'bind';
+        if (preg_match('/^(OWNER|ADMIN)-[A-F0-9]{32}$/Di', $message) === 1) return 'bind';
+        return in_array(LineBotService::intent($message), ['help', 'status', 'bills'], true)
+            ? 'command' : 'instructions';
     }
 
     /**
@@ -268,7 +350,7 @@ final class LineWebhookService
      * to RateLimiter is already an application-keyed HMAC, never a raw LINE ID.
      *
      * @param array{event_id:string,event_type:string,line_user_id:string,reply_token:string,message_text:?string} $candidate
-     * @param 'instructions'|'bind' $category
+     * @param 'instructions'|'bind'|'command' $category
      * @return 'allowed'|'user'|'global'
      */
     private function consumeReplyAllowance(array $candidate, string $category): string
@@ -277,6 +359,9 @@ final class LineWebhookService
         if ($category === 'bind') {
             $user = ['line-webhook-bind-user', self::BIND_USER_MAX, self::BIND_USER_WINDOW_SECONDS];
             $global = ['line-webhook-bind-global', self::BIND_GLOBAL_MAX, self::BIND_GLOBAL_WINDOW_SECONDS];
+        } elseif ($category === 'command') {
+            $user = ['line-webhook-command-user', self::COMMAND_USER_MAX, 60];
+            $global = ['line-webhook-command-global', self::COMMAND_GLOBAL_MAX, 60];
         } else {
             $user = ['line-webhook-instruction-user', self::INSTRUCTION_USER_MAX, self::INSTRUCTION_USER_WINDOW_SECONDS];
             $global = ['line-webhook-instruction-global', self::INSTRUCTION_GLOBAL_MAX, self::INSTRUCTION_GLOBAL_WINDOW_SECONDS];
@@ -317,10 +402,11 @@ final class LineWebhookService
             null,
             $action,
             'line_webhook',
-            $candidate['event_id'],
+            $this->eventKey($candidate['event_id']),
             $extra + [
                 'event_id' => $candidate['event_id'],
                 'event_type' => $candidate['event_type'],
+                'oa_id' => $this->oaId,
                 'reply_outcome' => $outcome,
                 'line_user_id_hash' => $this->identityHash($candidate['line_user_id']),
             ],
@@ -354,16 +440,27 @@ final class LineWebhookService
 
     /**
      * @param array{event_id:string,event_type:string,line_user_id:string,reply_token:string,message_text:?string} $candidate
-     * @return array{text:string,outcome:string}
+     * @return array{text:string,outcome:string,private_resident_id?:int,private_intent?:string}
      */
-    private function replyTextForCandidate(Request $request, array $candidate): array
+    private function replyTextForCandidate(Request $request, array $candidate, ?int $deadlineNanoseconds = null): array
     {
-        $message = trim((string) ($candidate['message_text'] ?? ''));
+        $bot = new LineBotService($this->app,$this->oaId);
+        $message = LineBotService::normalize((string) ($candidate['message_text'] ?? ''));
         if ($candidate['event_type'] === 'follow' || $message === '') {
             return [
-                'text' => "ต้องการรับบิลผ่าน LINE ให้เข้าสู่ระบบผู้พัก เปิดหน้าโปรไฟล์ กด “สร้างรหัสผูก LINE” แล้วส่งรหัส BIND-… กลับมาในแชตส่วนตัวนี้",
+                'text' => $bot->instructions(),
                 'outcome' => 'instructions',
             ];
+        }
+        $intent = LineBotService::intent($message);
+        if($intent==='admin_claim'){
+            try{
+                $this->app->lineAdminRecipients()->consume(strtoupper($message),$candidate['line_user_id'],$this->oaId);
+                return ['text'=>'ผูกบัญชีผู้รับแจ้งเตือนของผู้ดูแลสำเร็จแล้ว สามารถตั้งค่าหมวดแจ้งเตือนในหลังบ้านได้','outcome'=>'admin_claimed'];
+            }catch(HttpException $error){return ['text'=>'คีย์ผู้รับแจ้งเตือนไม่ถูกต้อง หมดอายุ หรือส่งผิด OA กรุณาขอคีย์ใหม่จากผู้ดูแล','outcome'=>'admin_claim_invalid'];}
+        }
+        if (in_array($intent, ['help', 'status', 'bills'], true)) {
+            return $bot->command($candidate['line_user_id'], $intent);
         }
         if (!str_starts_with(strtoupper($message), 'BIND-')) {
             return [
@@ -371,6 +468,7 @@ final class LineWebhookService
                 'outcome' => 'instructions',
             ];
         }
+        $message = strtoupper($message);
         if (preg_match('/^BIND-[A-F0-9]{32}$/D', $message) !== 1) {
             return [
                 'text' => 'รหัสผูก LINE มีรูปแบบไม่ถูกต้อง กรุณาสร้างรหัสใหม่จากหน้าโปรไฟล์แล้วส่งข้อความตามที่แสดงทุกตัว',
@@ -379,6 +477,16 @@ final class LineWebhookService
         }
 
         try {
+            try{
+                $binding=$this->app->lineRoomBindings()->consume($message,$candidate['line_user_id'],$this->oaId,
+                    $deadlineNanoseconds===null?1:(self::remainingMilliseconds($deadlineNanoseconds)>=2500?1:0));
+                return $bot->command($candidate['line_user_id'],'bound',(int)$binding['resident_id']);
+            }catch(HttpException $error){
+                if($error->errorCode!=='LINE_LINK_CODE_INVALID'||$this->oaId!==0){
+                    if(in_array($error->errorCode,['LINE_BINDING_BLOCKED','LINE_BINDING_WRONG_OA','LINE_ID_IN_USE','LINE_ALREADY_LINKED','LINE_LINK_CODE_INVALID','LINE_LINK_CODE_EXPIRED','LINE_BINDING_STALE','RESIDENT_NOT_FOUND','LINE_OA_NOT_AVAILABLE'],true))return ['text'=>match($error->errorCode){'LINE_BINDING_WRONG_OA'=>'คีย์นี้กำหนดไว้สำหรับ LINE OA อีกบัญชี กรุณาเปิด LINE จากลิงก์ของคีย์นี้','LINE_BINDING_BLOCKED'=>'ผู้ดูแลปิดการผูก LINE ของห้องนี้ไว้ กรุณาติดต่อผู้ดูแล','LINE_ID_IN_USE','LINE_ALREADY_LINKED'=>'บัญชี LINE นี้มีการผูกอยู่แล้ว กรุณาตรวจสถานะหรือติดต่อผู้ดูแล',default=>'รหัสผูก LINE ไม่ถูกต้องหรือหมดอายุ กรุณาขอรหัสใหม่จากผู้ดูแล'},'outcome'=>'binding_rejected'];
+                    throw $error;
+                }
+            }
             $binding = $this->app->lineBindings()->consumeSerialized(
                 $message,
                 $candidate['line_user_id'],
@@ -403,13 +511,15 @@ final class LineWebhookService
                         );
                     });
                 },
+                $deadlineNanoseconds === null ? 1
+                    : (self::remainingMilliseconds($deadlineNanoseconds) >= 2_500 ? 1 : 0),
             );
-            return [
-                'text' => ($binding['newly_bound'] ?? false)
-                    ? 'ผูกบัญชี LINE สำเร็จแล้ว คุณจะได้รับบิลและการแจ้งเตือนของห้องนี้ผ่านบัญชีนี้'
-                    : 'บัญชี LINE นี้ผูกกับผู้พักเรียบร้อยแล้ว ไม่ต้องดำเนินการซ้ำ',
-                'outcome' => ($binding['newly_bound'] ?? false) ? 'bound' : 'already_bound',
-            ];
+            $reply = $bot->command($candidate['line_user_id'], 'bound', (int) $binding['resident_id']);
+            if ($reply['outcome'] === 'bound' && !($binding['newly_bound'] ?? false)) {
+                $reply['text'] = "บัญชีนี้ผูกเรียบร้อยแล้ว ไม่ต้องดำเนินการซ้ำ\n" . $reply['text'];
+                $reply['outcome'] = 'already_bound';
+            }
+            return $reply;
         } catch (HttpException $error) {
             return match ($error->errorCode) {
                 'LINE_ID_IN_USE' => [
@@ -436,6 +546,13 @@ final class LineWebhookService
     /** @return 'replied'|'token_unavailable'|'deferred' */
     private function replyWithText(string $token, string $replyToken, string $text, int $deadlineNanoseconds): string
     {
+        if ($this->replyTransport !== null) {
+            $result = ($this->replyTransport)($token, $replyToken, $text, $deadlineNanoseconds);
+            if (!in_array($result, ['replied', 'token_unavailable', 'deferred'], true)) {
+                throw new \RuntimeException('Invalid LINE reply transport result');
+            }
+            return $result;
+        }
         if (!function_exists('curl_init')) {
             throw new \RuntimeException('PHP cURL extension is required');
         }

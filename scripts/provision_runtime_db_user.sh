@@ -321,7 +321,7 @@ if ! readiness="$(runtime_query "
     fail 'The runtime account could not read the required application schema'
 fi
 readiness="${readiness%$'\r'}"
-[[ "$readiness" == '16|1|1' ]] \
+[[ "$readiness" == '21|1|1' ]] \
     || fail 'The application schema or required defaults are incomplete'
 
 printf '%s\n' 'Runtime database account provisioned and verified'

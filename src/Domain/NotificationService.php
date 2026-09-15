@@ -13,12 +13,41 @@ final class NotificationService
     private const LINE_ENDPOINT = 'https://api.line.me/v2/bot/message/push';
     private const CLAIM_LEASE_SECONDS = 120;
 
-    public function __construct(private readonly Application $app) {}
+    public function __construct(private readonly Application $app,private readonly ?\Closure $pushTransport=null) {}
 
     /** @return array<string,mixed> */
     public function enqueueBill(int $billId): array
     {
-        return $this->app->database()->transaction(function(PDO $pdo) use($billId): array {
+        return $this->app->lineOfficialAccounts()->withRegistryLock(function()use($billId):array{
+            return $this->app->database()->transaction(function(PDO $pdo)use($billId):array{
+                $q=$pdo->prepare('SELECT resident_id FROM bills WHERE id=? FOR UPDATE');$q->execute([$billId]);$resident=$q->fetchColumn();
+                if($resident===false)throw new HttpException(404,'ไม่พบบิล','BILL_NOT_FOUND');
+                $targets=$this->recipients((int)$resident);
+                if($targets===[])throw new HttpException(422,'ผู้พักยังไม่ได้ผูก LINE ที่พร้อมรับบิล','LINE_NOT_LINKED');
+                $rows=[];foreach($targets as $target)$rows[]=$this->enqueueForRecipient($billId,$target);
+                $first=$rows[0];$first['deliveries']=$rows;$first['recipient_count']=count($rows);
+                $first['newly_queued']=count(array_filter($rows,fn(array $r):bool=>in_array($r['enqueue_state'],['newly_queued','requeued'],true)))>0;
+                if($first['newly_queued'])$first['enqueue_state']='newly_queued';
+                return $first;
+            });
+        });
+    }
+
+    /** All currently authorized recipients; legacy OA0 remains separately pinned. */
+    public function recipients(int $residentId): array
+    {
+        $rows=$this->app->lineRoomBindings()->recipients($residentId);
+        $q=$this->app->database()->pdo()->prepare("SELECT r.line_user_id,o.id AS occupancy_id FROM residents r JOIN occupancies o ON o.resident_id=r.id AND o.status='active' WHERE r.id=? AND r.active=1 LIMIT 2");$q->execute([$residentId]);$legacy=$q->fetchAll();
+        if(count($legacy)===1&&$this->isLineBindingVerified($residentId,$legacy[0]['line_user_id'])&&!$this->app->lineRoomBindings()->isBlocked($residentId)){
+            $oa=$this->app->lineOfficialAccounts()->get(0);
+            if(($oa['line_binding_ready']??false)===true)$rows[]=['id'=>0,'oa_id'=>0,'resident_id'=>$residentId,'occupancy_id'=>(int)$legacy[0]['occupancy_id'],'line_user_id'=>$legacy[0]['line_user_id']];
+        }
+        $unique=[];foreach($rows as $row)$unique[$row['oa_id'].':'.$row['line_user_id']]=$row;return array_values($unique);
+    }
+
+    private function enqueueForRecipient(int $billId,array $target): array
+    {
+        return $this->app->database()->transaction(function(PDO $pdo) use($billId,$target): array {
             $statement=$pdo->prepare("SELECT b.id,b.bill_no,b.period,b.due_date,b.total_amount,b.status,
                     b.room_code_snapshot AS room_code,res.id AS resident_id,res.line_user_id
                 FROM bills b
@@ -43,28 +72,27 @@ final class NotificationService
             if($bill['status']!=='pending'){
                 throw new HttpException(409,'บิลนี้ชำระแล้ว จึงไม่สามารถเข้าคิวแจ้งชำระได้','BILL_NOT_PENDING',['status'=>$bill['status']]);
             }
-            if(trim((string)$this->app->settings()->value('line_channel_access_token',''))===''){
-                throw new HttpException(503,'ยังไม่ได้ตั้งค่า LINE Messaging','LINE_NOT_CONFIGURED');
-            }
+            $this->app->lineOfficialAccounts()->credentials((int)$target['oa_id']);
+            $bill['line_user_id']=$target['line_user_id'];
             if(!$this->validLineUserId($bill['line_user_id']??null)){
                 throw new HttpException(422,'ผู้พักยังไม่ได้ผูกบัญชี LINE','LINE_NOT_LINKED');
             }
-            if(!$this->isLineBindingVerified((int)$bill['resident_id'],(string)$bill['line_user_id'])){
+            if((int)$target['resident_id']!==(int)$bill['resident_id']||((int)$target['id']===0&&!$this->isLineBindingVerified((int)$bill['resident_id'],(string)$bill['line_user_id']))){
                 throw new HttpException(422,'ผู้พักต้องยืนยันบัญชี LINE ด้วยรหัสครั้งเดียวก่อนรับบิล','LINE_NOT_VERIFIED');
             }
 
             $payload=$this->billPayload($bill);
             $encoded=json_encode($payload,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR);
-            $existingStatement=$pdo->prepare("SELECT id,status,attempts FROM notification_outbox WHERE bill_id=? AND purpose='bill_delivery' LIMIT 1 FOR UPDATE");
-            $existingStatement->execute([$billId]);
+            $existingStatement=$pdo->prepare("SELECT id,status,attempts FROM notification_outbox WHERE bill_id=? AND purpose='bill_delivery' AND line_delivery_key=? LIMIT 1 FOR UPDATE");
+            $existingStatement->execute([$billId,(int)$target['id']]);
             $existing=$existingStatement->fetch();
             $enqueueState='newly_queued';
 
             if(!$existing){
                 $insert=$pdo->prepare("INSERT INTO notification_outbox
-                    (bill_id,resident_id,channel,purpose,recipient,payload,status,attempts,next_attempt_at,retry_key,created_at,updated_at)
-                    VALUES (?,?,'line','bill_delivery',?,?,'pending',0,UTC_TIMESTAMP(),?,UTC_TIMESTAMP(),UTC_TIMESTAMP())");
-                $insert->execute([$billId,$bill['resident_id'],$bill['line_user_id'],$encoded,$this->randomUuid()]);
+                    (bill_id,resident_id,line_oa_id,line_binding_id,channel,purpose,recipient,payload,status,attempts,next_attempt_at,retry_key,created_at,updated_at)
+                    VALUES (?,?,?,?,'line','bill_delivery',?,?,'pending',0,UTC_TIMESTAMP(),?,UTC_TIMESTAMP(),UTC_TIMESTAMP())");
+                $insert->execute([$billId,$bill['resident_id'],$target['oa_id'],$target['id']?:null,$bill['line_user_id'],$encoded,$this->randomUuid()]);
                 $outboxId=(int)$pdo->lastInsertId();
             }else{
                 $outboxId=(int)$existing['id'];
@@ -120,6 +148,14 @@ final class NotificationService
     /** @return array{processed:int,sent:int,failed:int,retried:int,lost_claims:int,recovered:int} */
     public function process(int $limit=25): array
     {
+        $result=$this->processBills($limit);
+        $remaining=max(0,$limit-$result['processed']);
+        if($remaining>0){$notices=$this->app->lineNotices()->process($remaining);foreach($result as$key=>$value)$result[$key]+=$notices[$key]??0;}
+        return $result;
+    }
+
+    private function processBills(int $limit=25): array
+    {
         $limit=max(1,min(100,$limit));
         $result=[
             'processed'=>0,'sent'=>0,'failed'=>0,'retried'=>0,
@@ -137,12 +173,12 @@ final class NotificationService
                 continue;
             }
             try{
-                $delivery=$this->withLineBindingLock((int)$row['resident_id'],function()use($id,$billId,$claimToken):array{
+                $delivery=$this->app->lineOfficialAccounts()->withRegistryLock(fn()=>$this->withLineBindingLock((int)$row['resident_id'],function()use($id,$billId,$claimToken):array{
                     // Refresh only a still-live claim after the advisory binding
                     // lock. A stale worker never reaches the provider.
                     if(!$this->refreshClaim($id,$claimToken))return ['lost_claim'=>true];
                     return $this->deliverClaimed($id,$billId,$claimToken);
-                });
+                }));
                 if(is_string($delivery['terminal']??null)){
                     if($this->markTerminalFailure($id,$claimToken,$delivery['terminal']))$result['failed']++;
                     else $result['lost_claims']++;
@@ -217,7 +253,7 @@ final class NotificationService
             $latestPaymentLock->execute([$billId]);
             $paymentStatus=$latestPaymentLock->fetchColumn();
 
-            $claimLock=$pdo->prepare("SELECT id,resident_id,retry_key,attempts,recipient,payload,
+            $claimLock=$pdo->prepare("SELECT id,resident_id,line_oa_id,line_binding_id,retry_key,attempts,recipient,payload,
                     (created_at<=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 24 HOUR)) AS retry_generation_expired
                 FROM notification_outbox
                 WHERE id=? AND bill_id=? AND status='processing' AND claim_token=?
@@ -235,13 +271,17 @@ final class NotificationService
             $resident->execute([$bill['resident_id']]);$currentLineUserId=$resident->fetchColumn();
             $recipient=$current['recipient']??null;
             if(!$this->validLineUserId($recipient))return ['terminal'=>'Stored LINE recipient is invalid'];
-            if(!$this->validLineUserId($currentLineUserId)||!hash_equals((string)$recipient,(string)$currentLineUserId)){
-                return ['terminal'=>'Verified LINE recipient changed'];
+            if($current['line_binding_id']!==null){
+                $binding=$this->app->lineRoomBindings()->verified((int)$current['line_binding_id'],(string)$recipient,(int)$current['line_oa_id']);
+                if($binding===null||(int)$binding['resident_id']!==(int)$bill['resident_id'])return ['terminal'=>'LINE binding is no longer verified'];
+            }else{
+                if((int)$current['line_oa_id']!==0||!$this->validLineUserId($currentLineUserId)||!hash_equals((string)$recipient,(string)$currentLineUserId))return ['terminal'=>'Verified LINE recipient changed'];
+                if(!$this->isLineBindingVerified((int)$bill['resident_id'],(string)$recipient)||$this->app->lineRoomBindings()->isBlocked((int)$bill['resident_id']))return ['terminal'=>'LINE binding is no longer verified'];
             }
-            if(!$this->isLineBindingVerified((int)$bill['resident_id'],(string)$recipient))return ['terminal'=>'LINE binding is no longer verified'];
             if(!$this->validRetryUuid($current['retry_key']??null))return ['terminal'=>'Stored LINE retry key is invalid'];
             $body=$this->storedLinePayloadBody($current['payload']??null,(string)$recipient);
-            $acceptance=$this->pushLine($body,(string)$current['retry_key']);
+            $oa=$this->app->lineOfficialAccounts()->credentials((int)$current['line_oa_id']);
+            $acceptance=$this->pushLine($body,(string)$current['retry_key'],$oa['access_token']);
             $sent=$pdo->prepare("UPDATE notification_outbox
                 SET status='sent',sent_at=UTC_TIMESTAMP(6),last_error=NULL,
                     line_request_id=?,line_accepted_request_id=?,
@@ -456,12 +496,19 @@ final class NotificationService
         return strlen($stored)===64&&hash_equals($this->lineBindingHash($residentId,$lineUserId),$stored);
     }
 
-    public function withLineBindingLock(int $residentId,callable $callback): mixed
+    public function withLineBindingLock(int $residentId,callable $callback,int $lockWaitSeconds=12): mixed
+    {
+        if($residentId<1||$lockWaitSeconds<0||$lockWaitSeconds>12)throw new \InvalidArgumentException('Invalid binding lock');
+        return $this->app->lineOfficialAccounts()->withRegistryLock(fn()=>$this->withResidentBindingLock($residentId,$callback,$lockWaitSeconds),$lockWaitSeconds);
+    }
+
+    private function withResidentBindingLock(int $residentId,callable $callback,int $lockWaitSeconds): mixed
     {
         if($residentId<1)throw new \InvalidArgumentException('Invalid resident binding lock');
+        if($lockWaitSeconds<0||$lockWaitSeconds>12)throw new \InvalidArgumentException('Invalid LINE binding lock timeout');
         $pdo=$this->app->database()->pdo();
         $name='dormitory:line:'.substr(hash_hmac('sha256',(string)$residentId,$this->app->config->appKey()),0,32);
-        $acquire=$pdo->prepare('SELECT GET_LOCK(?,12)');$acquire->execute([$name]);
+        $acquire=$pdo->prepare('SELECT GET_LOCK(?,?)');$acquire->execute([$name,$lockWaitSeconds]);
         if((int)$acquire->fetchColumn()!==1)throw new \RuntimeException('Could not acquire LINE binding lock');
         try{return $callback();}
         finally{
@@ -504,12 +551,22 @@ final class NotificationService
     }
 
     /** @return array{request_id:?string,accepted_request_id:?string,status:int} */
-    private function pushLine(string $body,string $retryKey): array
+    public function pushTextForAccount(int $oaId,string $recipient,string $text,string $retryKey): array
     {
-        $token=trim((string)$this->app->settings()->value('line_channel_access_token',''));
+        if(!$this->validLineUserId($recipient)||$text===''||mb_strlen($text)>4500)throw new LineDeliveryException('Invalid LINE text',false);
+        return $this->app->lineOfficialAccounts()->withRegistryLock(function()use($oaId,$recipient,$text,$retryKey):array{
+            $oa=$this->app->lineOfficialAccounts()->credentials($oaId);
+            return $this->pushLine(json_encode(['to'=>$recipient,'messages'=>[['type'=>'text','text'=>$text]]],JSON_UNESCAPED_UNICODE|JSON_THROW_ON_ERROR),$retryKey,$oa['access_token']);
+        });
+    }
+
+    private function pushLine(string $body,string $retryKey,?string $accountToken=null): array
+    {
+        $token=$accountToken??trim((string)$this->app->settings()->value('line_channel_access_token',''));
         if($token==='')throw new LineDeliveryException('LINE Messaging is not configured',false);
         if(!$this->validRetryUuid($retryKey))throw new LineDeliveryException('X-Line-Retry-Key is invalid',false);
         if($body===''||strlen($body)>65536)throw new LineDeliveryException('LINE request body is invalid',false);
+        if($this->pushTransport!==null)return ($this->pushTransport)($body,$retryKey,$token);
         if(!function_exists('curl_init'))throw new LineDeliveryException('PHP cURL extension is required',false);
         $ch=curl_init(self::LINE_ENDPOINT);if($ch===false)throw new LineDeliveryException('Cannot initialize LINE cURL request',true);
         $response='';$tooLarge=false;$providerHeaders=[];

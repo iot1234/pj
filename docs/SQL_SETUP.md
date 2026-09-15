@@ -1,5 +1,7 @@
 # คู่มือตั้งค่า MySQL
 
+> อัปเดต LINE platform: source ปัจจุบันต้องมี migration `013_trigger_collation_pinning.sql` และ `014_line_platform.sql` ต่อจาก `012` Fresh schema/install รวมแล้วและมี 21 ตาราง/23 triggers/116 CHECK constraints อ่านขั้นตอนเพิ่มเติมใน [คู่มือ LINE](LINE_BINDING.md) ตัวเลขและลำดับที่จบที่ `012` ด้านล่างอธิบายฐานก่อนเพิ่ม LINE platform
+
 ระบบต้องเชื่อมต่อฐานข้อมูลได้ก่อนจึงจะเปิดหน้าหลังบ้านได้ ดังนั้นค่าการเชื่อมต่อ MySQL (`DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`) เป็นค่าโครงสร้างพื้นฐานที่ตั้งในไฟล์ `.env` หรือ secret manager ของเครื่อง deploy ไม่สามารถย้ายไปตั้งจากหน้า Admin ได้ phpMyAdmin เป็นเพียงหน้าจอสำหรับ import/ตรวจ/ดูแลฐานข้อมูล ไม่ใช่จุดที่แอปอ่านค่าการเชื่อมต่อ ส่วนเบอร์ PromptPay, LINE Channel access token/Channel secret และ API key ตรวจสลิปให้ตั้งจาก Admin → ตั้งค่า หลังระบบเชื่อมต่อฐานข้อมูลแล้ว
 
 ## ค่าที่ต้องตั้ง

@@ -228,6 +228,26 @@ input:disabled, select:disabled, textarea:disabled { color: var(--ink-soft); bac
 .topbar-user small { color: var(--ink-soft); }
 .portal-main, .admin-content { max-width: 1500px; margin: 0 auto; padding: clamp(1.3rem, 3vw, 2.4rem); }
 .portal-view, .admin-view { animation: reveal .18s ease; }
+.line-platform-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 1rem; margin-bottom: 1.4rem; }
+.line-platform-card { min-width: 0; padding: 1rem; border: 1px solid var(--border, #dde3e8); border-radius: 12px; background: var(--surface, #fff); }
+.line-platform-card h3, .line-platform-card h4 { margin: 0 0 .45rem; }
+.line-platform-card p, .line-platform-diagnostics p { overflow-wrap: anywhere; }
+.line-platform-card .form-actions { justify-content: flex-start; flex-wrap: wrap; gap: .5rem; }
+.line-platform-summary { display: flex; flex-wrap: wrap; gap: .7rem; margin: 1rem 0; }
+.line-platform-summary > span { padding: .6rem .85rem; border: 1px solid var(--border, #dde3e8); border-radius: 10px; background: var(--surface, #fff); }
+#line-platform-dialog { width: min(92vw, 920px); }
+.line-platform-modal { width: 100%; max-width: 100%; }
+.line-platform-modal h3 { margin-top: 1.4rem; }
+.line-platform-modal input, .line-platform-modal select, .line-platform-modal textarea { max-width: 100%; min-width: 0; }
+.line-platform-modal .line-code-qr { display: block; width: 180px; max-width: 100%; height: auto; margin: .7rem auto; }
+.line-platform-modal .line-code-qr[hidden] { display: none; }
+.line-platform-code { font-family: monospace; overflow-wrap: anywhere; }
+.line-platform-policy, .line-platform-diagnostics { padding: .8rem 0; }
+.line-platform-history { display: grid; gap: .5rem; margin-top: .8rem; }
+.line-platform-history p { margin: 0; padding-bottom: .5rem; border-bottom: 1px solid var(--border, #dde3e8); }
+.line-platform-mutes { display: flex; flex-wrap: wrap; gap: .7rem; padding-top: .6rem; }
+.line-platform-mutes label { display: flex; align-items: center; gap: .3rem; }
+.resident-profile-fields { min-width: 0; margin: 0; padding: 0; border: 0; }
 @keyframes reveal { from { opacity: 0; transform: translateY(4px); } }
 .summary-grid, .stats-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin-bottom: 1rem; }
 .summary-card, .stat-card { display: grid; min-height: 145px; align-content: center; padding: 1.15rem; background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-sm); }

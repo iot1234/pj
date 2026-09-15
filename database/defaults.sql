@@ -16,6 +16,7 @@ VALUES
 
 -- Operational credentials start empty and are configured by an owner at
 -- Admin -> Settings. No integration secret is stored in source control.
+-- schema.sql also seeds LINE OA 0 metadata; its credentials stay in this singleton.
 INSERT IGNORE INTO integration_settings
     (id, line_max_attempts, notification_batch_size, slip_provider,
      slip_max_bytes, slip_time_tolerance_seconds, updated_by)

@@ -175,7 +175,9 @@ final class BookingService
             }
             $created=$pdo->prepare('SELECT * FROM bookings WHERE id=?');
             $created->execute([(int)$pdo->lastInsertId()]);
-            $result=$this->map($created->fetch());$result['idempotent_replay']=false;return $result;
+            $result=$this->map($created->fetch());$result['idempotent_replay']=false;
+            LineAdminEvents::enqueue($this->app,'booking.created',(int)$result['id']);
+            return $result;
         });
     }
 
@@ -680,6 +682,7 @@ final class BookingService
                 throw $error;
             }
             $occupancyId = (int) $pdo->lastInsertId();
+            LineAdminEvents::enqueue($this->app,'tenancy.moved_in',$occupancyId);
             return [
                 'booking_id'=>$id,'status'=>'moved_in','resident_id'=>$residentId,
                 'occupancy_id'=>$occupancyId,'room_id'=>(int)$booking['room_id'],'move_in_date'=>$moveIn,
@@ -844,6 +847,7 @@ final class BookingService
             }
             if($target==='confirmed')$this->assertPhoneHasNoActiveOccupancy($pdo,(string)$booking['phone_norm']);
             $mutation($pdo, $booking);
+            LineAdminEvents::enqueue($this->app,'booking.'.$target,$id);
             $fresh=$pdo->prepare('SELECT * FROM bookings WHERE id=?');$fresh->execute([$id]);
             return $this->map($fresh->fetch());
         });

@@ -117,6 +117,7 @@ final class PaymentService
             $statement=$pdo->prepare("UPDATE payments SET status='rejected',transaction_ref=NULL,verified_at=NULL,rejection_reason=?,verification_lease_until=NULL,verification_token=NULL,updated_at=UTC_TIMESTAMP() WHERE id=? AND status='pending'");
             $statement->execute([mb_substr('ปิดโดยผู้ดูแล: '.$reason,0,500),$paymentId]);
             if($statement->rowCount()!==1)throw new HttpException(409,'สถานะรายการชำระเปลี่ยนแปลงแล้ว','PAYMENT_CHANGED');
+            LineAdminEvents::enqueue($this->app,'payment.rejected',$paymentId);
             return $this->get($pdo,$paymentId);
         });
     }
@@ -219,7 +220,9 @@ final class PaymentService
             $provider=strtolower(trim((string)$this->app->settings()->value('slip_provider','')));
             $insert=$pdo->prepare("INSERT INTO payments (bill_id,resident_id,amount,status,slip_path,slip_mime,slip_hmac,provider,rejection_reason,verification_lease_until,verification_token,verification_attempts,created_at,updated_at) VALUES (?,?,?,'pending',?,?,?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 60 SECOND),?,1,UTC_TIMESTAMP(),UTC_TIMESTAMP())");
             $insert->execute([$bill['id'],$residentId,$current['total_amount'],$relative,$mime,$hmac,$provider,'กำลังตรวจสอบกับผู้ให้บริการ',$token]);
-            return $this->get($pdo,(int)$pdo->lastInsertId());
+            $paymentId=(int)$pdo->lastInsertId();
+            LineAdminEvents::enqueue($this->app,'payment.submitted',$paymentId);
+            return $this->get($pdo,$paymentId);
         });}catch(PDOException $e){
             if(MySqlError::isDuplicateKey($e,'uq_payments_slip_hmac','uq_payments_one_active_per_bill')){
                 $duplicate=$this->app->database()->pdo()->prepare('SELECT id,bill_id,resident_id FROM payments WHERE slip_hmac=? LIMIT 1');
@@ -245,7 +248,9 @@ final class PaymentService
             }
             if($bill['status']!=='pending')throw new HttpException(409,'บิลนี้ชำระแล้ว','BILL_ALREADY_PAID');
             $this->applyVerification($pdo,$paymentId,$billId,$v);
-            $data=$this->get($pdo,$paymentId);if($afterFinalize!==null)$afterFinalize($data);return $data;
+            $data=$this->get($pdo,$paymentId);
+            LineAdminEvents::enqueue($this->app,'payment.'.($data['status']==='pending'?'review':$data['status']),$paymentId);
+            if($afterFinalize!==null)$afterFinalize($data);return $data;
         });
     }
 
