@@ -101,19 +101,36 @@ SET o.opening_water_reading = water.previous_reading,
 WHERE o.opening_water_reading IS NULL
   AND o.opening_electric_reading IS NULL;
 
--- Never finish the migration with a currently occupied room that the new
--- write path cannot meter or bill. If this guard aborts, recover the two
--- actual move-in readings from the physical/legacy ledger, update those
--- specific active occupancy rows while writes remain stopped, and rerun this
--- migration. Do not invent a baseline from a later current reading.
+-- A legacy occupancy without either opening reading may remain pending only
+-- when no meter or bill history exists for it or its room during its occupancy.
+-- The application and migration 015 block financial writes until an admin
+-- supplies both actual move-in readings. Never invent baselines. A partial
+-- pair, or missing readings with historical evidence, still requires repair
+-- from the source ledger while all application writes remain stopped.
 SET @dormitory_009_active_opening_gaps := (
     SELECT COUNT(*)
-      FROM occupancies
-     WHERE status = 'active'
-       AND (
-           opening_water_reading IS NULL
-           OR opening_electric_reading IS NULL
-       )
+      FROM occupancies o
+     WHERE (o.opening_water_reading IS NULL) <> (o.opening_electric_reading IS NULL)
+        OR (
+            o.opening_water_reading IS NULL
+            AND o.opening_electric_reading IS NULL
+            AND (
+                EXISTS (
+                    SELECT 1 FROM meter_readings history
+                     WHERE history.occupancy_id = o.id
+                        OR (history.room_id = o.room_id
+                            AND history.period >= DATE_FORMAT(o.move_in_date, '%Y-%m-01')
+                            AND history.period <= DATE_FORMAT(COALESCE(o.move_out_date, '9999-12-31'), '%Y-%m-01'))
+                )
+                OR EXISTS (
+                    SELECT 1 FROM bills history
+                     WHERE history.occupancy_id = o.id
+                        OR (history.room_id = o.room_id
+                            AND history.period >= DATE_FORMAT(o.move_in_date, '%Y-%m-01')
+                            AND history.period <= DATE_FORMAT(COALESCE(o.move_out_date, '9999-12-31'), '%Y-%m-01'))
+                )
+            )
+        )
 );
 SET @dormitory_009_opening_guard_sql := IF(
     @dormitory_009_active_opening_gaps = 0,
@@ -470,7 +487,7 @@ SET @dormitory_009_sql := IF(
            AND constraint_type = 'CHECK'
     ),
     'SELECT 1',
-    'ALTER TABLE occupancies ADD CONSTRAINT chk_occupancies_opening_readings CHECK (((status = ''ended'') AND (opening_water_reading IS NULL) AND (opening_electric_reading IS NULL)) OR ((opening_water_reading >= 0) AND (opening_water_reading <= 9999999.00) AND (opening_electric_reading >= 0) AND (opening_electric_reading <= 9999999.00)))'
+    'ALTER TABLE occupancies ADD CONSTRAINT chk_occupancies_opening_readings CHECK (((opening_water_reading IS NULL) AND (opening_electric_reading IS NULL)) OR ((opening_water_reading IS NOT NULL) AND (opening_electric_reading IS NOT NULL) AND (opening_water_reading >= 0) AND (opening_water_reading <= 9999999.00) AND (opening_electric_reading >= 0) AND (opening_electric_reading <= 9999999.00)))'
 );
 PREPARE dormitory_009_statement FROM @dormitory_009_sql;
 EXECUTE dormitory_009_statement;

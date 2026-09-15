@@ -73,6 +73,16 @@ try {
             . implode('; ', array_slice($lineSchemaErrors, 0, 3)),
         );
     }
+    // Migration 015 installs this enforced canonical marker only after its
+    // meter/bill guards. Runtime accounts cannot inspect trigger bodies; the
+    // deployment schema-audit checks those separately with the schema owner.
+    $openingSchemaErrors = Dormitory\Support\PendingOpeningSchema::errors($pdo);
+    if ($openingSchemaErrors !== []) {
+        throw new RuntimeException(
+            'schema opening-reading readiness check failed; migration 015 required: '
+            . implode('; ', $openingSchemaErrors),
+        );
+    }
 
     // A table-count-only probe can stay green while application code expects
     // columns or uniqueness guards from a newer migration. Keep this list to
@@ -210,7 +220,7 @@ try {
         'chk_notification_outbox_claim_lease',
         'chk_notification_worker_error',
         'chk_notification_worker_id',
-        'chk_occupancies_opening_readings',
+        'chk_occupancies_opening_readings_v2',
         'chk_residents_access_password',
         'chk_residents_activation_state',
         'chk_residents_password_activation',

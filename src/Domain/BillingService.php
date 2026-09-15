@@ -490,6 +490,15 @@ final class BillingService
         $issues=$partition['issues'];
         foreach(array_diff($roomIds,$foundRoomIds)as$missingRoomId)$issues[]=['room_id'=>$missingRoomId,'code'=>'NO_OCCUPANCY'];
         foreach ($occupancies as $occupancy) {
+            if($occupancy['opening_water_reading']===null||$occupancy['opening_electric_reading']===null){
+                $issues[]=[
+                    'room_id'=>(int)$occupancy['room_id'],
+                    'room_code'=>$occupancy['room_code'],
+                    'occupancy_id'=>(int)$occupancy['occupancy_id'],
+                    'code'=>'METER_OPENING_REQUIRED',
+                ];
+                continue;
+            }
             $meter = $pdo->prepare('SELECT meter_type,occupancy_id,previous_reading,current_reading,units_used
                 FROM meter_readings WHERE room_id=? AND period=?' . ($lock ? ' FOR UPDATE' : ''));
             $meter->execute([$occupancy['room_id'], $periodDate]);

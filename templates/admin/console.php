@@ -177,6 +177,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                     <article class="stat-card stat-reserved"><span>รอเปิดใช้งาน</span><strong data-resident-stat="activation">—</strong><small>ยังไม่ได้ใช้รหัสเปิดใช้งาน</small></article>
                     <article class="stat-card"><span>ยังไม่ผูก LINE</span><strong data-resident-stat="noline">—</strong><small>ต้องแจ้งบิลด้วยวิธีอื่น</small></article>
                 </div>
+                <div class="security-note" id="resident-opening-note" role="status" hidden><strong id="resident-opening-count"></strong><span>กรอกเลขน้ำและไฟจริง ณ วันเข้าพักด้วยปุ่ม “เติมเลขเริ่มต้น” ของแต่ละห้อง ระบบจะพักการจดมิเตอร์และออกบิลของห้องเหล่านี้ไว้จนกว่าข้อมูลจะครบ</span></div>
                 <div class="toolbar"><label class="search-field"><span class="sr-only">ค้นหาผู้พัก</span><input id="resident-search" type="search" placeholder="ค้นหาชื่อ เบอร์โทร หรือห้อง…"></label></div>
                 <div class="panel table-panel"><div class="table-scroll" role="region" aria-label="ตารางผู้พักอาศัย" tabindex="0"><table><thead><tr><th>ผู้พัก</th><th>ห้อง</th><th>ติดต่อ</th><th>LINE</th><th>วันเข้าพัก</th><th>สถานะ</th><th class="align-right">จัดการ</th></tr></thead><tbody id="resident-rows"></tbody></table></div><div class="table-state" id="resident-state" data-state="loading"><span class="spinner" aria-hidden="true"></span><p>กำลังโหลดผู้พัก…</p></div></div>
             </section>
@@ -184,7 +185,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
             <section class="admin-view" data-admin-view="meters" aria-labelledby="meters-title" hidden>
                 <div class="section-heading"><div><p class="eyebrow">บันทึกการใช้น้ำและไฟ</p><h2 id="meters-title">จดมิเตอร์รายเดือน</h2></div></div>
                 <div class="toolbar toolbar-period"><label><span>รอบเดือน</span><input type="month" id="meter-period" max="<?= e($maximumBillingPeriod) ?>" required></label><p class="toolbar-note">ค่าที่กรอกต้องไม่น้อยกว่าครั้งก่อน</p><p class="toolbar-progress" id="meter-progress" role="status">—</p></div>
-                <div class="security-note meter-baseline-note" role="note"><strong>มิเตอร์ช่องที่ขึ้น “เดือนแรก · หน่วย 0”</strong><span>เลขที่กรอกครั้งแรกจะเป็นค่าตั้งต้น (baseline) และหน่วยของรอบนี้จะเป็น 0 เฉพาะมิเตอร์ช่องนั้น มิเตอร์อีกประเภทที่มีค่าก่อนหน้าแล้วจะคิดส่วนต่างตามปกติ</span></div>
+                <div class="security-note meter-baseline-note" role="note"><strong>ตรวจเลขมิเตอร์เริ่มต้นก่อนบันทึก</strong><span>ห้องที่ขึ้น “รอเลข ณ วันเข้าพัก” ต้องเติมเลขน้ำและไฟจริงของวันเข้าพักก่อน ช่อง “เดือนแรก · หน่วย 0” ใช้ตั้งต้นเฉพาะมิเตอร์ที่ยังไม่มีประวัติและไม่มีผู้พักรอเลขเริ่มต้น</span></div>
                 <div class="panel table-panel"><div class="table-scroll meter-table" role="region" aria-label="ตารางจดมิเตอร์รายเดือน" tabindex="0"><table><thead><tr><th rowspan="2">ห้อง</th><th colspan="3">มิเตอร์น้ำ</th><th colspan="3">มิเตอร์ไฟ</th><th rowspan="2" class="align-right">จัดการ</th></tr><tr><th>ก่อน</th><th>ปัจจุบัน</th><th>ใช้</th><th>ก่อน</th><th>ปัจจุบัน</th><th>ใช้</th></tr></thead><tbody id="meter-rows"></tbody></table></div><div class="table-state" id="meter-state" data-state="loading"><span class="spinner" aria-hidden="true"></span><p>กำลังโหลดมิเตอร์…</p></div></div>
             </section>
 
@@ -369,6 +370,21 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
         <p class="field-hint" id="resident-create-reuse-help" hidden>เลือกเฉพาะเมื่อยืนยันแล้วว่าเป็นบุคคลเดิม ประวัติบิลเก่าจะถูกเชื่อมกับบัญชีนี้ หากเป็นคนละคนต้องใช้เบอร์อื่นเพื่อปกป้องข้อมูลส่วนบุคคล</p>
         <p class="form-error" id="resident-create-error" role="alert" hidden></p>
         <div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-primary" type="submit">ยืนยันและรับเข้าพัก</button></div>
+    </form>
+</dialog>
+
+<dialog class="modal" id="opening-readings-dialog" aria-labelledby="opening-readings-title">
+    <form class="modal-card" id="opening-readings-form">
+        <input type="hidden" name="occupancy_id">
+        <div class="modal-header"><div><p class="eyebrow">เติมข้อมูลการเข้าพักที่ยังขาด</p><h2 id="opening-readings-title">เลขมิเตอร์ ณ วันเข้าพัก</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div>
+        <p class="modal-lead" id="opening-readings-summary"></p>
+        <div class="security-note" id="opening-readings-help"><strong>ใช้เลขจริงจากวันส่งมอบห้อง</strong><span>ตรวจจากบันทึกหรือภาพมิเตอร์วันเข้าพัก เลขทั้งสองใช้คำนวณบิลและบันทึกได้ครั้งเดียว หากยังหาเลขจริงไม่ได้ ให้กลับมากรอกภายหลังโดยไม่ใส่ค่า 0 แทน</span></div>
+        <div class="form-grid form-grid-two">
+            <label class="field"><span>เลขมิเตอร์น้ำ ณ วันเข้าพัก</span><input name="opening_water_reading" type="number" inputmode="decimal" min="0" max="9999999" step="0.01" required aria-describedby="opening-readings-help"></label>
+            <label class="field"><span>เลขมิเตอร์ไฟ ณ วันเข้าพัก</span><input name="opening_electric_reading" type="number" inputmode="decimal" min="0" max="9999999" step="0.01" required aria-describedby="opening-readings-help"></label>
+        </div>
+        <p class="form-error" id="opening-readings-error" role="alert" hidden></p>
+        <div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>กรอกภายหลัง</button><button class="button button-primary" type="submit">ยืนยันเลขและบันทึก</button></div>
     </form>
 </dialog>
 

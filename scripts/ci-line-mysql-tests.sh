@@ -2,6 +2,53 @@
 # Sourced by ci.yml to share its database setup function, containers and traps.
 # Keep these suites in isolated schemas before the web quota tests begin.
 
+# Legacy opening-reading upgrade guards run with the schema owner in an
+# otherwise empty disposable database. The test imports its own fixtures.
+pending_migration_database=appj_pending_schema_ci
+docker exec \
+  --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+  "$database" mysql --host=127.0.0.1 --user=root \
+  --execute="CREATE DATABASE ${pending_migration_database} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+docker run --rm \
+  --network "$network" \
+  --entrypoint php \
+  --env APP_ENV=testing \
+  --env DB_HOST="$database" \
+  --env DB_PORT=3306 \
+  --env DB_DATABASE="$pending_migration_database" \
+  --env DB_USERNAME=root \
+  --env DB_PASSWORD="$CI_DBA_PASSWORD" \
+  --env DB_SSL=false \
+  "$image" tests/pending_opening_migration_mysql.php
+
+# The one-time admin completion path uses a restricted runtime account. Only
+# its parent test receives DDL credentials to build legacy/fault fixtures.
+pending_database=appj_pending_test_baselines
+pending_username=pending_test_runtime
+docker exec \
+  --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+  "$database" mysql --host=127.0.0.1 --user=root \
+  --execute="CREATE DATABASE ${pending_database} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+run_database_setup "$pending_database" "$pending_username"
+docker run --rm \
+  --network "$network" \
+  --entrypoint php \
+  --env APP_ENV=testing \
+  --env APP_DEBUG=false \
+  --env APP_URL=http://localhost \
+  --env APP_TIMEZONE=Asia/Bangkok \
+  --env APP_KEY="$CI_APP_KEY" \
+  --env FORCE_HTTPS=false \
+  --env DB_HOST="$database" \
+  --env DB_PORT=3306 \
+  --env DB_DATABASE="$pending_database" \
+  --env DB_USERNAME="$pending_username" \
+  --env DB_PASSWORD="$CI_DB_PASSWORD" \
+  --env DB_SSL=false \
+  --env PENDING_SCHEMA_USERNAME=root \
+  --env PENDING_SCHEMA_PASSWORD="$CI_DBA_PASSWORD" \
+  "$image" tests/pending_opening_mysql.php
+
 # Each LINE suite requires its own fresh schema and runtime account.
 # The provisioner escapes schema underscores and verifies exact grants.
 for line_suite in binding bot room_binding oa platform; do

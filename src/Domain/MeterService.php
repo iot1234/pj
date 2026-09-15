@@ -17,6 +17,69 @@ final class MeterService
     {
     }
 
+    /** Fill a legacy opening pair once; existing billing evidence is never rewritten. */
+    public function setOpeningReadings(int $occupancyId, array $input): array
+    {
+        Validator::only($input,['opening_water_reading','opening_electric_reading']);
+        $readings=[];
+        foreach(['opening_water_reading','opening_electric_reading'] as $field){
+            $scaled=Validator::scaledDecimal($input[$field]??null,$field,2,12);
+            if($scaled>self::MAX_READING_SCALED){
+                throw new HttpException(422,'เลขมิเตอร์ต้องไม่เกิน 9,999,999.00','METER_TOO_HIGH',['field'=>$field]);
+            }
+            $readings[$field]=Validator::decimalString($scaled);
+        }
+        return $this->app->database()->transaction(function(PDO $pdo)use($occupancyId,$readings):array{
+            $lookup=$pdo->prepare('SELECT room_id FROM occupancies WHERE id=?');
+            $lookup->execute([$occupancyId]);
+            $roomId=$lookup->fetchColumn();
+            if($roomId===false)throw new HttpException(404,'ไม่พบรายการเข้าอยู่','OCCUPANCY_NOT_FOUND');
+            // Match normal metering lock order so repair and meter writes cannot race.
+            $room=$pdo->prepare('SELECT id FROM rooms WHERE id=? AND deleted_at IS NULL FOR UPDATE');
+            $room->execute([$roomId]);
+            if(!$room->fetch())throw new HttpException(404,'ไม่พบห้อง','ROOM_NOT_FOUND');
+            $query=$pdo->prepare('SELECT id,room_id,resident_id,status,move_in_date,move_out_date,
+                opening_water_reading,opening_electric_reading FROM occupancies WHERE id=? FOR UPDATE');
+            $query->execute([$occupancyId]);
+            $occupancy=$query->fetch();
+            if(!$occupancy||(int)$occupancy['room_id']!==(int)$roomId||$occupancy['status']!=='active'){
+                throw new HttpException(409,'เติมเลขเริ่มต้นได้เฉพาะรายการที่ยังเข้าอยู่','OCCUPANCY_NOT_ACTIVE');
+            }
+            $resident=$pdo->prepare('SELECT active FROM residents WHERE id=?');
+            $resident->execute([$occupancy['resident_id']]);
+            if((int)$resident->fetchColumn()!==1){
+                throw new HttpException(409,'ข้อมูลผู้เช่ากับห้องไม่สอดคล้อง กรุณาตรวจสอบก่อน','OCCUPANCY_STATE_INVALID');
+            }
+            $result=['occupancy_id'=>$occupancyId,'room_id'=>(int)$roomId]+$readings+['opening_readings_pending'=>false];
+            if($occupancy['opening_water_reading']!==null||$occupancy['opening_electric_reading']!==null){
+                if($occupancy['opening_water_reading']===$readings['opening_water_reading']
+                    &&$occupancy['opening_electric_reading']===$readings['opening_electric_reading']){
+                    return $result+['idempotent_replay'=>true];
+                }
+                throw new HttpException(409,'เลขมิเตอร์เริ่มต้นถูกบันทึกแล้ว จึงแก้ทับไม่ได้','METER_OPENING_LOCKED');
+            }
+            $history=$pdo->prepare("SELECT
+                EXISTS(SELECT 1 FROM meter_readings m WHERE m.occupancy_id=?
+                    OR (m.room_id=? AND m.period>=DATE_FORMAT(?,'%Y-%m-01')
+                        AND (? IS NULL OR m.period<=LAST_DAY(?))))
+                OR EXISTS(SELECT 1 FROM bills b WHERE b.occupancy_id=?
+                    OR (b.room_id=? AND b.period>=DATE_FORMAT(?,'%Y-%m-01')
+                        AND (? IS NULL OR b.period<=LAST_DAY(?)))) AS has_history");
+            $history->execute([
+                $occupancyId,$roomId,$occupancy['move_in_date'],$occupancy['move_out_date'],$occupancy['move_out_date'],
+                $occupancyId,$roomId,$occupancy['move_in_date'],$occupancy['move_out_date'],$occupancy['move_out_date'],
+            ]);
+            if((bool)$history->fetchColumn()){
+                throw new HttpException(409,'มีประวัติมิเตอร์หรือบิลแล้ว กรุณาตรวจสอบหลักฐานก่อนแก้ข้อมูล','METER_OPENING_HISTORY_CONFLICT');
+            }
+            $update=$pdo->prepare('UPDATE occupancies SET opening_water_reading=?,opening_electric_reading=?,
+                updated_at=UTC_TIMESTAMP(6) WHERE id=? AND opening_water_reading IS NULL AND opening_electric_reading IS NULL');
+            $update->execute([$readings['opening_water_reading'],$readings['opening_electric_reading'],$occupancyId]);
+            if($update->rowCount()!==1)throw new HttpException(409,'ข้อมูลเปลี่ยนแล้ว กรุณาโหลดหน้าใหม่','METER_OPENING_LOCKED');
+            return $result+['idempotent_replay'=>false];
+        });
+    }
+
     /** @return list<array<string,mixed>> */
     public function list(string $period): array
     {
@@ -47,6 +110,13 @@ final class MeterService
                         AND (o.move_out_date IS NULL OR o.move_out_date>=?)
                       ORDER BY o.id DESC LIMIT 1) AS occupancy_move_in_period,
                     EXISTS(
+                        SELECT 1 FROM occupancies o
+                         WHERE o.room_id=r.id
+                           AND o.move_in_date<=LAST_DAY(?)
+                           AND (o.move_out_date IS NULL OR o.move_out_date>=?)
+                           AND (o.opening_water_reading IS NULL OR o.opening_electric_reading IS NULL)
+                    ) AS opening_readings_pending,
+                    EXISTS(
                         SELECT 1 FROM bills b
                          WHERE b.room_id=r.id AND b.period=?
                     ) AS is_billed,
@@ -75,12 +145,15 @@ final class MeterService
             $periodDate,
             $periodDate,
             $periodDate,
+            $periodDate,
+            $periodDate,
         ]);
         $grouped = [];
         foreach ($statement->fetchAll() as $row) {
             $id = (int) $row['room_id'];
             $grouped[$id] ??= ['room_id'=>$id,'room_code'=>$row['room_code'],'period'=>$period,'water'=>null,'electric'=>null,
                 'is_billed'=>(bool)$row['is_billed'],
+                'opening_readings_pending'=>(bool)$row['opening_readings_pending'],
                 'water_previous'=>null,'water_current'=>null,'water_units'=>null,'electric_previous'=>null,'electric_current'=>null,'electric_units'=>null];
             if ($row['meter_type']) {
                 $meterType=(string)$row['meter_type'];
@@ -98,13 +171,13 @@ final class MeterService
                 $grouped[$id][$meterType.'_previous']=$previous===null?null:(string)$previous;
                 $grouped[$id][$meterType.'_current']=$hasCurrent?(string)$row['current_reading']:null;
                 $grouped[$id][$meterType.'_units']=$hasCurrent?(string)$row['units_used']:null;
-                $grouped[$id][$meterType.'_opening_required']=!$hasCurrent
-                    &&$startsThisPeriod
-                    &&$row['occupancy_opening']===null;
-                $grouped[$id][$meterType.'_locked']=(bool)$row['is_billed']||(bool)$row['has_later_reading'];
-                $grouped[$id][$meterType.'_lock_reason']=(bool)$row['is_billed']
+                $grouped[$id][$meterType.'_opening_required']=(bool)$row['opening_readings_pending'];
+                $grouped[$id][$meterType.'_locked']=(bool)$row['opening_readings_pending']||(bool)$row['is_billed']||(bool)$row['has_later_reading'];
+                $grouped[$id][$meterType.'_lock_reason']=(bool)$row['opening_readings_pending']
+                    ?'opening_readings_pending'
+                    :((bool)$row['is_billed']
                     ?'billed'
-                    :((bool)$row['has_later_reading']?'later_reading':null);
+                    :((bool)$row['has_later_reading']?'later_reading':null));
             }
         }
         return array_values($grouped);
@@ -140,6 +213,11 @@ final class MeterService
             $room->execute([$roomId]);
             if (!$room->fetch()) throw new HttpException(404, 'ไม่พบห้อง', 'ROOM_NOT_FOUND');
             $occupancy=$this->occupancyForPeriod($pdo,$roomId,$periodDate,true);
+            if($occupancy!==null&&($occupancy['opening_water_reading']===null||$occupancy['opening_electric_reading']===null)){
+                throw new HttpException(409,'กรุณาเติมเลขมิเตอร์น้ำและไฟ ณ วันเข้าอยู่ในหน้าผู้เช่าก่อนบันทึกมิเตอร์','METER_OPENING_REQUIRED',[
+                    'occupancy_id'=>(int)$occupancy['id'],'period'=>$period,
+                ]);
+            }
             $result = [
                 'room_id'=>$roomId,
                 'period'=>$period,

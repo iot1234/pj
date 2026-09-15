@@ -82,33 +82,50 @@ MySQL และทดสอบ restore ก่อน แล้วใช้ Railwa
 snapshot/backup อีกครั้งแล้วรัน `006_remove_resident_pin.sql` เพื่อลบ
 `residents.pin_hash` Migration 006 รันซ้ำได้แต่ห้ามรันขณะยังมีแอปรุ่น PIN หลังลบ
 คอลัมน์แล้วแอปรุ่น PIN เดิม rollback ไม่ได้โดยไม่ restore schema/backup และ
-**ห้าม deploy source ปัจจุบันในจุดนี้** เพราะ source ปัจจุบันต้องใช้ schema 007–014
+**ห้าม deploy source ปัจจุบันในจุดนี้** เพราะ source ปัจจุบันต้องใช้ schema 007–015
 ครบก่อน
 
 ปิด public traffic/การเขียน, หยุด worker ทุก replica และ disable/pause schedule ของ
 `monthly-billing` ตลอด maintenance window จากนั้นรัน
 `007_notification_worker_fencing.sql` → `008_resident_access_credentials.sql` →
 `009_occupancy_meter_baselines.sql` → `010_line_self_service_binding.sql` →
-`011_line_add_friend_identity.sql` → `012_move_in_request_hash.sql` → `013_trigger_collation_pinning.sql` → `014_line_platform.sql` ตามลำดับ Migration `013` แก้ trigger ให้ใช้ collation เดียวกัน ป้องกันการออกบิลล้มด้วย error 1267 บนฐานที่มี collation ต่างกัน ส่วน `014` เพิ่มตาราง LINE 5 ตารางและเปลี่ยนดัชนีการส่งบิลให้แยกตามบัญชีที่ผูกไว้ โดยเก็บการตั้งค่า LINE เดิมไว้บน OA 0 Migration `007` จะคืนงาน `processing`
+`011_line_add_friend_identity.sql` → `012_move_in_request_hash.sql` → `013_trigger_collation_pinning.sql` → `014_line_platform.sql` → `015_pending_occupancy_opening_readings.sql` ตามลำดับ Migration `013` แก้ trigger ให้ใช้ collation เดียวกัน ป้องกันการออกบิลล้มด้วย error 1267 บนฐานที่มี collation ต่างกัน ส่วน `014` เพิ่มตาราง LINE 5 ตารางและเปลี่ยนดัชนีการส่งบิลให้แยกตามบัญชีที่ผูกไว้ โดยเก็บการตั้งค่า LINE เดิมไว้บน OA 0 Migration `007` จะคืนงาน `processing`
 รุ่นเก่าที่ไม่มี claim/lease เป็น `pending` โดยไม่เปลี่ยน retry key ส่วน `009`
 จะหยุดเมื่อ lifecycle/meter legacy ไม่สอดคล้องและเปลี่ยนกฎการเขียนมิเตอร์ ต้อง
 reconcile จนรันซ้ำผ่านก่อน deploy source ปัจจุบัน Fresh database จาก `install.sql`
-มีโครงสร้างล่าสุดอยู่แล้วและไม่ต้องรัน `006`–`014`
+มีโครงสร้างล่าสุดอยู่แล้วและไม่ต้องรัน `006`–`015`
 
-ถ้าฐานเดิมผ่าน `013` แล้ว ให้สำรองข้อมูลและหยุด traffic/worker/cron ตามข้างต้น แล้วรันเฉพาะ `014_line_platform.sql` โดยไม่ย้อนรัน migrations เก่า
+ถ้าฐานเดิมผ่าน `013` แล้ว ให้สำรองข้อมูลและหยุด traffic/worker/cron ตามข้างต้น แล้วรันเฉพาะ `014_line_platform.sql` → `015_pending_occupancy_opening_readings.sql` โดยไม่ย้อนรัน migrations เก่า ถ้าผ่าน `014` แล้วให้รันเฉพาะ `015`
 
-เมื่อ 014 ผ่าน ให้ deploy source ปัจจุบันโดยยังปิด public traffic และยังไม่เริ่ม
+`009` และ `015` อนุญาตให้ข้อมูลผู้พักเดิมที่ไม่มีค่าเปิดมิเตอร์น้ำและไฟทั้งคู่
+คงสถานะ “รอเลขมิเตอร์เริ่มต้น” ได้เฉพาะเมื่อไม่มีประวัติมิเตอร์หรือบิลเกี่ยวข้อง
+ทั้งที่ผูกกับ occupancy และที่อยู่ในห้องเดียวกันระหว่างเดือนเข้าอยู่ถึงเดือนย้ายออก
+ระบบไม่เติมเลขศูนย์หรือสร้างค่าแทนหลักฐานจริง การมีค่าเพียงชนิดเดียวหรือมีประวัติ
+อยู่แล้วจะหยุด migration และต้องตรวจแก้จากหลักฐานระหว่าง maintenance
+
+`015` ติดตั้งกฎที่ฐานข้อมูลเพื่อปิดการจดมิเตอร์และออกบิลสำหรับรายการที่รอค่านี้
+ผู้ดูแลกรอกค่าจริงทั้งคู่ได้ครั้งเดียวจากหน้าผู้เช่า โดยมีบันทึกผู้แก้ไข
+การรับผู้พักใหม่ยังต้องระบุค่าทั้งคู่เสมอ หลังมีประวัติหรือเคยระบุครบแล้ว
+ระบบไม่อนุญาตให้ใช้ช่องทางนี้เปลี่ยนค่าเปิดมิเตอร์ย้อนหลัง
+
+เมื่อ 015 ผ่าน ให้ deploy source ปัจจุบันโดยยังปิด public traffic และยังไม่เริ่ม
 worker/cron จากนั้นให้ Owner เข้า Admin ผ่านช่องทาง maintenance ที่จำกัดผู้ดูแล:
 
 1. reissue activation code ให้ resident ที่ active เดิมทุกคนซึ่งยังไม่มี password/code
    และส่งมอบรหัสผ่านช่องทางส่วนตัว
 2. ตรวจ/บันทึก billing settings และ PromptPay/slip integrations ที่หน้า Settings และคีย์ LINE/Basic ID ที่หน้า “บัญชี LINE OA” ให้ครบ
+   รายการผู้พักเดิมที่รอค่าเปิดมิเตอร์จะแสดงสถานะให้ผู้ดูแลบันทึกค่าจริงก่อนจดมิเตอร์หรือออกบิลของห้องนั้น
 3. สร้าง isolated one-shot schema-audit job ชั่วคราว โดย map `DB_USERNAME` และ
    `DB_PASSWORD` ของ job นี้ไปยังค่า schema owner จาก `DB_DBA_USERNAME`/
    `DB_DBA_PASSWORD` แล้วรัน `php scripts/check_requirements.php --schema-audit`;
    ห้ามใส่ DBA credential ใน web/worker/monthly-billing และลบ job/credential หลังผ่าน
 4. รัน `php scripts/check_requirements.php --db --strict --production` ด้วย runtime
    user จนไม่มี error/warning
+
+ผล `[NOTICE]` เรื่องค่าเปิดมิเตอร์ที่รอดำเนินการเป็นสถานะที่ระบบรองรับและไม่ทำให้
+`--strict` ล้มเหลว แต่ห้องเหล่านั้นยังจดมิเตอร์หรือออกบิลไม่ได้จนกว่าผู้ดูแลบันทึกค่าจริง
+ข้อผิดพลาดเรื่องค่าเพียงชนิดเดียว ประวัติเดิมที่ไม่สอดคล้อง และผู้เช่าขาด password/
+activation code ยังทำให้การตรวจไม่ผ่านตามเดิม
 
 `/healthz.php` ตรวจ schema/readiness ของ web แต่ไม่แทน data gate ข้างต้น จึงห้ามเปิด
 traffic เพียงเพราะ Railway healthcheck ผ่าน เมื่อ strict gate ผ่านและตรวจพบ 21 ตาราง,
@@ -123,6 +140,7 @@ monthly-billing schedule และลบ migration job/`DB_DBA_*`
 - `schema readiness check failed; missing tables: ...` หมายถึงบัญชี runtime มองไม่เห็นตารางพื้นฐานที่จำเป็น ตรวจว่าค่า `DB_DATABASE` ชี้ฐานถูกต้อง ตารางติดตั้งครบ และ runtime มีสิทธิ์บนฐานนั้น
 - `migration 014 required; missing tables: ...` หมายถึงตาราง LINE ใหม่ไม่ครบ ตรวจ schema ด้วยบัญชี migration และอัปเกรดตามลำดับข้างต้น
 - `LINE unique index mismatch: notification_outbox.uq_notification_outbox_bill_binding` หมายถึงดัชนีต้องเป็น `(bill_id,purpose,line_delivery_key)` ให้ตรวจว่า migration `014` สำเร็จครบ
+- `migration 015 required` หมายถึงยังขาดกฎการรอเลขมิเตอร์เริ่มต้น หรือ CHECK `chk_occupancies_opening_readings_v2` ไม่ได้บังคับใช้/ไม่ตรงกับโครงสร้างปัจจุบัน ให้รัน `015` และตรวจ trigger ด้วย schema-audit ก่อนเปิดการเขียน
 
 ข้อความจากรุ่นเก่าที่มีเพียง `schema readiness check failed` ยังบอกไม่ได้ว่าขาด
 ตารางใด และไม่ได้ยืนยันว่ารันเฉพาะ `014` แล้วจะหาย ใช้บัญชี runtime ของ web ตรวจ

@@ -12,6 +12,7 @@ require_once $root . '/src/Config.php';
 require_once $root . '/src/Security/SecretCipher.php';
 require_once $root . '/src/Support/SchemaGuard.php';
 require_once $root . '/src/Support/LinePlatformSchema.php';
+require_once $root . '/src/Support/PendingOpeningSchema.php';
 
 $arguments = array_slice($argv, 1);
 $productionMode = in_array('--production', $arguments, true);
@@ -33,6 +34,7 @@ $errors = [];
 $warnings = [];
 $successes = [];
 $skips = [];
+$notices = [];
 
 /** @param list<string> $target */
 function addResult(array &$target, string $message): void
@@ -553,6 +555,9 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
             $lineSchemaErrors=\Dormitory\Support\LinePlatformSchema::errors($pdo);
             if($lineSchemaErrors===[])addResult($successes,'LINE platform columns, generated guards, indexes, foreign keys, CHECK constraints และ legacy OA ถูกต้อง');
             else foreach($lineSchemaErrors as$lineSchemaError)addResult($errors,$lineSchemaError);
+            $openingSchemaErrors=\Dormitory\Support\PendingOpeningSchema::errors($pdo);
+            if($openingSchemaErrors===[])addResult($successes,'migration 015 enforced opening-reading CHECK ตรง canonical');
+            else foreach($openingSchemaErrors as$openingSchemaError)addResult($errors,$openingSchemaError);
         } else {
             addResult($errors, 'schema ไม่ครบ; ขาดตาราง: ' . implode(', ', $missing));
         }
@@ -565,7 +570,7 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
         if($retiredResidentCredentialColumns===0){
             addResult($successes,'schema ไม่มีคอลัมน์ credential ของ Resident ที่เลิกใช้แล้ว');
         }else{
-            addResult($errors,'schema ยังมี residents.pin_hash ซึ่งไม่รองรับกับ source ปัจจุบัน; ใช้ transitional commit a52bc33 ให้ทุก replica พร้อม รัน migration 006 ตรวจว่าคอลัมน์หาย แล้วดำเนิน migrations 007–012 ตาม maintenance guide ก่อน deploy source ปัจจุบัน');
+            addResult($errors,'schema ยังมี residents.pin_hash ซึ่งไม่รองรับกับ source ปัจจุบัน; ใช้ transitional commit a52bc33 ให้ทุก replica พร้อม รัน migration 006 ตรวจว่าคอลัมน์หาย แล้วดำเนิน migrations 007–015 ตาม maintenance guide ก่อน deploy source ปัจจุบัน');
         }
 
         $grantRows = $pdo->query('SHOW GRANTS')->fetchAll(PDO::FETCH_NUM);
@@ -916,7 +921,7 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
             'chk_notification_outbox_claim_lease',
             'chk_notification_worker_error',
             'chk_notification_worker_id',
-            'chk_occupancies_opening_readings',
+            'chk_occupancies_opening_readings_v2',
             'chk_residents_access_password',
             'chk_residents_activation_state',
             'chk_residents_password_activation',
@@ -939,9 +944,9 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
         );
         $missingCurrentChecks=array_values(array_diff($requiredCurrentChecks,$currentChecks));
         if($missingCurrentChecks===[]){
-            addResult($successes,'พบ CHECK constraints ของ migrations 007/008/009/010/012 ครบ 12 รายการ');
+            addResult($successes,'พบ CHECK constraints ของ migrations 007/008/009/010/012/015 ครบ 12 รายการ');
         }else{
-            addResult($errors,'schema ขาด CHECK constraints ของ migrations 007/008/009/010/012: '
+            addResult($errors,'schema ขาด CHECK constraints ของ migrations 007/008/009/010/012/015: '
                 .implode(', ',$missingCurrentChecks));
         }
 
@@ -1312,17 +1317,20 @@ SQL
                     .' จุด; ต้อง reconcile หลักฐานก่อนเปิด billing, payment, move-out และ LINE');
             }
 
-            $activeOccupanciesMissingOpening=(int)$pdo->query(
-                "SELECT COUNT(*) FROM occupancies
-                  WHERE status='active'
-                    AND (opening_water_reading IS NULL OR opening_electric_reading IS NULL)"
-            )->fetchColumn();
-            if($activeOccupanciesMissingOpening===0){
+            $missingOpeningCounts=\Dormitory\Support\PendingOpeningSchema::missingOpeningCounts($pdo);
+            if($missingOpeningCounts['invalid']>0){
+                addResult($errors,'data readiness ไม่ผ่าน: occupancy ขาดค่าเปิดมิเตอร์เพียงชนิดเดียว '
+                    .'หรือยังขาดค่าทั้งคู่ทั้งที่มีประวัติมิเตอร์/บิลเกี่ยวข้อง '
+                    .$missingOpeningCounts['invalid']
+                    .' แถว; ต้อง reconcile จากหลักฐานระหว่าง maintenance ห้ามเดาค่า');
+            }
+            if($missingOpeningCounts['pending']>0){
+                addResult($notices,'active occupancies เดิมรอค่าเปิดมิเตอร์น้ำ/ไฟ '
+                    .$missingOpeningCounts['pending']
+                    .' แถว โดยไม่มีประวัติมิเตอร์หรือบิลเกี่ยวข้อง; ระบบปิดการจดมิเตอร์และออกบิลของห้องเหล่านี้ '
+                    .'จนกว่าแอดมินบันทึกค่าจริงทั้งคู่ผ่านหน้าผู้เช่า');
+            }elseif($missingOpeningCounts['invalid']===0){
                 addResult($successes,'active occupancies มีค่าเปิดมิเตอร์น้ำ/ไฟครบทุกแถว');
-            }else{
-                addResult($errors,'data readiness ไม่ผ่าน: active occupancies ขาดค่าเปิดมิเตอร์น้ำ/ไฟ '
-                    .$activeOccupanciesMissingOpening
-                    .' แถว; ห้ามเดาค่า ให้ซ่อมจากหลักฐานก่อนเปิด write ตามคู่มือ migration 009');
             }
 
             $invalidMeterOccupancyLinks=(int)$pdo->query(
@@ -1526,13 +1534,16 @@ foreach ($successes as $message) {
 foreach ($skips as $message) {
     echo "[SKIP] {$message}\n";
 }
+foreach ($notices as $message) {
+    echo "[NOTICE] {$message}\n";
+}
 foreach ($warnings as $message) {
     echo "[WARN] {$message}\n";
 }
 foreach ($errors as $message) {
     echo "[FAIL] {$message}\n";
 }
-echo "\nสรุป: " . count($successes) . " ผ่าน, " . count($skips) . " ข้ามโดยตั้งใจ, " . count($warnings) . " คำเตือน, " . count($errors) . " ไม่ผ่าน\n";
+echo "\nสรุป: " . count($successes) . " ผ่าน, " . count($skips) . " ข้ามโดยตั้งใจ, " . count($notices) . " ข้อมูลรอดำเนินการ, " . count($warnings) . " คำเตือน, " . count($errors) . " ไม่ผ่าน\n";
 
 if ($errors !== [] || ($strict && $warnings !== [])) {
     exit(1);

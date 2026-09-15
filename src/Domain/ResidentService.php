@@ -23,13 +23,15 @@ final class ResidentService
                     (r.activation_code_hash IS NOT NULL
                         AND r.activation_consumed_at IS NULL
                         AND r.activation_expires_at>UTC_TIMESTAMP(6)) AS activation_pending,
-                    o.id AS occupancy_id,o.move_in_date,rm.id AS room_id,rm.room_code
+                    o.id AS occupancy_id,o.move_in_date,o.opening_water_reading,o.opening_electric_reading,
+                    (o.opening_water_reading IS NULL OR o.opening_electric_reading IS NULL) AS opening_readings_pending,
+                    rm.id AS room_id,rm.room_code
             FROM occupancies o
             JOIN residents r ON r.id=o.resident_id AND r.active=1
             JOIN rooms rm ON rm.id=o.room_id AND rm.deleted_at IS NULL
             WHERE o.status='active'
             ORDER BY rm.floor,rm.room_code")->fetchAll();
-        foreach($rows as &$row){$row['id']=(int)$row['id'];$row['occupancy_id']=(int)$row['occupancy_id'];$row['room_id']=$row['room_id']!==null?(int)$row['room_id']:null;$row['active']=(bool)$row['active'];$row['access_active']=(bool)$row['access_active'];$row['activation_pending']=(bool)$row['activation_pending'];$row=array_replace($row,$this->app->lineRoomBindings()->status($row['id']));unset($row['line_user_id']);}
+        foreach($rows as &$row){$row['id']=(int)$row['id'];$row['occupancy_id']=(int)$row['occupancy_id'];$row['room_id']=$row['room_id']!==null?(int)$row['room_id']:null;$row['active']=(bool)$row['active'];$row['access_active']=(bool)$row['access_active'];$row['activation_pending']=(bool)$row['activation_pending'];$row['opening_readings_pending']=(bool)$row['opening_readings_pending'];$row=array_replace($row,$this->app->lineRoomBindings()->status($row['id']));unset($row['line_user_id']);}
         return $rows;
     }
 

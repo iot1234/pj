@@ -906,11 +906,15 @@ $test('resident activation codes are deterministic, high entropy, expiring and s
     foreach(['access_password_hash','activation_code_hash','activation_expires_at','activation_consumed_at']as$column)$same(true,str_contains($migration,$column));
     $same(false,str_contains($migration,'activation_code_plain'));
 });
-$test('occupancy meter migration stops on active opening-reading gaps',function()use($same):void{
+$test('occupancy meter migration preserves safe pending openings and rejects partial or historical gaps',function()use($same):void{
     $migration=file_get_contents(dirname(__DIR__).'/database/migrations/009_occupancy_meter_baselines.sql');
     if(!is_string($migration))throw new RuntimeException('cannot read occupancy meter migration');
     $same(true,str_contains($migration,'@dormitory_009_active_opening_gaps'));
-    $same(true,str_contains($migration,"WHERE status = 'active'"));
+    $same(true,str_contains($migration,'(o.opening_water_reading IS NULL) <> (o.opening_electric_reading IS NULL)'));
+    $same(true,str_contains($migration,'SELECT 1 FROM meter_readings history'));
+    $same(true,str_contains($migration,'SELECT 1 FROM bills history'));
+    $same(true,str_contains($migration,'history.occupancy_id = o.id'));
+    $same(true,str_contains($migration,'history.room_id = o.room_id'));
     $same(true,str_contains($migration,'opening_water_reading IS NULL'));
     $same(true,str_contains($migration,'opening_electric_reading IS NULL'));
     $same(true,str_contains($migration,'DORMITORY_009_REPAIR_ACTIVE_OPENING_READINGS_BEFORE_RERUN'));
@@ -921,7 +925,7 @@ $test('occupancy meter migration stops on active opening-reading gaps',function(
     $same(true,str_contains($migration,'prior_row.period = DATE_SUB(current_row.period, INTERVAL 1 MONTH)'));
     $same(true,str_contains($migration,"second_row.id > first_row.id"));
     $same(true,str_contains($migration,"linked_booking.status <> 'moved_in'"));
-    $same(true,str_contains($migration,"status = ''ended''"));
+    $same(true,str_contains($migration,'ADD CONSTRAINT chk_occupancies_opening_readings CHECK'));
 });
 $test('direct admin resident check-in is authenticated, rate-limited, audited, and transactionally routed',function()use($same,$app):void{
     $routesProperty=new ReflectionProperty(Dormitory\Http\Router::class,'routes');
@@ -1818,6 +1822,11 @@ $test('runtime readiness rejects legacy PIN schemas and incomplete unique guards
         'active residents ไม่มี password หรือ activation key',
     ]as$guard)$same(true,str_contains($requirements,$guard));
     $same(true,str_contains($requirements,"addResult(\$errors,'data readiness ไม่ผ่าน: active residents"));
+    foreach([$health,$bootstrap,$requirements]as$currentGate)$same(true,str_contains($currentGate,'chk_occupancies_opening_readings_v2'));
+    $same(true,str_contains($health,'PendingOpeningSchema::errors($pdo)'));
+    $same(true,str_contains($requirements,'PendingOpeningSchema::missingOpeningCounts($pdo)'));
+    $same(true,str_contains($requirements,"\$missingOpeningCounts['invalid']>0"));
+    $same(true,str_contains($requirements,"addResult(\$notices,'active occupancies เดิมรอค่าเปิดมิเตอร์น้ำ/ไฟ '"));
     foreach([
         'action_statement',
         'normalizeTriggerAction',
@@ -2352,7 +2361,7 @@ $test('admin console opens on an overview that surfaces pending work and worker 
     $same(true,str_contains($admin,'<?php if ($canManageIntegrations): ?>'));
 
     // A half-entered room still needs attention, so progress counts both meters.
-    $same(true,str_contains($js,"const meterIsComplete = (meter) => ['water', 'electric'].every((type) => {"));
+    $same(true,str_contains($js,"const meterIsComplete = (meter) => !meterHasPendingOpening(meter) && ['water', 'electric'].every((type) => {"));
     $same(true,str_contains($admin,'id="meter-progress"'));
 });
 

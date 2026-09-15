@@ -17,7 +17,9 @@
 -- database/migrations/010_line_self_service_binding.sql,
 -- database/migrations/011_line_add_friend_identity.sql,
 -- database/migrations/012_move_in_request_hash.sql and
--- database/migrations/013_trigger_collation_pinning.sql. Deploy the current
+-- database/migrations/013_trigger_collation_pinning.sql,
+-- database/migrations/014_line_platform.sql and
+-- database/migrations/015_pending_occupancy_opening_readings.sql. Deploy the current
 -- source before reopening traffic.
 
 SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -315,14 +317,15 @@ CREATE TABLE IF NOT EXISTS occupancies (
         CHECK (monthly_rent > 0 AND monthly_rent <= 1000000),
     CONSTRAINT chk_occupancies_dates
         CHECK (move_out_date IS NULL OR move_out_date >= move_in_date),
-    CONSTRAINT chk_occupancies_opening_readings CHECK (
+    CONSTRAINT chk_occupancies_opening_readings_v2 CHECK (
         (
-            status = 'ended'
-            AND opening_water_reading IS NULL
+            opening_water_reading IS NULL
             AND opening_electric_reading IS NULL
         )
         OR (
-            opening_water_reading >= 0
+            opening_water_reading IS NOT NULL
+            AND opening_electric_reading IS NOT NULL
+            AND opening_water_reading >= 0
             AND opening_water_reading <= 9999999.00
             AND opening_electric_reading >= 0
             AND opening_electric_reading <= 9999999.00
@@ -953,16 +956,53 @@ CREATE TRIGGER trg_occupancies_identity_immutable
 BEFORE UPDATE ON occupancies
 FOR EACH ROW
 BEGIN
-    IF NOT (OLD.resident_id <=> NEW.resident_id)
+    DECLARE meter_history INT UNSIGNED DEFAULT 0;
+    DECLARE bill_history INT UNSIGNED DEFAULT 0;
+
+    IF NOT (OLD.id <=> NEW.id)
+        OR NOT (OLD.resident_id <=> NEW.resident_id)
         OR NOT (OLD.room_id <=> NEW.room_id)
         OR NOT (OLD.booking_id <=> NEW.booking_id)
         OR NOT (OLD.monthly_rent <=> NEW.monthly_rent)
         OR NOT (OLD.move_in_date <=> NEW.move_in_date)
-        OR NOT (OLD.opening_water_reading <=> NEW.opening_water_reading)
-        OR NOT (OLD.opening_electric_reading <=> NEW.opening_electric_reading)
         OR NOT (OLD.created_at <=> NEW.created_at) THEN
         SIGNAL SQLSTATE '45000'
             SET MESSAGE_TEXT = 'Occupancy identity and rent snapshot are immutable';
+    END IF;
+    IF NOT (OLD.opening_water_reading <=> NEW.opening_water_reading)
+        OR NOT (OLD.opening_electric_reading <=> NEW.opening_electric_reading) THEN
+        IF OLD.status <> 'active'
+            OR NEW.status <> 'active'
+            OR NOT (OLD.move_out_date <=> NEW.move_out_date)
+            OR OLD.opening_water_reading IS NOT NULL
+            OR OLD.opening_electric_reading IS NOT NULL
+            OR NEW.opening_water_reading IS NULL
+            OR NEW.opening_electric_reading IS NULL
+            OR NEW.opening_water_reading < 0
+            OR NEW.opening_water_reading > 9999999.00
+            OR NEW.opening_electric_reading < 0
+            OR NEW.opening_electric_reading > 9999999.00 THEN
+            SIGNAL SQLSTATE '45000'
+                SET MESSAGE_TEXT = 'Opening readings may only be completed together once for a pending active occupancy';
+        END IF;
+        SELECT COUNT(*) INTO meter_history
+          FROM meter_readings
+         WHERE occupancy_id = OLD.id
+            OR (room_id = OLD.room_id
+                AND period >= DATE_FORMAT(OLD.move_in_date, '%Y-%m-01')
+                AND period <= DATE_FORMAT(COALESCE(OLD.move_out_date, '9999-12-31'), '%Y-%m-01'))
+         FOR SHARE;
+        SELECT COUNT(*) INTO bill_history
+          FROM bills
+         WHERE occupancy_id = OLD.id
+            OR (room_id = OLD.room_id
+                AND period >= DATE_FORMAT(OLD.move_in_date, '%Y-%m-01')
+                AND period <= DATE_FORMAT(COALESCE(OLD.move_out_date, '9999-12-31'), '%Y-%m-01'))
+         FOR SHARE;
+        IF meter_history <> 0 OR bill_history <> 0 THEN
+            SIGNAL SQLSTATE '45000'
+                SET MESSAGE_TEXT = 'Opening readings cannot be completed after meter or bill history exists';
+        END IF;
     END IF;
     IF OLD.status = 'ended'
         AND (NEW.status <> 'ended' OR NOT (OLD.move_out_date <=> NEW.move_out_date)) THEN
@@ -1005,7 +1045,12 @@ BEGIN
                occupancy_opening_water, occupancy_opening_electric
           FROM occupancies
          WHERE id = NEW.occupancy_id
-         LIMIT 1;
+         LIMIT 1
+         FOR SHARE;
+        IF occupancy_opening_water IS NULL OR occupancy_opening_electric IS NULL THEN
+            SIGNAL SQLSTATE '45000'
+                SET MESSAGE_TEXT = 'Complete both occupancy opening readings before recording meters';
+        END IF;
         IF NOT (occupancy_room <=> NEW.room_id)
             OR occupancy_move_in > LAST_DAY(NEW.period)
             OR (occupancy_move_out IS NOT NULL
@@ -1083,7 +1128,12 @@ BEGIN
                occupancy_opening_water, occupancy_opening_electric
           FROM occupancies
          WHERE id = NEW.occupancy_id
-         LIMIT 1;
+         LIMIT 1
+         FOR SHARE;
+        IF occupancy_opening_water IS NULL OR occupancy_opening_electric IS NULL THEN
+            SIGNAL SQLSTATE '45000'
+                SET MESSAGE_TEXT = 'Complete both occupancy opening readings before recording meters';
+        END IF;
         IF NOT (occupancy_room <=> NEW.room_id)
             OR occupancy_move_in > LAST_DAY(NEW.period)
             OR (occupancy_move_out IS NOT NULL
@@ -1189,6 +1239,8 @@ BEGIN
     DECLARE occupancy_rent DECIMAL(12,2) DEFAULT NULL;
     DECLARE occupancy_move_in DATE DEFAULT NULL;
     DECLARE occupancy_move_out DATE DEFAULT NULL;
+    DECLARE occupancy_opening_water DECIMAL(14,2) DEFAULT NULL;
+    DECLARE occupancy_opening_electric DECIMAL(14,2) DEFAULT NULL;
     DECLARE water_previous DECIMAL(14,2) DEFAULT NULL;
     DECLARE water_current DECIMAL(14,2) DEFAULT NULL;
     DECLARE water_units DECIMAL(14,2) DEFAULT NULL;
@@ -1196,13 +1248,19 @@ BEGIN
     DECLARE electric_current DECIMAL(14,2) DEFAULT NULL;
     DECLARE electric_units DECIMAL(14,2) DEFAULT NULL;
 
-    SELECT resident_id, room_id, monthly_rent, move_in_date, move_out_date
+    SELECT resident_id, room_id, monthly_rent, move_in_date, move_out_date,
+           opening_water_reading, opening_electric_reading
       INTO occupancy_resident, occupancy_room, occupancy_rent,
-           occupancy_move_in, occupancy_move_out
+           occupancy_move_in, occupancy_move_out,
+           occupancy_opening_water, occupancy_opening_electric
       FROM occupancies
      WHERE id = NEW.occupancy_id
      LIMIT 1
      FOR SHARE;
+    IF occupancy_opening_water IS NULL OR occupancy_opening_electric IS NULL THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Complete both occupancy opening readings before issuing bills';
+    END IF;
     SELECT previous_reading, current_reading, units_used
       INTO water_previous, water_current, water_units
       FROM meter_readings

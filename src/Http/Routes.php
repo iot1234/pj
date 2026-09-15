@@ -92,6 +92,21 @@ final class Routes
         $router->put('/api/admin/rooms/{id}',function(Request $r)use($app,$id):Response{$target=$id($r);$data=$app->database()->transaction(function()use($app,$r,$target):array{$data=$app->rooms()->update($target,$r->body);$app->audit()->writeStrict($r,$app->actor(),'room.update','room',$data['id']);return $data;});return Response::json($data);},$admin);
         $router->delete('/api/admin/rooms/{id}',function(Request $r)use($app,$id):Response{Validator::only($r->body,[]);$target=$id($r);$app->database()->transaction(function()use($app,$r,$target):void{$app->rooms()->delete($target);$app->audit()->writeStrict($r,$app->actor(),'room.delete','room',$target);});return Response::json(null,200,'Room deleted');},$admin);
         $router->get('/api/admin/residents',fn(Request $r)=>Response::json($app->residents()->list()),$admin);
+        $router->post('/api/admin/occupancies/{id}/opening-readings',function(Request $r)use($app,$id):Response{
+            $target=$id($r);$actor=$app->actor();
+            $app->limiter()->hit('occupancy-opening-readings',(string)$actor['id'],60,3600,300);
+            $data=$app->database()->transaction(function()use($app,$r,$target,$actor):array{
+                $data=$app->meters()->setOpeningReadings($target,$r->body);
+                if(!$data['idempotent_replay']){
+                    $app->audit()->writeStrict($r,$actor,'occupancy.opening_readings_set','occupancy',$target,[
+                        'room_id'=>$data['room_id'],'opening_water_reading'=>$data['opening_water_reading'],
+                        'opening_electric_reading'=>$data['opening_electric_reading'],
+                    ]);
+                }
+                return $data;
+            });
+            return Response::json($data,200,'บันทึกเลขมิเตอร์เริ่มต้นแล้ว');
+        },$admin);
         $router->get('/api/admin/residents/{id}/line',fn(Request $r)=>Response::json($app->residents()->lineStatus($id($r))),$admin);
         $router->post('/api/admin/residents/{id}/line/code',function(Request $r)use($app,$id):Response{
             Validator::only($r->body,[]);$actor=$app->actor();$target=$id($r);

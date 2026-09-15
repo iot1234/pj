@@ -141,6 +141,30 @@ try {
         } finally {
             $schema->exec('ALTER TABLE notification_outbox DROP INDEX uq_notification_outbox_bill_binding, ADD UNIQUE KEY uq_notification_outbox_bill_binding (bill_id,purpose,line_delivery_key)');
         }
+
+        $openingCheck = $schema->query("SELECT check_clause FROM information_schema.check_constraints WHERE constraint_schema=DATABASE() AND constraint_name='chk_occupancies_opening_readings_v2'")->fetchColumn();
+        $assert(is_string($openingCheck) && $openingCheck !== '', 'The canonical migration 015 check must be readable by the schema owner');
+        $schema->exec('ALTER TABLE occupancies DROP CHECK chk_occupancies_opening_readings_v2, ADD CONSTRAINT chk_occupancies_opening_readings CHECK (' . $openingCheck . ')');
+        try {
+            $unavailable($request(), 'migration 015 required: Missing enforced migration 015 check');
+            $pass('a pre-015 opening-reading schema cannot pass HTTP readiness');
+        } finally {
+            $schema->exec('ALTER TABLE occupancies DROP CHECK chk_occupancies_opening_readings, ADD CONSTRAINT chk_occupancies_opening_readings_v2 CHECK (' . $openingCheck . ')');
+        }
+        $schema->exec('ALTER TABLE occupancies DROP CHECK chk_occupancies_opening_readings_v2, ADD CONSTRAINT chk_occupancies_opening_readings_v2 CHECK (opening_water_reading IS NULL OR opening_electric_reading IS NULL OR (opening_water_reading >= 0 AND opening_electric_reading >= 0))');
+        try {
+            $unavailable($request(), 'Migration 015 opening-reading check differs from canonical schema');
+            $pass('a permissive check with the migration-015 marker name still fails readiness');
+        } finally {
+            $schema->exec('ALTER TABLE occupancies DROP CHECK chk_occupancies_opening_readings_v2, ADD CONSTRAINT chk_occupancies_opening_readings_v2 CHECK (' . $openingCheck . ')');
+        }
+        $schema->exec('ALTER TABLE occupancies ALTER CHECK chk_occupancies_opening_readings_v2 NOT ENFORCED');
+        try {
+            $unavailable($request(), 'Missing enforced migration 015 check');
+            $pass('the migration-015 check must be enforced');
+        } finally {
+            $schema->exec('ALTER TABLE occupancies ALTER CHECK chk_occupancies_opening_readings_v2 ENFORCED');
+        }
         $restored = $request();
         $assert($restored['status'] === 200 && $restored['body'] === '{"status":"ok"}', 'The restored schema must pass readiness');
         $pass('restoring the canonical schema restores HTTP readiness');
