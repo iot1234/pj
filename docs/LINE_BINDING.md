@@ -71,7 +71,7 @@ Token ใหม่ต้องเป็นของ OA เดิม หากเ
 
 ## การอัปเกรดและตรวจรับ
 
-ฐานใหม่ใช้ `schema.sql` + `defaults.sql` หรือ `install.sql` ซึ่งรวมโครงสร้าง LINE แล้ว ฐานเดิมต้องผ่าน migration ถึง `013` แล้วหยุด traffic/worker สำรองฐาน และใช้ `014_line_platform.sql` ก่อนเปิด source นี้ ตรวจด้วย `php scripts/check_line_platform_schema.php` และ deployment checks เดิม ห้ามนำ `install.sql` ไปทับฐานที่มีข้อมูล
+ฐานใหม่ใช้ `schema.sql` + `defaults.sql` หรือ `install.sql` ซึ่งรวมโครงสร้างปัจจุบันแล้ว ฐานเดิมต้องผ่าน migration ถึง `013` แล้วหยุด traffic/worker/cron สำรองฐานและทดสอบ restore รัน `014_line_platform.sql` ตามด้วย `015_pending_occupancy_opening_readings.sql` ก่อนเปิด source นี้ ตรวจ LINE ด้วย `php scripts/check_line_platform_schema.php` และตรวจทั้งระบบด้วย `php scripts/check_requirements.php --db --strict --production` พร้อม schema audit ตาม [คู่มือ SQL](SQL_SETUP.md) การตรวจ LINE อย่างเดียวไม่ยืนยันว่า migration `015` ครบ ห้ามนำ `install.sql` ไปทับฐานที่มีข้อมูล
 
 Fresh schema มี 21 ตาราง 23 triggers และ 116 CHECK constraints ค่า OA 0 ไม่มีคีย์ลับจำลอง Migration ไม่ย้าย LINE ID เดิมเข้า OA ใหม่และไม่ใส่ provider credential
 

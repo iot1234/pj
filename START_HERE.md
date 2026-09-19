@@ -68,6 +68,6 @@ Docker จะติดตั้งฐานข้อมูลและเปิ�
 - Owner login ได้และหน้า **ตั้งค่า** แสดงสถานะ PromptPay/ตรวจสลิป ส่วนสถานะ LINE อยู่หน้า **บัญชี LINE OA**
 - LINE Developers Verify webhook ผ่าน, request ลายเซ็นผิดถูกปฏิเสธ และส่งคำว่า `เมนู` หา Bot แล้วได้รับวิธีผูกบัญชี
 - เพิ่มห้อง → ยืนยันจอง → รับเข้าพัก → จดมิเตอร์ → ตรวจยอด → ออกบิลได้
-- `php scripts/check_requirements.php --db --strict` ผ่านก่อนเปิด production
+- `php scripts/check_requirements.php --db --strict --production` ผ่านก่อนเปิด production โดยใช้ environment สำหรับ production จริง
 
-รายละเอียด SQL, ฐานชื่ออื่น และการอัปเกรดฐานเดิมอยู่ใน `docs/SQL_SETUP.md`
+ฐานเดิมต้องอัปเกรดตามลำดับจนถึง `015_pending_occupancy_opening_readings.sql` ก่อนใช้ source ปัจจุบัน ฐานใหม่ที่ import `install.sql` มีโครงสร้างนี้แล้ว รายละเอียด SQL, ฐานชื่ออื่น และการอัปเกรดฐานเดิมอยู่ใน `docs/SQL_SETUP.md`

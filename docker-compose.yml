@@ -8,6 +8,8 @@ x-runtime-common: &runtime-common
   TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
   SESSION_NAME: ${SESSION_NAME:-dormitory_session}
   SESSION_LIFETIME_SECONDS: ${SESSION_LIFETIME_SECONDS:-43200}
+  BOOKING_HOLD_SECONDS: ${BOOKING_HOLD_SECONDS:-86400}
+  RESIDENT_ACTIVATION_TTL_SECONDS: ${RESIDENT_ACTIVATION_TTL_SECONDS:-604800}
   DB_HOST: db
   DB_PORT: "3306"
   DB_DATABASE: ${DB_DATABASE:?Set DB_DATABASE in .env}
@@ -46,6 +48,7 @@ services:
     environment:
       <<: *runtime-common
       RUNTIME_ROLE: worker
+      WORKER_INSTANCE_ID: ${WORKER_INSTANCE_ID:-}
     depends_on:
       db:
         condition: service_healthy

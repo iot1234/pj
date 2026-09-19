@@ -131,6 +131,25 @@ jobs:
           docker run --rm --entrypoint php dormitory-ci:${{ github.sha }} \
             scripts/build_install_sql.php --check
 
+      - name: Verify effective Compose runtime environment
+        env:
+          APP_URL: http://localhost:8080
+          APP_KEY: 5a1697717edc7dd7783c09b4c594fefa546e5aab212ae6136749002617d085f6
+          DB_DATABASE: compose_ci
+          DB_USERNAME: compose_runtime
+          DB_PASSWORD: compose-runtime-fixture-only
+          DB_ROOT_PASSWORD: compose-root-fixture-only
+        run: |
+          set -euo pipefail
+          unset BOOKING_HOLD_SECONDS RESIDENT_ACTIVATION_TTL_SECONDS WORKER_INSTANCE_ID
+          docker compose --env-file /dev/null config --format json |
+            docker run --rm --interactive --entrypoint php dormitory-ci:${{ github.sha }} \
+              tests/compose_environment.php --defaults
+          export BOOKING_HOLD_SECONDS=1800 RESIDENT_ACTIVATION_TTL_SECONDS=3600 WORKER_INSTANCE_ID=compose-ci-worker
+          docker compose --env-file /dev/null config --format json |
+            docker run --rm --interactive --entrypoint php dormitory-ci:${{ github.sha }} \
+              tests/compose_environment.php
+
       - name: Exercise MySQL bootstrap, web readiness, and worker isolation
         env:
           CI_APP_KEY: 5a1697717edc7dd7783c09b4c594fefa546e5aab212ae6136749002617d085f6

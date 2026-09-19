@@ -38,7 +38,9 @@ is reference material only and is not modified.
 `admin_users`, `residents`, `line_link_codes`, `rooms`, `bookings`, `occupancies`,
 `meter_readings`, `billing_settings`, `integration_settings`, `bills`,
 `bill_items`, `payments`, `notification_outbox`,
-`notification_worker_heartbeats`, `audit_logs`, and `rate_limits`.
+`notification_worker_heartbeats`, `audit_logs`, `rate_limits`,
+`line_official_accounts`, `line_room_policies`, `line_room_bindings`,
+`line_admin_recipients`, and `line_notice_outbox` (21 tables).
 
 ## Page routes
 
@@ -58,7 +60,9 @@ is reference material only and is not modified.
 - `POST /api/public/bookings` `{room_id, full_name, phone, idempotency_key}`
 - `POST /api/auth/admin/login` `{username,password}`
 - `POST /api/auth/admin/logout`
-- `POST /api/auth/resident/login` `{phone}`
+- `POST /api/auth/resident/login` `{phone,credential}` with the current password;
+  first activation uses `{phone,credential,new_password}`, where `credential`
+  contains the one-time activation code.
 - `POST /api/auth/resident/logout`
 - `GET /api/auth/me`
 
@@ -149,8 +153,8 @@ an application restart.
   CSRF plus same-origin checks, DB-backed IP/account rate limits, generic login
   errors, admin password hashing, and `auth_version` session revocation.
   Resident sessions have fixed 15-minute idle and one-hour absolute limits and
-  never use the trusted-device bypass. These controls reduce automated abuse
-  but cannot make knowledge of a resident phone number a secure authenticator.
+  never use the trusted-device bypass. A phone number alone cannot authenticate
+  a resident; the password or a valid activation code is also required.
 - Slip files are JPEG/PNG/WebP at most 4 MiB, validated by magic bytes and
   dimensions, stored below `storage/private`, and protected by an APP_KEY-based
   HMAC. Admin evidence viewing revalidates the canonical path, MIME, size,
@@ -217,12 +221,17 @@ lease fencing and hashed worker heartbeat storage. Migration 008 adds resident
 activation/password credentials. Migration 009 must run after 008 with all
 writes stopped; it binds readings to occupancies, installs two meter guards
 and two booking/occupancy insert guards, and hardens bill creation. Deploy the current source only after migrations
-006–012 succeed. Migration 010 is rerunnable for a compatible schema and adds
+006–015 succeed. Migration 010 is rerunnable for a compatible schema and adds
 `line_link_codes`, two unique guards, two lookup indexes, a resident foreign key,
 and four CHECK constraints. Migration 011 adds the public LINE Basic ID, while
 migration 012 adds the nullable move-in request digest, its named CHECK, and the
-matching immutable-evidence trigger body. Readiness/schema audit must report 16
-tables, 19 triggers, and at least 86 CHECK constraints.
+matching immutable-evidence trigger body. Migration 013 pins trigger-variable
+collations. Migration 014 adds the multi-OA LINE platform. Migration 015 allows
+both unknown legacy opening readings to remain pending only where no meter or
+bill history exists, and permits an audited one-time completion with real
+readings. Keep web, worker and scheduled writes stopped through 015. Readiness
+must validate the enforced `chk_occupancies_opening_readings_v2` definition;
+schema audit must report 21 tables, 23 triggers and at least 116 CHECK constraints.
 The application runtime account has only `SELECT`, `INSERT`, and `UPDATE` on the
 application database and must not run any migration. After upgrade, an owner
 configures integrations in Admin -> Settings.
