@@ -249,7 +249,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                 <div class="section-heading"><div><p class="eyebrow">บัญชีผู้พักและห้อง</p><h2 id="line-bindings-title">การผูก LINE ผู้พัก</h2><p>ดูทุกบัญชีที่ผูกกับห้อง สร้างรหัสเพิ่ม หรือยกเลิกเฉพาะรายการที่ต้องการ</p></div><button class="button button-secondary" type="button" data-refresh="line-bindings">รีเฟรช</button></div>
                 <p class="form-error" id="line-bindings-error" role="alert" hidden></p>
                 <div id="line-binding-summary" class="line-platform-summary" aria-live="polite"></div>
-                <div class="table-toolbar"><label class="field"><span>ค้นหาผู้พัก ห้อง หรือเบอร์โทร</span><input id="line-binding-search" type="search" maxlength="150" placeholder="ชื่อ / ห้อง / เบอร์โทร"></label><label class="field"><span>สถานะการผูก</span><select id="line-binding-filter"><option value="">ทุกสถานะ</option value="bound">ผูกแล้ว</option><option value="pending">รอส่งรหัส</option><option value="unbound">ยังไม่ผูก</option><option value="blocked">ระงับการผูก</option></select></label></div>
+                <div class="table-toolbar"><label class="field"><span>ค้นหาผู้พัก ห้อง หรือเบอร์โทร</span><input id="line-binding-search" type="search" maxlength="150" placeholder="ชื่อ / ห้อง / เบอร์โทร"></label><label class="field"><span>สถานะการผูก</span><select id="line-binding-filter"><option value="">ทุกสถานะ</option><option value="bound">ผูกแล้ว</option><option value="pending">รอส่งรหัส</option><option value="unbound">ยังไม่ผูก</option><option value="blocked">ระงับการผูก</option></select></label></div>
                 <div class="table-scroll"><table class="data-table"><thead><tr><th>ผู้พัก / ห้อง</th><th>สถานะ</th><th>บัญชี / รหัสรอใช้</th><th>จัดการ</th></tr></thead><tbody id="line-binding-rows"></tbody></table></div>
             </section>
             <section class="admin-view" data-admin-view="settings" aria-labelledby="settings-title" hidden>
@@ -398,19 +398,26 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
         <div class="modal-header"><h2 id="line-platform-title">จัดการ LINE</h2><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div>
         <p id="line-platform-summary" class="muted"></p><p class="form-error" id="line-platform-error" role="alert" hidden></p>
         <form id="line-oa-form" class="stack-form" hidden>
+            <div class="security-note"><strong>กรอกเพียง 2 ค่า</strong><span>นำ Channel access token และ Channel secret จาก LINE Developers มากรอก ระบบจะตรวจบัญชีและดึงชื่อกับ Basic ID ให้เอง</span></div>
             <div class="form-grid form-grid-two">
-                <label class="field"><span>ชื่อ OA</span><input name="name" maxlength="120" required></label>
-                <label class="field"><span>ชื่อย่อ</span><input name="slug" maxlength="40" pattern="[a-z0-9][a-z0-9_-]{0,39}" required><small>อักษรอังกฤษตัวเล็ก ตัวเลข ขีดกลางหรือขีดล่าง</small></label>
-                <label class="field"><span>Basic ID</span><input name="basic_id" maxlength="33" pattern="@[A-Za-z0-9._-]{1,32}" placeholder="@youraccount"></label>
-                <label class="field"><span>Channel ID</span><input name="channel_id" maxlength="60"></label>
-                <label class="field"><span>คำอธิบาย</span><textarea name="description" maxlength="500" rows="2"></textarea></label>
-                <label class="field"><span>ลิงก์เพิ่มเพื่อน (ถ้ามี)</span><input name="add_friend_url" type="url" maxlength="255" placeholder="https://line.me/R/ti/p/@youraccount"></label>
-                <label class="field"><span>Channel access token</span><input name="channel_access_token" type="password" maxlength="4096" autocomplete="new-password" placeholder="เว้นว่างเพื่อเก็บค่าเดิม"><small id="line-oa-token-hint"></small></label>
-                <label class="field"><span>Channel secret</span><input name="channel_secret" type="password" maxlength="4096" autocomplete="new-password" placeholder="เว้นว่างเพื่อเก็บค่าเดิม"><small id="line-oa-secret-hint"></small></label>
+                <label class="field"><span>Channel access token</span><input name="channel_access_token" type="password" maxlength="8192" autocomplete="new-password" placeholder="วาง Token จาก Messaging API"><small id="line-oa-token-hint"></small></label>
+                <label class="field"><span>Channel secret</span><input name="channel_secret" type="password" maxlength="8192" autocomplete="new-password" placeholder="วาง Secret จาก Basic settings"><small id="line-oa-secret-hint"></small></label>
             </div>
-            <div class="form-grid form-grid-two"><label class="check-field"><input type="checkbox" name="channel_access_token_clear"><span>ล้าง Token เดิม</span></label><label class="check-field"><input type="checkbox" name="channel_secret_clear"><span>ล้าง Secret เดิม</span></label></div>
-            <label class="check-field"><input type="checkbox" name="enabled" checked><span>เปิดใช้งาน OA นี้</span></label>
-            <p class="field-hint">ค่าลับจะไม่ถูกส่งกลับมาแสดง การบันทึก Token ใหม่จะตรวจตัวตน OA กับ LINE ก่อนบันทึก</p>
+            <details>
+                <summary>ตัวเลือกขั้นสูง</summary>
+                <p class="field-hint">ช่องเหล่านี้ไม่จำเป็นสำหรับการเชื่อมต่อครั้งแรก หากเว้นชื่อ รหัสภายใน หรือ Basic ID ระบบจะดึงหรือสร้างให้อัตโนมัติ</p>
+                <div class="form-grid form-grid-two">
+                    <label class="field"><span>ชื่อแสดงผล</span><input name="name" maxlength="120" placeholder="ดึงจาก LINE อัตโนมัติ"></label>
+                    <label class="field"><span>รหัสภายใน</span><input name="slug" maxlength="40" pattern="[a-z0-9][a-z0-9_-]{0,39}" placeholder="สร้างอัตโนมัติ"><small>อักษรอังกฤษตัวเล็ก ตัวเลข ขีดกลางหรือขีดล่าง</small></label>
+                    <label class="field"><span>Basic ID</span><input name="basic_id" maxlength="33" pattern="@[A-Za-z0-9._-]{1,32}" placeholder="ดึงจาก LINE อัตโนมัติ"></label>
+                    <label class="field"><span>Channel ID (ไม่บังคับ)</span><input name="channel_id" maxlength="60"></label>
+                    <label class="field"><span>คำอธิบาย</span><textarea name="description" maxlength="500" rows="2"></textarea></label>
+                    <label class="field"><span>ลิงก์เพิ่มเพื่อนแบบกำหนดเอง</span><input name="add_friend_url" type="url" maxlength="255" placeholder="ระบบสร้างจาก Basic ID ให้อยู่แล้ว"></label>
+                </div>
+                <div class="form-grid form-grid-two"><label class="check-field"><input type="checkbox" name="channel_access_token_clear"><span>ล้าง Token เดิม</span></label><label class="check-field"><input type="checkbox" name="channel_secret_clear"><span>ล้าง Secret เดิม</span></label></div>
+                <label class="check-field"><input type="checkbox" name="enabled" checked><span>เปิดใช้งาน OA นี้</span></label>
+            </details>
+            <p class="field-hint">ค่าลับจะไม่ถูกส่งกลับมาแสดง หลังบันทึกให้นำ Webhook URL ที่ระบบสร้างไปวางใน LINE Developers แล้วกด Verify</p>
             <div id="line-oa-diagnostics" class="line-platform-diagnostics"></div>
             <div class="form-actions"><button class="button button-primary" type="submit">บันทึก OA</button><button class="button button-secondary" type="button" data-close-dialog>ยกเลิก</button></div>
         </form>

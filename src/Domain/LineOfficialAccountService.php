@@ -84,11 +84,14 @@ final class LineOfficialAccountService
                 'route_token'=>bin2hex(random_bytes(24)),'provider_user_id'=>null,'token_fingerprint'=>null,'identity_verified_at'=>null,'last_error'=>null];
             $row=$this->merge($row,$input);
             if ((bool)$row['enabled']) $row=$this->verifyIdentity($row);
+            $this->assertMetadata($row);
+            $autoDefault=(bool)$row['enabled']&&!$this->readyDefaultExists();
+            if($autoDefault){$pdo->exec('UPDATE line_official_accounts SET is_default=0 WHERE is_default=1');$row['is_default']=1;}
             $columns=['id','slug','name','description','basic_id','channel_id','add_friend_url','access_token_enc','channel_secret_enc','enabled','is_default','legacy_route_enabled','route_token','provider_user_id','token_fingerprint','identity_verified_at','last_error'];
             $statement=$pdo->prepare('INSERT INTO line_official_accounts ('.implode(',',$columns).',created_by,updated_by) VALUES ('.implode(',',array_fill(0,count($columns)+2,'?')).')');
             try { $statement->execute([...array_map(static fn(string $key)=>$row[$key],$columns),$adminId,$adminId]); }
             catch(PDOException $error){$this->duplicate($error);}
-            $this->audit($adminId,'line.oa_created',$id,['enabled'=>(bool)$row['enabled']]);
+            $this->audit($adminId,'line.oa_created',$id,['enabled'=>(bool)$row['enabled'],'auto_default'=>$autoDefault]);
             return $this->get($id);
         }));
     }
@@ -107,13 +110,17 @@ final class LineOfficialAccountService
             }
             $newSecrets=$this->secrets($row);
             $changedToken=$oldSecrets['access_token']!==$newSecrets['access_token'];
+            $changedSecret=$oldSecrets['channel_secret']!==$newSecrets['channel_secret'];
             $identityChanged=$changedToken || $oldBasicId!==$this->basicId($row) || $old['channel_id']!==$row['channel_id'];
-            $readinessChanged=$identityChanged||!(bool)$old['enabled']||$oldSecrets['channel_secret']!==$newSecrets['channel_secret'];
-            if((bool)$row['enabled']&&$readinessChanged&&($newSecrets['access_token']===''||$newSecrets['channel_secret']===''||$this->basicId($row)===null))throw new HttpException(422,'กรุณาตั้งค่า Basic ID และ Channel secret ให้ครบ หรือปิดใช้งานบัญชีก่อนลบค่า','LINE_NOT_CONFIGURED');
-            if((bool)$row['enabled'] && ($identityChanged || !(bool)$old['enabled']))$row=$this->verifyIdentity($row);
+            $needsDiscovery=$newSecrets['access_token']!==''&&($row['name']===''||$row['slug']===''||$this->basicId($row)===null);
+            $readinessChanged=$identityChanged||!(bool)$old['enabled']||$changedSecret;
+            if((bool)$row['enabled']&&$readinessChanged&&($newSecrets['access_token']===''||$newSecrets['channel_secret']===''))throw new HttpException(422,'กรุณาตั้งค่า Channel secret ให้ครบก่อนเปิดใช้งาน','LINE_NOT_CONFIGURED');
+            if((bool)$row['enabled'] && ($identityChanged || !(bool)$old['enabled'] || $needsDiscovery))$row=$this->verifyIdentity($row,$adminId);
             elseif($identityChanged){$row['token_fingerprint']=null;$row['identity_verified_at']=null;}
+            if($changedSecret){$row['last_seen_at']=null;$row['last_error']=null;}
+            $this->assertMetadata($row);
             if(!(bool)$row['enabled'])$row['is_default']=0;
-            $columns=['slug','name','description','basic_id','channel_id','add_friend_url','access_token_enc','channel_secret_enc','enabled','is_default','provider_user_id','token_fingerprint','identity_verified_at','last_error'];
+            $columns=['slug','name','description','basic_id','channel_id','add_friend_url','access_token_enc','channel_secret_enc','enabled','is_default','provider_user_id','token_fingerprint','identity_verified_at','last_seen_at','last_error'];
             $statement=$pdo->prepare('UPDATE line_official_accounts SET '.implode(',',array_map(static fn(string $key)=>$key.'=?',$columns)).',updated_by=?,updated_at=UTC_TIMESTAMP(6) WHERE id=? AND deleted_at IS NULL');
             try{$statement->execute([...array_map(static fn(string $key)=>$row[$key],$columns),$adminId,$id]);}catch(PDOException $error){$this->duplicate($error);}
             $this->audit($adminId,'line.oa_updated',$id,['changed_fields'=>array_keys($input),'enabled'=>(bool)$row['enabled']]);
@@ -205,11 +212,12 @@ final class LineOfficialAccountService
     {
         $this->adminId($adminId);
         return $this->withRegistryLock(fn():array=>$this->app->database()->transaction(function(PDO $pdo)use($id,$adminId):array{
-            $row=$this->verifyIdentity($this->row($id,true));
-            $statement=$pdo->prepare('UPDATE line_official_accounts SET provider_user_id=?,token_fingerprint=?,identity_verified_at=?,last_error=NULL,updated_by=?,updated_at=UTC_TIMESTAMP(6) WHERE id=?');
-            try{$statement->execute([$row['provider_user_id'],$row['token_fingerprint'],$row['identity_verified_at'],$adminId,$id]);}catch(PDOException $error){$this->duplicate($error);}
-            $this->audit($adminId,'line.oa_tested',$id,['ready'=>true]);
-            return ['id'=>$id,'ready'=>true,'account'=>$this->get($id)];
+            $row=$this->verifyIdentity($this->row($id,true),$adminId);
+            $statement=$pdo->prepare('UPDATE line_official_accounts SET name=?,slug=?,basic_id=?,provider_user_id=?,token_fingerprint=?,identity_verified_at=?,updated_by=?,updated_at=UTC_TIMESTAMP(6) WHERE id=?');
+            try{$statement->execute([$row['name'],$row['slug'],$row['basic_id'],$row['provider_user_id'],$row['token_fingerprint'],$row['identity_verified_at'],$adminId,$id]);}catch(PDOException $error){$this->duplicate($error);}
+            $account=$this->get($id);
+            $this->audit($adminId,'line.oa_tested',$id,['identity_verified'=>true,'ready'=>$account['operational_ready']]);
+            return ['id'=>$id,'identity_verified'=>true,'ready'=>$account['operational_ready'],'account'=>$account];
         }));
     }
 
@@ -250,6 +258,10 @@ final class LineOfficialAccountService
     {
         $id=(int)$row['id'];$secrets=$this->secrets($row);$basicId=$this->basicId($row);$links=LineBindingService::officialAccountLinks($basicId);
         $statement=$this->app->database()->pdo()->prepare("SELECT SUM(status='pending' AND expires_at>UTC_TIMESTAMP(6)) AS pending_count,SUM(status='bound') AS bound_count FROM line_room_bindings WHERE oa_id=?");$statement->execute([$id]);$counts=$statement->fetch();
+        $credentialsReady=(bool)$row['enabled']&&$row['deleted_at']===null&&$secrets['access_token']!==''&&$secrets['channel_secret']!==''&&$links['line_add_friend_url']!==null;
+        $identityVerified=is_string($row['provider_user_id'])&&is_string($row['identity_verified_at'])
+            &&is_string($row['token_fingerprint'])&&hash_equals($row['token_fingerprint'],hash_hmac('sha256','line-oa-token\0'.$id.'\0'.$secrets['access_token'],$this->app->config->appKey()));
+        $webhookVerified=$credentialsReady&&$row['last_seen_at']!==null&&$row['last_error']===null;
         $safe=[];foreach(['name','slug','description','channel_id','add_friend_url','deleted_at','provider_user_id','identity_verified_at','last_seen_at','last_error','created_at','updated_at']as$key)$safe[$key]=$row[$key]??null;
         $safe+=['id'=>$id,'basic_id'=>$basicId,'enabled'=>(bool)$row['enabled'],'is_default'=>(bool)$row['is_default'],'legacy_route_enabled'=>(bool)$row['legacy_route_enabled'],
             'channel_access_token_configured'=>$secrets['access_token']!=='','channel_access_token_hint'=>$this->hint($secrets['access_token']),
@@ -257,16 +269,20 @@ final class LineOfficialAccountService
             'line_add_friend_url'=>$row['add_friend_url']??$links['line_add_friend_url'],
             'line_message_base'=>$links['line_add_friend_url']===null?null:'https://line.me/R/oaMessage/'.rawurlencode((string)$basicId).'/?',
             'webhook_url'=>rtrim($this->app->config->require('APP_URL'),'/').'/api/webhooks/line/oa/'.$row['route_token'],
-            'line_binding_ready'=>(bool)$row['enabled']&&$row['deleted_at']===null&&$secrets['access_token']!==''&&$secrets['channel_secret']!==''&&$links['line_add_friend_url']!==null,
+            'credentials_ready'=>$credentialsReady,'identity_verified'=>$identityVerified,'webhook_verified'=>$webhookVerified,'operational_ready'=>$identityVerified&&$webhookVerified,
+            'line_binding_ready'=>$credentialsReady,
             'pending_count'=>(int)($counts['pending_count']??0),'bound_count'=>(int)($counts['bound_count']??0)];
         return $safe;
     }
 
     private function merge(array $row,array $input): array
     {
-        foreach(['slug'=>40,'name'=>120]as$field=>$max){if(array_key_exists($field,$input))$row[$field]=Validator::string($input[$field],$field,1,$max);}
-        if($row['name']==='')throw new HttpException(422,'กรุณาระบุชื่อบัญชี LINE','VALIDATION_ERROR',['field'=>'name']);
-        if(preg_match('/^[a-z0-9][a-z0-9_-]{0,39}$/D',$row['slug'])!==1)throw new HttpException(422,'รหัสบัญชีใช้ตัวพิมพ์เล็ก ตัวเลข ขีดกลางหรือขีดล่างเท่านั้น','VALIDATION_ERROR',['field'=>'slug']);
+        foreach(['slug'=>40,'name'=>120]as$field=>$max){
+            if(!array_key_exists($field,$input))continue;
+            if(!is_string($input[$field]))throw new HttpException(422,"{$field} ไม่ถูกต้อง",'VALIDATION_ERROR',['field'=>$field]);
+            $row[$field]=trim($input[$field])===''?'':Validator::string($input[$field],$field,1,$max);
+        }
+        if($row['slug']!==''&&preg_match('/^[a-z0-9][a-z0-9_-]{0,39}$/D',$row['slug'])!==1)throw new HttpException(422,'รหัสบัญชีใช้ตัวพิมพ์เล็ก ตัวเลข ขีดกลางหรือขีดล่างเท่านั้น','VALIDATION_ERROR',['field'=>'slug']);
         foreach(['description'=>500,'basic_id'=>33,'channel_id'=>60,'add_friend_url'=>255]as$field=>$max){if(array_key_exists($field,$input))$row[$field]=$input[$field]===null||$input[$field]===''?null:Validator::string($input[$field],$field,1,$max);}
         if($row['basic_id']!==null&&preg_match('/^@[A-Za-z0-9._-]{1,32}$/D',$row['basic_id'])!==1)throw new HttpException(422,'Basic ID ต้องขึ้นต้นด้วย @','VALIDATION_ERROR',['field'=>'basic_id']);
         if($row['channel_id']!==null&&preg_match('/^[0-9]{1,60}$/D',$row['channel_id'])!==1)throw new HttpException(422,'Channel ID ต้องเป็นตัวเลข','VALIDATION_ERROR',['field'=>'channel_id']);
@@ -283,17 +299,60 @@ final class LineOfficialAccountService
         return $row;
     }
 
-    private function verifyIdentity(array $row): array
+    private function verifyIdentity(array $row,?int $adminId=null): array
     {
         $secret=$this->secrets($row);
         if($secret['access_token']==='')throw new HttpException(422,'กรุณาระบุ Channel access token ก่อนทดสอบหรือเปิดใช้งาน','LINE_NOT_CONFIGURED');
-        if((bool)$row['enabled']&&($secret['channel_secret']===''||$this->basicId($row)===null))throw new HttpException(422,'กรุณาตั้งค่า Basic ID และ Channel secret ให้ครบก่อนเปิดใช้งาน','LINE_NOT_CONFIGURED');
+        if((bool)$row['enabled']&&$secret['channel_secret']==='')throw new HttpException(422,'กรุณาตั้งค่า Channel secret ให้ครบก่อนเปิดใช้งาน','LINE_NOT_CONFIGURED');
         $identity=$this->identityTransport!==null?($this->identityTransport)($secret['access_token']):$this->fetchIdentity($secret['access_token']);
         if(!is_array($identity)||!is_string($identity['userId']??null)||preg_match('/^U[0-9a-f]{32}$/D',$identity['userId'])!==1||!is_string($identity['basicId']??null)||preg_match('/^@[A-Za-z0-9._-]{1,32}$/D',$identity['basicId'])!==1)throw new HttpException(502,'LINE ส่งข้อมูลบัญชีที่ไม่ถูกต้อง','LINE_TEST_FAILED');
         if($row['provider_user_id']!==null&&!hash_equals((string)$row['provider_user_id'],$identity['userId']))throw new HttpException(409,'Token นี้เป็นของ OA อื่น กรุณาเพิ่มบัญชีใหม่เพื่อรักษาปลายทางเดิม','LINE_OA_IDENTITY_MISMATCH');
+        if((int)$row['id']===0){
+            if($this->basicId($row)===null){
+                if($adminId===null)throw new \RuntimeException('Admin identity is required to discover the legacy LINE Basic ID');
+                $this->app->settings()->update(['line_basic_id'=>$identity['basicId']],$adminId);
+            }
+            if($row['name']===''||($row['provider_user_id']===null&&$row['name']==='LINE เดิมของหอพัก'))$row['name']=$this->identityName($identity);
+            if($row['slug']==='')$row['slug']='legacy';
+        }else{
+            if($row['basic_id']===null)$row['basic_id']=$identity['basicId'];
+            if($row['name']==='')$row['name']=$this->identityName($identity);
+            if($row['slug']==='')$row['slug']=$this->identitySlug($identity['basicId'],$identity['userId']);
+        }
         $basic=$this->basicId($row);if($basic!==null&&!hash_equals($basic,$identity['basicId']))throw new HttpException(409,'Basic ID ไม่ตรงกับ Channel access token','LINE_OA_IDENTITY_MISMATCH');
         $row['provider_user_id']=$identity['userId'];$row['token_fingerprint']=hash_hmac('sha256','line-oa-token\0'.$row['id'].'\0'.$secret['access_token'],$this->app->config->appKey());
-        $row['identity_verified_at']=gmdate('Y-m-d H:i:s');$row['last_error']=null;return $row;
+        $row['identity_verified_at']=gmdate('Y-m-d H:i:s');return $row;
+    }
+
+    private function assertMetadata(array $row): void
+    {
+        if($row['name']==='')throw new HttpException(422,'กรุณาระบุชื่อบัญชี LINE หรือเปิดใช้งานเพื่อให้ระบบดึงชื่ออัตโนมัติ','VALIDATION_ERROR',['field'=>'name']);
+        if(preg_match('/^[a-z0-9][a-z0-9_-]{0,39}$/D',(string)$row['slug'])!==1)throw new HttpException(422,'กรุณาระบุรหัสบัญชี หรือเปิดใช้งานเพื่อให้ระบบสร้างให้อัตโนมัติ','VALIDATION_ERROR',['field'=>'slug']);
+    }
+
+    private function identityName(array $identity): string
+    {
+        $display=$identity['displayName']??null;
+        if(is_string($display)){
+            $display=trim($display);$length=function_exists('mb_strlen')?mb_strlen($display,'UTF-8'):strlen($display);
+            if($length>=1&&$length<=120)return $display;
+        }
+        return 'LINE OA '.(string)$identity['basicId'];
+    }
+
+    private function identitySlug(string $basicId,string $providerUserId): string
+    {
+        $base=strtolower(ltrim($basicId,'@'));
+        $base=preg_replace('/[^a-z0-9_-]+/','-',$base)??'';$base=trim($base,'-_');
+        if($base==='')$base='account';
+        $base=substr($base,0,26);
+        return 'line-'.$base.'-'.substr($providerUserId,-8);
+    }
+
+    private function readyDefaultExists(): bool
+    {
+        $row=$this->app->database()->pdo()->query('SELECT * FROM line_official_accounts WHERE is_default=1 AND enabled=1 AND deleted_at IS NULL LIMIT 1')->fetch();
+        return is_array($row)&&($this->safeRow($row)['line_binding_ready']??false)===true;
     }
 
     private function fetchIdentity(string $token): array

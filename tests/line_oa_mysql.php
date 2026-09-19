@@ -19,6 +19,9 @@ $transport=static function(string $token)use(&$calls):array{$calls++;return matc
     'fixture-token-a','fixture-token-a-rotated'=>['userId'=>'U'.str_repeat('a',32),'basicId'=>'@fixture_a'],
     'fixture-token-b'=>['userId'=>'U'.str_repeat('b',32),'basicId'=>'@fixture_b'],
     'fixture-token-wrong'=>['userId'=>'U'.str_repeat('b',32),'basicId'=>'@fixture_a'],
+    'fixture-token-auto'=>['userId'=>'U'.str_repeat('c',32),'basicId'=>'@auto_account','displayName'=>'ชื่อจาก LINE'],
+    'fixture-token-legacy'=>['userId'=>'U'.str_repeat('d',32),'basicId'=>'@legacy_auto','displayName'=>'Legacy from LINE'],
+    'fixture-token-disabled'=>['userId'=>'U'.str_repeat('e',32),'basicId'=>'@disabled_auto','displayName'=>'Disabled from LINE'],
     default=>throw new RuntimeException('Unexpected identity token fixture'),
 };};
 $service=new LineOfficialAccountService($app,$transport);
@@ -89,5 +92,43 @@ $test('soft deletion preserves history while disabling credentials and future ro
 $test('audits omit raw credentials, ciphertext and webhook routing tokens',static function()use($pdo,$assert,$service,&$a):void{
     $token=basename($service->get($a['id'])['webhook_url']);
     foreach($pdo->query('SELECT details FROM audit_logs')->fetchAll(PDO::FETCH_COLUMN)as$details){$assert(!str_contains($details,'fixture-token')&&!str_contains($details,'fixture-secret')&&!str_contains($details,$token)&&!str_contains($details,'v1:'));}
+});
+$test('two credentials discover metadata without replacing a configured default',static function()use($service,$admin,$assert,&$a,&$automatic):void{
+    $automatic=$service->create(['name'=>'','slug'=>'','basic_id'=>'','channel_access_token'=>'fixture-token-auto','channel_secret'=>'fixture-secret-auto','enabled'=>true],$admin);
+    $assert($automatic['name']==='ชื่อจาก LINE'&&$automatic['basic_id']==='@auto_account');
+    $assert(preg_match('/^[a-z0-9][a-z0-9_-]{0,39}$/D',$automatic['slug'])===1);
+    $assert($automatic['line_add_friend_url']==='https://line.me/R/ti/p/%40auto_account');
+    $assert($automatic['identity_verified']===true&&$automatic['webhook_verified']===false&&$automatic['operational_ready']===false);
+    $assert($service->defaultId()===$a['id']);
+    $tested=$service->test($automatic['id'],$admin);
+    $assert($tested['identity_verified']===true&&$tested['ready']===false,'Bot info alone must not claim webhook readiness');
+});
+$test('signed empty webhook confirms the secret and secret rotation requires a fresh callback',static function()use($app,$service,$admin,$assert,$expect,&$automatic):void{
+    $id=$automatic['id'];$oa=$service->credentials($id);
+    $raw=json_encode(['destination'=>$oa['provider_user_id'],'events'=>[]],JSON_THROW_ON_ERROR);
+    $request=new Dormitory\Http\Request('POST','/api/webhooks/line/oa/'.$oa['route_token'],['content-type'=>'application/json','x-line-signature'=>base64_encode(hash_hmac('sha256',$raw,$oa['channel_secret'],true))],[],[],[],[],'oa-setup-test',$raw);
+    $webhook=new Dormitory\Domain\LineWebhookService($app,null,$id);
+    $webhook->handle($request);
+    $assert($service->get($id)['operational_ready']===true);
+    $service->update($id,['channel_secret'=>'fixture-secret-rotated'],$admin);
+    $assert($service->get($id)['webhook_verified']===false);
+    $expect(fn()=>$webhook->handle($request),'LINE_WEBHOOK_SIGNATURE_INVALID');
+    $assert($service->test($id,$admin)['ready']===false);
+    $service->touchWebhook($id,'LINE_DESTINATION_MISMATCH');
+    $assert($service->test($id,$admin)['ready']===false,'Identity test must not erase webhook errors');
+});
+$test('legacy quick setup discovers Basic ID and name transactionally',static function()use($app,$service,$admin,$assert,$expect):void{
+    $legacy=$service->update(0,['name'=>'','slug'=>'','basic_id'=>'','channel_access_token'=>'fixture-token-legacy','channel_secret'=>'fixture-secret-legacy','enabled'=>true],$admin);
+    $assert($legacy['name']==='Legacy from LINE'&&$legacy['basic_id']==='@legacy_auto'&&$legacy['slug']==='legacy');
+    $assert($legacy['identity_verified']===true&&$legacy['webhook_verified']===false);
+    $assert($app->settings()->value('LINE_BASIC_ID')==='@legacy_auto');
+    $expect(fn()=>$service->update(0,['basic_id'=>'','channel_access_token'=>'fixture-token-auto'],$admin),'LINE_OA_IDENTITY_MISMATCH');
+    $assert($app->settings()->value('LINE_BASIC_ID')==='@legacy_auto','Failed identity rotation must restore the Basic ID');
+});
+$test('testing a disabled draft persists discovered Basic ID without enabling it',static function()use($service,$admin,$assert):void{
+    $draft=$service->create(['name'=>'Draft','slug'=>'draft','channel_access_token'=>'fixture-token-disabled','enabled'=>false],$admin);
+    $tested=$service->test($draft['id'],$admin);
+    $assert($tested['ready']===false&&$tested['account']['enabled']===false);
+    $assert($service->get($draft['id'])['basic_id']==='@disabled_auto');
 });
 fwrite(STDOUT,"{$passed} LINE OA MySQL tests passed\n");

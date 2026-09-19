@@ -198,7 +198,8 @@ test('OA save blocks switching modal and clears secret fields before a post-save
   const work = ui.form('line-oa-form').dispatch('submit'); assert.equal(ui.dialog.dataset.dialogBusy, 'true');
   await ui.controller.openBinding(2); assert.equal(ui.requests.length, 1);
   ui.requests[0].resolve({ id: 2 }); await work;
-  assert.equal(ui.dialog.open, false); assert.equal(ui.field('line-oa-form', 'channel_access_token').value, ''); assert.equal(ui.dialog.dataset.dialogBusy, undefined);
+  assert.equal(ui.dialog.open, true); assert.equal(ui.field('line-oa-form', 'channel_access_token').value, ''); assert.equal(ui.dialog.dataset.dialogBusy, undefined);
+  assert.ok(ui.requests.some((item) => item.url === '/api/admin/line/oas/2/webhook-status'));
   assert.equal(ui.requests.filter((item) => item.url === '/api/admin/line/oas').length, 2);
 });
 
@@ -206,4 +207,32 @@ test('polling reads only visible open detail dialogs and close clears timers', a
   const ui = harness(); await ui.openBinding(); ui.document.visibilityState = 'hidden'; ui.tick(5000); assert.equal(ui.requests.length, 2);
   ui.document.visibilityState = 'visible'; ui.tick(5000); assert.equal(ui.requests.length, 3); ui.requests[2].resolve(detail()); await settle();
   ui.dialog.close(); ui.tick(5000); assert.equal(ui.requests.length, 3); assert.equal(ui.timers.size, 0);
+});
+
+test('first connection reuses unconfigured legacy OA and submits only necessary credentials with blank metadata', async () => {
+  const ui = harness();
+  const load = ui.controller.loadOas();
+  ui.requests[0].resolve({ rows: [{ id: 0, enabled: true, credentials_ready: false }], default_oa_id: 0 });
+  ui.requests[1].resolve({ rows: [] }); await load;
+  const open = ui.$('#line-oa-create').dispatch('click');
+  assert.equal(ui.requests.at(-1).url, '/api/admin/line/oas/0');
+  ui.requests.at(-1).resolve({ id: 0, enabled: true, name: 'LINE เดิมของหอพัก', slug: 'legacy' });
+  await open; await settle();
+  ui.field('line-oa-form', 'channel_access_token').value = 'test-token';
+  ui.field('line-oa-form', 'channel_secret').value = 'test-secret';
+  const save = ui.form('line-oa-form').dispatch('submit');
+  const request = ui.requests.at(-1);
+  assert.equal(request.url, '/api/admin/line/oas/0');
+  assert.equal(request.options.method, 'PUT');
+  assert.equal(request.options.body.basic_id, '');
+  request.resolve({ id: 0 }); await save;
+  assert.equal(ui.field('line-oa-form', 'channel_secret').value, '');
+  const statusRead = ui.requests.find((item) => item.url.endsWith('/webhook-status'));
+  statusRead.resolve({ id: 0, name: 'Test OA', credentials_ready: true, identity_verified: true, webhook_verified: false });
+  await settle();
+  assert.match(ui.$('#line-webhook-detail').textContent, /รอ Verify Webhook/);
+  const refresh = ui.controller.refreshDialog(true);
+  ui.requests.at(-1).resolve({ id: 0, name: 'Test OA', credentials_ready: true, identity_verified: true, webhook_verified: true, operational_ready: true });
+  await refresh;
+  assert.ok(ui.effects.toasts.includes('Verify Webhook สำเร็จแล้ว'));
 });
