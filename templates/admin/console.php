@@ -195,9 +195,9 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                     <div class="security-note" id="billing-readiness-note"><strong>ตรวจสอบค่ารายเดือนก่อนออกบิล</strong><span>ระบบกำลังโหลดสถานะจากหน้า “ตั้งค่า”</span></div>
                     <div class="form-grid form-grid-four">
                         <label class="field"><span>รอบเดือน</span><input type="month" name="period" id="bill-period" max="<?= e($maximumBillingPeriod) ?>" required></label>
-                        <label class="field"><span>ค่าน้ำ / หน่วย</span><input type="number" name="water_rate" id="bill-water-rate" min="0" step="0.01" required></label>
-                        <label class="field"><span>ค่าไฟ / หน่วย</span><input type="number" name="electric_rate" id="bill-electric-rate" min="0" step="0.01" required></label>
-                        <label class="field"><span>กำหนดชำระ</span><input type="date" name="due_date" id="bill-due-date" max="<?= e($maximumBillingDueDate) ?>" required></label>
+                        <div class="field"><span>ค่าน้ำ / หน่วย · จากตั้งค่า</span><output class="auto-value" id="bill-water-rate">กำลังโหลด…</output></div>
+                        <div class="field"><span>ค่าไฟ / หน่วย · จากตั้งค่า</span><output class="auto-value" id="bill-electric-rate">กำลังโหลด…</output></div>
+                        <div class="field"><span>กำหนดชำระ · คำนวณอัตโนมัติ</span><output class="auto-value" id="bill-due-date">กำลังโหลด…</output></div>
                         <label class="field form-span-two"><span>รายการอื่น (ไม่บังคับ)</span><input type="text" name="other_description" maxlength="120" placeholder="เช่น ค่าทำความสะอาด"></label>
                         <label class="field"><span>จำนวนเงินอื่น / ห้อง</span><input type="number" name="other_amount" min="0" step="0.01" value="0"><small>จำนวนนี้จะเพิ่มให้ทุกห้องที่เลือก ไม่ใช่ยอดรวมของทุกห้อง</small></label>
                     </div>
@@ -206,6 +206,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                         <span>ยืนยันว่าจดมิเตอร์ครบและต้องการปิดยอดของเดือนปัจจุบันตอนนี้</span>
                     </label>
                     <p class="field-hint" id="bill-current-period-help" hidden>บิลเดือนปัจจุบันเป็นยอดเต็มรอบ ระบบไม่คิดค่าเช่าแบบแบ่งวัน และจะไม่รับการแก้เลขมิเตอร์หลังออกบิลแล้ว</p>
+                    <p class="field-hint">ค่าเช่าและเลขมิเตอร์ดึงจากห้อง ค่าน้ำ ค่าไฟ และกำหนดชำระดึงจากการตั้งค่าบนเซิร์ฟเวอร์ ไม่ต้องกรอกซ้ำ เลือกห้องแล้วตรวจยอดก่อนยืนยันทุกครั้ง</p>
                     <fieldset class="room-selector"><legend>เลือกห้องที่จะออกบิล</legend><label class="check-field"><input type="checkbox" id="select-all-bill-rooms"><span>เลือกทุกห้อง</span></label><div class="room-check-grid" id="bill-room-options"><span class="muted">เลือกรอบเดือนเพื่อโหลดห้อง</span></div></fieldset>
                     <p class="form-error" id="bill-builder-error" role="alert" hidden></p>
                     <div class="form-actions"><button class="button button-secondary" type="button" id="preview-bills-button" disabled>ตรวจยอดก่อน</button><button class="button button-primary" type="submit" id="create-bills-button" disabled>ออกบิลที่เลือก</button></div>
@@ -239,7 +240,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
             </section>
 
             <section class="admin-view" data-admin-view="line-oas" aria-labelledby="line-oas-title" hidden>
-                <div class="section-heading"><div><p class="eyebrow">การสื่อสารของหอพัก</p><h2 id="line-oas-title">บัญชี LINE Official Account</h2><p>แต่ละ OA มีการเชื่อมต่อและ Webhook ของตนเอง การเปลี่ยนบัญชีเริ่มต้นมีผลกับรหัสที่สร้างใหม่</p></div><div class="form-actions"><button class="button button-secondary" type="button" data-refresh="line-oas">รีเฟรช</button><button class="button button-primary" type="button" id="line-oa-create">เพิ่ม OA</button></div></div>
+                <div class="section-heading"><div><p class="eyebrow">การสื่อสารของหอพัก</p><h2 id="line-oas-title">บัญชี LINE Official Account</h2><p>ตั้งค่าบอทหลักของหอพัก แล้วเพิ่มบัญชีผู้พักหรือผู้ดูแลเป็นผู้รับแจ้งเตือนได้</p></div><div class="form-actions"><button class="button button-secondary" type="button" data-refresh="line-oas">รีเฟรช</button><button class="button button-primary" type="button" id="line-oa-configure">ตั้งค่า LINE Bot</button></div></div>
                 <p class="form-error" id="line-oas-error" role="alert" hidden></p>
                 <div id="line-oa-list" class="line-platform-grid" aria-live="polite"></div>
                 <div class="section-heading"><div><h3>ผู้รับแจ้งเตือนฝ่ายจัดการ</h3><p>สร้างรหัสให้เจ้าของหรือผู้ดูแล แล้วให้เจ้าตัวส่งรหัสจาก LINE ของตนเอง จึงจะเริ่มรับแจ้งเตือน</p></div><button class="button button-primary" type="button" id="line-recipient-create">เพิ่มผู้รับแจ้งเตือน</button></div>
@@ -271,7 +272,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                                 <legend><span class="integration-icon">L</span> LINE และคิวแจ้งเตือน</legend>
                                 <p>จัดการ OA, Token, Webhook และผู้รับแจ้งเตือนได้ที่หน้า LINE สำหรับเจ้าของและผู้ดูแลทุกคน</p>
                                 <button class="button button-secondary" type="button" data-admin-nav="line-oas">เปิดบัญชี LINE OA</button>
-                                <div class="form-grid form-grid-two"><label class="field"><span>ลองส่งสูงสุด (ครั้ง)</span><input name="line_max_attempts" type="number" min="1" max="20" step="1" required<?= $integrationDisabled ?>></label><label class="field"><span>จำนวนงานต่อรอบ</span><input name="notification_batch_size" type="number" min="1" max="100" step="1" required<?= $integrationDisabled ?>></label></div>
+                                <p class="field-hint">ระบบใช้ค่าการส่งซ้ำและขนาดคิวที่บันทึกไว้ให้อัตโนมัติ ไม่ต้องตั้งค่าเพิ่ม</p>
                             </fieldset>
 
                             <fieldset class="integration-fieldset integration-fieldset-wide">
@@ -284,12 +285,13 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                                     <label class="field" data-slip-provider-field="easyslip"><span>EasySlip API Key</span><input name="easyslip_api_key" type="password" maxlength="4096" autocomplete="new-password" placeholder="เว้นว่างเพื่อเก็บค่าเดิม"<?= $integrationDisabled ?>><small data-secret-status="easyslip_api_key">ยังไม่ได้โหลดสถานะ</small></label>
                                     <label class="check-field danger-check" data-slip-provider-field="slipok"><input name="slipok_api_key_clear" type="checkbox" value="1"<?= $integrationDisabled ?>><span>ล้าง SlipOK API Key</span></label>
                                     <label class="check-field danger-check" data-slip-provider-field="easyslip"><input name="easyslip_api_key_clear" type="checkbox" value="1"<?= $integrationDisabled ?>><span>ล้าง EasySlip API Key</span></label>
-                                    <label class="field"><span>ขนาดสลิปสูงสุด</span><select name="slip_max_bytes" required<?= $integrationDisabled ?>><option value="262144">256 KiB</option><option value="524288">512 KiB</option><option value="1048576">1 MiB</option><option value="2097152">2 MiB</option><option value="3145728">3 MiB</option><option value="4194304">4 MiB</option></select><small>หน้าอัปโหลดของผู้พักจะใช้ค่านี้อัตโนมัติ</small></label>
-                                    <label class="field"><span>ช่วงเผื่อเวลา (วินาที)</span><input name="slip_time_tolerance_seconds" type="number" min="0" max="3600" step="1" required<?= $integrationDisabled ?>></label>
+
+
                                 </div>
                                 <div class="integration-status-row"><div class="integration-status-copy"><span>ความพร้อมของค่าที่บันทึก</span><small class="integration-test-result" data-integration-test-result="slip">ยังไม่ได้ตรวจ credential ที่บันทึกนี้</small></div><div class="integration-status-actions"><span class="status-pill status-neutral" data-integration-status="slip">กำลังโหลด</span><button class="button button-small button-secondary" type="button" data-test-integration="slip" disabled>ตรวจ API Key ที่บันทึก</button></div></div>
                             </fieldset>
                         </div>
+                        <details><summary>ค่าที่ระบบจัดการให้อัตโนมัติ</summary><p class="field-hint" id="integration-managed-defaults">กำลังโหลด…</p></details>
                         <p class="form-error" id="integration-settings-error" role="alert" hidden></p>
                         <?php if ($canManageIntegrations): ?>
                             <div class="form-actions"><button class="button button-primary" type="submit" data-integration-save disabled>บันทึกการเชื่อมต่อ</button></div>
@@ -403,28 +405,20 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                 <label class="field"><span>Channel access token</span><input name="channel_access_token" type="password" maxlength="8192" autocomplete="new-password" placeholder="วาง Token จาก Messaging API"><small id="line-oa-token-hint"></small></label>
                 <label class="field"><span>Channel secret</span><input name="channel_secret" type="password" maxlength="8192" autocomplete="new-password" placeholder="วาง Secret จาก Basic settings"><small id="line-oa-secret-hint"></small></label>
             </div>
+            <div class="security-note" id="line-oa-identity" aria-live="polite">ชื่อบัญชีและ Basic ID จะแสดงหลังตรวจสอบ Token</div>
             <details>
-                <summary>ตัวเลือกขั้นสูง</summary>
-                <p class="field-hint">ช่องเหล่านี้ไม่จำเป็นสำหรับการเชื่อมต่อครั้งแรก หากเว้นชื่อ รหัสภายใน หรือ Basic ID ระบบจะดึงหรือสร้างให้อัตโนมัติ</p>
-                <div class="form-grid form-grid-two">
-                    <label class="field"><span>ชื่อแสดงผล</span><input name="name" maxlength="120" placeholder="ดึงจาก LINE อัตโนมัติ"></label>
-                    <label class="field"><span>รหัสภายใน</span><input name="slug" maxlength="40" pattern="[a-z0-9][a-z0-9_-]{0,39}" placeholder="สร้างอัตโนมัติ"><small>อักษรอังกฤษตัวเล็ก ตัวเลข ขีดกลางหรือขีดล่าง</small></label>
-                    <label class="field"><span>Basic ID</span><input name="basic_id" maxlength="33" pattern="@[A-Za-z0-9._-]{1,32}" placeholder="ดึงจาก LINE อัตโนมัติ"></label>
-                    <label class="field"><span>Channel ID (ไม่บังคับ)</span><input name="channel_id" maxlength="60"></label>
-                    <label class="field"><span>คำอธิบาย</span><textarea name="description" maxlength="500" rows="2"></textarea></label>
-                    <label class="field"><span>ลิงก์เพิ่มเพื่อนแบบกำหนดเอง</span><input name="add_friend_url" type="url" maxlength="255" placeholder="ระบบสร้างจาก Basic ID ให้อยู่แล้ว"></label>
-                </div>
+                <summary>หยุดใช้งานหรือล้างค่าลับ</summary>
                 <div class="form-grid form-grid-two"><label class="check-field"><input type="checkbox" name="channel_access_token_clear"><span>ล้าง Token เดิม</span></label><label class="check-field"><input type="checkbox" name="channel_secret_clear"><span>ล้าง Secret เดิม</span></label></div>
                 <label class="check-field"><input type="checkbox" name="enabled" checked><span>เปิดใช้งาน OA นี้</span></label>
             </details>
             <p class="field-hint">ค่าลับจะไม่ถูกส่งกลับมาแสดง หลังบันทึกให้นำ Webhook URL ที่ระบบสร้างไปวางใน LINE Developers แล้วกด Verify</p>
             <div id="line-oa-diagnostics" class="line-platform-diagnostics"></div>
-            <div class="form-actions"><button class="button button-primary" type="submit">บันทึก OA</button><button class="button button-secondary" type="button" data-close-dialog>ยกเลิก</button></div>
+            <div class="form-actions"><button class="button button-primary" type="submit">เชื่อมต่อและตรวจสอบบัญชี</button><button class="button button-secondary" type="button" data-close-dialog>ยกเลิก</button></div>
         </form>
         <div id="line-binding-detail" hidden>
             <p id="line-binding-policy" class="security-note"></p>
             <form id="line-binding-code-form" class="stack-form">
-                <div class="form-grid form-grid-two"><label class="field"><span>ส่งรหัสไปยัง OA</span><select name="oa_id" required></select></label><label class="field"><span>อายุรหัส (วัน)</span><input name="ttl_days" type="number" min="1" max="30" step="1" value="7" required><small>เลือกได้ 1–30 วัน เริ่มต้น 7 วัน</small></label></div>
+                <div class="form-grid form-grid-two"><div class="field"><span>LINE ของหอพัก · เลือกให้อัตโนมัติ</span><output class="auto-value" id="line-binding-bot"></output></div><label class="field"><span>อายุรหัส (วัน)</span><input name="ttl_days" type="number" min="1" max="30" step="1" value="7" required><small>เลือกได้ 1–30 วัน เริ่มต้น 7 วัน</small></label></div>
                 <label class="field"><span>วิธีสร้างรหัส</span><select name="replace_pending"><option value="true">สร้างใหม่และยกเลิกรหัสรอใช้เดิม</option><option value="false">เพิ่มรหัสอีกชุด โดยเก็บรหัสรอใช้เดิม</option></select><small>บัญชีที่ผูกสำเร็จแล้วจะยังอยู่ จนกว่าจะยกเลิกบัญชีนั้น</small></label>
                 <div class="form-actions"><button class="button button-primary" type="submit">สร้างรหัสผูก LINE</button></div>
             </form>
@@ -435,7 +429,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
             <details><summary>ประวัติการผูก</summary><div id="line-binding-history" class="line-platform-history"></div></details>
         </div>
         <form id="line-recipient-form" class="stack-form" hidden>
-            <label class="field"><span>OA ที่รับรหัส</span><select name="oa_id" required></select></label>
+            <div class="field"><span>LINE ของหอพัก · เลือกให้อัตโนมัติ</span><output class="auto-value" id="line-recipient-bot"></output></div>
             <label class="field"><span>ชื่อกำกับผู้รับ</span><input name="label" maxlength="120" required></label>
             <label class="check-field" id="line-recipient-owner-field"><input type="checkbox" name="is_owner"><span>ผู้รับหลักของเจ้าของหอ (OWNER)</span></label>
             <label class="check-field" id="line-recipient-enabled-field"><input type="checkbox" name="enabled" checked><span>เปิดรับแจ้งเตือน</span></label>

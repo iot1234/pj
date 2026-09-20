@@ -133,6 +133,7 @@ final class LineRoomBindingService
             $resident = $this->resident($residentId, true);
             if ($this->isBlocked($residentId)) throw new HttpException(409, 'ผู้พักถูกบล็อกการผูก LINE กรุณาปลดบล็อกก่อน', 'LINE_BINDING_BLOCKED');
             $selected = $oaId ?? $this->app->lineOfficialAccounts()->defaultId();
+            $this->app->lineOfficialAccounts()->assertBotId($selected);
             $this->availableOa($selected);
             $this->expirePending($residentId);
             if ($replace) {

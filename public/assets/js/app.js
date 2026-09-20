@@ -579,6 +579,8 @@
     const bookingDialog = $('#booking-dialog');
     const bookingForm = $('#public-booking-form');
     let rooms = [];
+    let roomLoadRequest = 0;
+    let roomsReady = false;
 
     function maskBookingPhone(value) {
       const digits = String(value || '').replace(/\D/g, '');
@@ -587,6 +589,7 @@
     }
 
     function populateSelect(select, values) {
+      const selectedValue = select.value;
       const existing = select.firstElementChild?.cloneNode(true);
       select.replaceChildren();
       if (existing) select.append(existing);
@@ -595,6 +598,7 @@
         option.value = value;
         select.append(option);
       });
+      select.value = Array.from(select.children).some((option) => option.value === selectedValue) ? selectedValue : '';
     }
 
     function filteredRooms() {
@@ -623,6 +627,7 @@
     }
 
     function render() {
+      if (!roomsReady) return;
       const filtered = filteredRooms();
       grid.replaceChildren();
       filtered.forEach((room) => {
@@ -650,16 +655,27 @@
     }
 
     async function load() {
+      const request = ++roomLoadRequest;
+      roomsReady = false;
+      empty.hidden = true;
+      grid.replaceChildren();
+      grid.append(create('p', 'field-hint', 'กำลังโหลดห้องว่าง…'));
+      count.textContent = '…';
       grid.setAttribute('aria-busy', 'true');
       errorBox.hidden = true;
       try {
         const data = await api('/api/public/rooms');
+        if (request !== roomLoadRequest) return;
         rooms = listFrom(data, 'rooms').filter((room) => !room.status || room.status === 'available');
         count.textContent = String(rooms.length);
         populateSelect(typeFilter, rooms.map((room) => room.room_type));
         populateSelect(floorFilter, rooms.map((room) => room.floor));
+        roomsReady = true;
         render();
       } catch (error) {
+        if (request !== roomLoadRequest) return;
+        rooms = [];
+        empty.hidden = true;
         grid.replaceChildren();
         grid.setAttribute('aria-busy', 'false');
         count.textContent = '—';
@@ -681,11 +697,13 @@
     });
     bookingForm.addEventListener('submit', async (event) => {
       event.preventDefault();
+      if (bookingDialog.dataset.dialogBusy === 'true') return;
       showFormError($('#public-booking-error'));
       if (!bookingForm.reportValidity()) return;
       const button = bookingForm.querySelector('[type="submit"]');
       const form = new FormData(bookingForm);
       setDialogBusy(bookingDialog, true);
+      setFormFieldsBusy(bookingForm, true);
       setBusy(button, true, 'กำลังส่งคำขอ…');
       try {
         const data = await api('/api/public/bookings', {
@@ -713,6 +731,7 @@
         }
         if (['ROOM_NOT_AVAILABLE', 'ROOM_NOT_FOUND', 'BOOKING_EXPIRED', 'BOOKING_INACTIVE'].includes(error?.details?.code)) await load();
       } finally {
+        setFormFieldsBusy(bookingForm, false);
         setDialogBusy(bookingDialog, false);
         setBusy(button, false);
       }
@@ -2503,6 +2522,7 @@
       if (button.dataset.action === 'save-meter') await saveMeterRow(button);
     });
 
+    function billDataReady() { return state.billListAvailable === true && !state.billController && state.billPeriod === $('#bill-period').value; }
     function selectedBillRooms() { return $$('#bill-room-options input:checked').map((input) => Number(input.value)); }
     function billPayloadSignature(payload = billPayload()) { return JSON.stringify(payload); }
     function invalidateBillPreview() { state.billPreview = null; syncBillActionState(); }
@@ -2515,7 +2535,7 @@
       master.disabled = inputs.length === 0;
       const form = $('#bill-builder-form');
       const currentPeriodConfirmed = form.elements.period.value !== todayPeriod() || form.elements.confirm_current_period.checked;
-      const ready = state.billingSettingsAvailable && state.settings.configured === true && selected > 0 && currentPeriodConfirmed;
+      const ready = billDataReady() && state.billingSettingsAvailable && state.settings.configured === true && selected > 0 && currentPeriodConfirmed;
       const previewButton = $('#preview-bills-button');
       const createButton = $('#create-bills-button');
       const previewFresh = ready && state.billPreview?.signature === billPayloadSignature();
@@ -2539,11 +2559,8 @@
       const payload = {
         period: values.period,
         room_ids: selectedBillRooms(),
-        water_rate: number(values.water_rate),
-        electric_rate: number(values.electric_rate),
         other_description: values.other_description || '',
         other_amount: number(values.other_amount),
-        due_date: values.due_date,
       };
       if (values.period === todayPeriod()) payload.confirm_current_period = form.elements.confirm_current_period.checked;
       return payload;
@@ -2555,7 +2572,7 @@
       candidates.forEach((room) => {
         const billed = billedRoomIds.has(Number(room.id));
         const label = create('label', `check-field room-check${billed ? ' is-disabled' : ''}`);
-        const input = create('input'); input.type = 'checkbox'; input.value = room.id; input.disabled = billed; input.checked = !billed && selectedRoomIds.has(Number(room.id));
+        const input = create('input'); input.type = 'checkbox'; input.value = room.id; input.disabled = billed; input.checked = !billed && (preserveSelection ? selectedRoomIds.has(Number(room.id)) : true);
         label.append(input, create('span', '', `ห้อง ${text(room.room_code)}${billed ? ' — ออกบิลแล้ว' : ''}`)); wrap.append(label);
       });
       if (!candidates.length) wrap.append(create('span', 'muted', 'ไม่พบห้องที่มีผู้พัก'));
@@ -2613,7 +2630,7 @@
         rows.append(tr);
       });
       const bulkButton = $('#line-bulk-button');
-      bulkButton.disabled = eligibleForLine === 0;
+      bulkButton.disabled = !billDataReady() || eligibleForLine === 0;
       bulkButton.title = eligibleForLine === 0 ? 'ไม่มีบิลค้างชำระที่ผูก LINE กับ OA ที่พร้อมเข้าคิว' : 'เข้าคิวบิลค้างชำระที่พร้อมส่ง';
       const statuses = state.bills.map(effectiveBillStatus);
       setStat('[data-bill-stat="all"]', state.bills.length);
@@ -2625,14 +2642,29 @@
     async function loadBills() {
       const period = $('#bill-period').value || todayPeriod(); $('#bill-period').value = period;
       state.billController?.abort(); const controller = new AbortController(); state.billController = controller;
+      state.billListAvailable = false;
+      const rows = $('#bill-admin-rows'); rows.setAttribute('inert', '');
+      if (state.billPeriod !== period) { state.bills = []; rows.replaceChildren(); fillBillRooms(false); }
+      $('#line-bulk-button').disabled = true; syncBillActionState();
       setTableState($('#bill-admin-state'), 'loading');
       try {
         const data = await api(`/api/admin/bills?period=${encodeURIComponent(period)}`, { signal: controller.signal });
         if (state.billController !== controller || $('#bill-period').value !== period) return;
         const preserveSelection = state.billPeriod === period;
-        state.billPeriod = period; state.bills = listFrom(data, 'bills'); state.loaded.add('bills'); renderAdminBills(); fillBillRooms(preserveSelection);
-      } catch (error) { if (error?.name !== 'AbortError') setTableState($('#bill-admin-state'), 'error', errorMessage(error)); }
-      finally { if (state.billController === controller) state.billController = null; }
+        state.billPeriod = period; state.bills = listFrom(data, 'bills'); state.billListAvailable = true;
+        state.loaded.add('bills'); renderAdminBills(); fillBillRooms(preserveSelection);
+      } catch (error) {
+        if (state.billController !== controller || $('#bill-period').value !== period) return;
+        state.bills = []; rows.replaceChildren();
+        for (const key of ['all', 'pending', 'verifying', 'outstanding']) setStat(`[data-bill-stat="${key}"]`, '—');
+        setTableState($('#bill-admin-state'), 'error', errorMessage(error));
+      } finally {
+        if (state.billController === controller) {
+          state.billController = null; rows.removeAttribute('inert');
+          if (state.billListAvailable) renderAdminBills();
+          syncBillActionState();
+        }
+      }
     }
     function clearPromptPayTestQr() {
       const dialog = $('#promptpay-test-dialog');
@@ -2731,6 +2763,8 @@
         if (status) status.textContent = configured ? `ตั้งค่าแล้ว ${text(integrations[`${key}_hint`], '')}`.trim() : 'ยังไม่ได้ตั้งค่า';
       });
       applySlipProviderVisibility(form);
+      const automatic = $('#integration-managed-defaults');
+      if (automatic) automatic.textContent = `สลิปสูงสุด ${(number(integrations.slip_max_bytes) / 1048576).toLocaleString('th-TH')} MiB · เผื่อเวลา ${number(integrations.slip_time_tolerance_seconds)} วินาที · ลองส่งสูงสุด ${number(integrations.line_max_attempts)} ครั้ง · คิวครั้งละ ${number(integrations.notification_batch_size)} งาน`;
       const readiness = objectFrom(integrations.readiness);
       const webhookUrl = $('[data-line-webhook-url]', form);
       if (webhookUrl) webhookUrl.value = text(integrations.line_webhook_url, '');
@@ -2756,6 +2790,11 @@
         node.textContent = 'ยังไม่ได้ทดสอบค่าที่บันทึกนี้';
       });
     }
+    function renderBillDefaults() {
+      $('#bill-water-rate').value = money(state.settings.water_rate);
+      $('#bill-electric-rate').value = money(state.settings.electric_rate);
+      $('#bill-due-date').value = state.settings.default_due_date ? formatDate(state.settings.default_due_date) : 'กำหนดให้เมื่อคำนวณยอด';
+    }
     function renderBillingSettings(settings = {}) {
       if (!billingSettingsForm) return;
       ['water_rate', 'electric_rate', 'due_days'].forEach((key) => {
@@ -2773,9 +2812,8 @@
         if (billingSettingsForm?.dataset.dirty !== 'true') renderBillingSettings(state.settings);
         applyBillingReadiness();
         if (integrationSettingsForm?.dataset.dirty !== 'true') renderIntegrationSettings(objectFrom(state.settings.integrations));
-        $('#bill-water-rate').value = state.settings.water_rate ?? '';
-        $('#bill-electric-rate').value = state.settings.electric_rate ?? '';
-        if (!$('#bill-due-date').value) $('#bill-due-date').value = isoDateAfterDays(state.settings.due_days);
+        renderBillDefaults();
+        invalidateBillPreview();
         state.loaded.add('settings');
         if (state.loaded.has('bills')) renderAdminBills();
       } catch (error) {
@@ -2829,15 +2867,9 @@
           : 'จำนวนเงินอื่นเป็น 0 จึงไม่เพิ่มยอดให้ห้องที่เลือก'),
       );
       content.append(otherContext);
-      if (number(previewPayload.water_rate) !== number(state.settings.water_rate)
-        || number(previewPayload.electric_rate) !== number(state.settings.electric_rate)) {
-        const rateWarning = create('div', 'preview-context preview-context-warning');
-        rateWarning.append(
-          create('strong', '', 'อัตราชุดนี้ต่างจากค่าที่บันทึกใน Settings'),
-          create('span', '', `ชุดนี้ใช้น้ำ ${money(previewPayload.water_rate)}/หน่วย และไฟ ${money(previewPayload.electric_rate)}/หน่วย โปรดตรวจว่าเป็นการเปลี่ยนเฉพาะรอบนี้โดยตั้งใจ`),
-        );
-        content.append(rateWarning);
-      }
+      const automatic = create('div', 'preview-context');
+      automatic.append(create('strong', '', 'อัตราและกำหนดชำระจากการตั้งค่าบนเซิร์ฟเวอร์'), create('span', '', `กำหนดชำระ ${formatDate(data.due_date)} · ค่าน้ำและค่าไฟจริงแสดงแยกในแต่ละห้องด้านล่าง`));
+      content.append(automatic);
       if (previewPayload.confirm_current_period === true) {
         const currentWarning = create('div', 'preview-context preview-context-warning');
         currentWarning.append(
@@ -2863,11 +2895,12 @@
         if (finiteNumber(item.other_amount) !== null && number(item.other_amount) !== 0) appendPreviewLine(text(item.other_description, 'รายการอื่น'), 'คิดต่อห้องนี้', item.other_amount);
         card.append(heading, breakdown); content.append(card);
       });
-      issues.forEach((issue) => { const card = create('article', 'preview-item preview-issue'); const issueDetails = { AMBIGUOUS_OCCUPANCY: 'พบข้อมูลผู้พักซ้อนกันในรอบเดือนนี้ กรุณาตรวจสอบวันเข้า–ออก', NO_OCCUPANCY: 'ไม่มีผู้พักในรอบที่เลือก', METER_OPENING_REQUIRED: 'ยังขาดเลขมิเตอร์ ณ วันเข้าพัก กรุณาไปหน้า “ผู้พักอาศัย” แล้วกด “เติมเลขเริ่มต้น” ของห้องนี้ก่อน' }; const detail = issue.code === 'MISSING_METER' ? `ขาดมิเตอร์: ${(issue.meter_types || []).join(', ')}` : (issueDetails[issue.code] || 'ข้อมูลห้องยังไม่พร้อมออกบิล'); card.append(create('strong', '', `ห้อง ${text(issue.room_code || issue.room_id)}`), create('small', '', detail)); content.append(card); });
+      issues.forEach((issue) => { const card = create('article', 'preview-item preview-issue'); const issueDetails = { AMBIGUOUS_OCCUPANCY: 'พบข้อมูลผู้พักซ้อนกันในรอบเดือนนี้ กรุณาตรวจสอบวันเข้า–ออก', NO_OCCUPANCY: 'ไม่มีผู้พักในรอบที่เลือก', METER_OPENING_REQUIRED: 'ยังขาดเลขมิเตอร์ ณ วันเข้าพัก กรุณาไปหน้า “ผู้พักอาศัย” แล้วกด “เติมเลขเริ่มต้น” ของห้องนี้ก่อน' }; const detail = issue.code === 'MISSING_METER' ? `ขาดมิเตอร์: ${(issue.meter_types || []).map((type) => ({ water: 'น้ำ', electric: 'ไฟฟ้า' }[type] || type)).join(', ')}` : (issueDetails[issue.code] || 'ข้อมูลห้องยังไม่พร้อมออกบิล'); card.append(create('strong', '', `ห้อง ${text(issue.room_code || issue.room_id)}`), create('small', '', detail)); content.append(card); });
       if (!previews.length && !issues.length) content.append(create('p', 'empty-inline', 'ไม่มีรายการที่สร้างได้'));
       openDialog($('#preview-dialog')); return { previews, issues };
     }
     $('#preview-bills-button').addEventListener('click', async (event) => {
+      if (!billDataReady()) { showFormError($('#bill-builder-error'), 'กรุณารอโหลดบิลของรอบเดือนนี้ให้สำเร็จก่อน'); return; }
       const payload = billPayload(); const requestSignature = billPayloadSignature(payload); const error = $('#bill-builder-error'); showFormError(error);
       if (!$('#bill-builder-form').reportValidity() || !payload.room_ids.length) { showFormError(error, 'กรุณาเลือกอย่างน้อย 1 ห้อง'); return; }
       invalidateBillPreview();
@@ -2896,7 +2929,9 @@
       finally { setBusy(button, false); syncBillActionState(); }
     });
     $('#bill-builder-form').addEventListener('submit', async (event) => {
-      event.preventDefault(); const form = event.currentTarget; const payload = billPayload(); const error = $('#bill-builder-error'); showFormError(error);
+      event.preventDefault();
+      if (!billDataReady()) { showFormError($('#bill-builder-error'), 'กรุณาโหลดบิลของรอบเดือนนี้ให้สำเร็จก่อน'); return; }
+      const form = event.currentTarget; const payload = billPayload(); const error = $('#bill-builder-error'); showFormError(error);
       if (!form.reportValidity() || !payload.room_ids.length) { showFormError(error, 'กรุณาเลือกห้องที่จะออกบิล'); return; }
       const preview = state.billPreview;
       if (!preview || preview.signature !== billPayloadSignature(payload) || !preview.token) {
@@ -2922,8 +2957,8 @@
       }
       finally { setBusy(button, false); syncBillActionState(); }
     });
-    $('#bill-admin-rows').addEventListener('click', async (event) => { const button = event.target.closest('[data-action="send-line"]'); if (!button) return; setBusy(button, true, 'กำลังเข้าคิว…'); try { await api(`/api/admin/bills/${encodeURIComponent(button.dataset.id)}/line`, { method: 'POST', body: {} }); toast('นำบิลเข้าคิว LINE แล้ว'); await loadBills(); } catch (error) { toast(errorMessage(error), 'error'); } finally { setBusy(button, false); } });
-    $('#line-bulk-button').addEventListener('click', async (event) => { if (!await confirmAction('เข้าคิว LINE ทั้งหมด', `นำบิลรอบ${formatPeriod($('#bill-period').value)} เข้าคิวสำหรับผู้พักที่ผูก LINE ไว้?`, 'เข้าคิว', false)) return; const button = event.currentTarget; setBusy(button, true, 'กำลังเข้าคิว…'); try { const result = await api('/api/admin/bills/line-bulk', { method: 'POST', body: { period: $('#bill-period').value } }); const queued = listFrom(result, 'queued'); const already = listFrom(result, 'already'); const skipped = listFrom(result, 'skipped'); toast(`เข้าคิวใหม่ ${queued.length} รายการ${already.length ? ` · อยู่ในคิว/ส่งแล้ว ${already.length}` : ''}${skipped.length ? ` · ข้าม ${skipped.length}` : ''}`); await loadBills(); } catch (error) { toast(errorMessage(error), 'error'); } finally { setBusy(button, false); renderAdminBills(); } });
+    $('#bill-admin-rows').addEventListener('click', async (event) => { const button = event.target.closest('[data-action="send-line"]'); if (!button || !billDataReady()) return; setBusy(button, true, 'กำลังเข้าคิว…'); try { await api(`/api/admin/bills/${encodeURIComponent(button.dataset.id)}/line`, { method: 'POST', body: {} }); toast('นำบิลเข้าคิว LINE แล้ว'); await loadBills(); } catch (error) { toast(errorMessage(error), 'error'); } finally { setBusy(button, false); } });
+    $('#line-bulk-button').addEventListener('click', async (event) => { if (!billDataReady()) return; if (!await confirmAction('เข้าคิว LINE ทั้งหมด', `นำบิลรอบ${formatPeriod($('#bill-period').value)} เข้าคิวสำหรับผู้พักที่ผูก LINE ไว้?`, 'เข้าคิว', false)) return; const button = event.currentTarget; setBusy(button, true, 'กำลังเข้าคิว…'); try { const result = await api('/api/admin/bills/line-bulk', { method: 'POST', body: { period: $('#bill-period').value } }); const queued = listFrom(result, 'queued'); const already = listFrom(result, 'already'); const skipped = listFrom(result, 'skipped'); toast(`เข้าคิวใหม่ ${queued.length} รายการ${already.length ? ` · อยู่ในคิว/ส่งแล้ว ${already.length}` : ''}${skipped.length ? ` · ข้าม ${skipped.length}` : ''}`); await loadBills(); } catch (error) { toast(errorMessage(error), 'error'); } finally { setBusy(button, false); renderAdminBills(); } });
 
     function renderPayments() {
       const rows = $('#payment-rows'); rows.replaceChildren();
@@ -3022,7 +3057,7 @@
 
     billingSettingsForm?.addEventListener('input', () => { billingSettingsForm.dataset.dirty = 'true'; });
     billingSettingsForm?.addEventListener('change', () => { billingSettingsForm.dataset.dirty = 'true'; });
-    billingSettingsForm?.addEventListener('submit', async (event) => { event.preventDefault(); const form = event.currentTarget; const error = $('#settings-error'); showFormError(error); if (settingsSaveInProgress || !form.reportValidity()) return; const values = Object.fromEntries(new FormData(form).entries()); values.water_rate = number(values.water_rate); values.electric_rate = number(values.electric_rate); values.due_days = Number(values.due_days); const button = form.querySelector('[type="submit"]'); settingsSaveInProgress = true; setFormFieldsBusy(form, true); setBusy(button, true, 'กำลังบันทึก…'); try { const data = await api('/api/admin/settings', { method: 'PUT', body: values }); ++settingsLoadGeneration; state.settings = { ...state.settings, ...objectFrom(data, 'settings') }; state.billingSettingsAvailable = true; renderBillingSettings(state.settings); $('#bill-water-rate').value = state.settings.water_rate ?? values.water_rate; $('#bill-electric-rate').value = state.settings.electric_rate ?? values.electric_rate; $('#bill-due-date').value = isoDateAfterDays(state.settings.due_days ?? values.due_days); invalidateBillPreview(); applyBillingReadiness(); toast('ยืนยันและบันทึกการตั้งค่าแล้ว'); } catch (requestError) { showFormError(error, errorMessage(requestError)); } finally { settingsSaveInProgress = false; setFormFieldsBusy(form, false); setBusy(button, false); } });
+    billingSettingsForm?.addEventListener('submit', async (event) => { event.preventDefault(); const form = event.currentTarget; const error = $('#settings-error'); showFormError(error); if (settingsSaveInProgress || !form.reportValidity()) return; const values = Object.fromEntries(new FormData(form).entries()); values.water_rate = number(values.water_rate); values.electric_rate = number(values.electric_rate); values.due_days = Number(values.due_days); const button = form.querySelector('[type="submit"]'); settingsSaveInProgress = true; setFormFieldsBusy(form, true); setBusy(button, true, 'กำลังบันทึก…'); try { const data = await api('/api/admin/settings', { method: 'PUT', body: values }); ++settingsLoadGeneration; state.settings = { ...state.settings, ...objectFrom(data, 'settings') }; state.billingSettingsAvailable = true; renderBillingSettings(state.settings); renderBillDefaults(); invalidateBillPreview(); applyBillingReadiness(); toast('ยืนยันและบันทึกการตั้งค่าแล้ว'); } catch (requestError) { showFormError(error, errorMessage(requestError)); } finally { settingsSaveInProgress = false; setFormFieldsBusy(form, false); setBusy(button, false); } });
     integrationSettingsForm?.addEventListener('input', (event) => {
       const target = event.target;
       if (target instanceof HTMLInputElement && ['line_channel_access_token', 'line_channel_secret', 'slipok_api_key', 'easyslip_api_key'].includes(target.name) && target.value !== '') {
@@ -3051,7 +3086,7 @@
       showFormError(error);
       if (settingsSaveInProgress || !form.reportValidity()) return;
       const values = Object.fromEntries(new FormData(form).entries());
-      ['line_max_attempts', 'notification_batch_size', 'slip_max_bytes', 'slip_time_tolerance_seconds'].forEach((key) => { values[key] = Number(values[key]); });
+      // Technical limits are retained server-side; the form sends only editable business settings.
       ['slipok_api_key_clear', 'easyslip_api_key_clear'].forEach((key) => { if (form.elements[key]) values[key] = !form.elements[key].disabled && form.elements[key].checked; });
       const button = form.querySelector('[type="submit"]');
       settingsSaveInProgress = true;

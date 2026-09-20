@@ -11,7 +11,7 @@ function render(bills, legacyReady = false) {
   const nodes = new Map(), stats = new Map(), actions = [];
   const $ = key => { if (!nodes.has(key)) nodes.set(key, node()); return nodes.get(key); };
   const create = (_tag, _className = '', text = '') => node(text);
-  const context = {
+  const context = { billDataReady: () => true,
     $, create, state: { bills, settings: { integrations: { line_ready: legacyReady } } },
     objectFrom: value => value && typeof value === 'object' ? value : {}, number: value => Number(value || 0),
     text: value => String(value || ''), money: value => String(value), formatDate: value => String(value),

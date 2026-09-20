@@ -1415,7 +1415,7 @@ $test('meter and billing dates cannot create irreversible future records',functi
     $template=file_get_contents(dirname(__DIR__).'/templates/admin/console.php');if(!is_string($template))throw new RuntimeException('cannot read admin template');
     $same(true,str_contains($template,'id="meter-period" max="<?= e($maximumBillingPeriod) ?>"'));
     $same(true,str_contains($template,'id="bill-period" max="<?= e($maximumBillingPeriod) ?>"'));
-    $same(true,str_contains($template,'id="bill-due-date" max="<?= e($maximumBillingDueDate) ?>"'));
+    $same(true,str_contains($template,'<output class="auto-value" id="bill-due-date">'));
     $same(true,str_contains($template,'new DateTimeZone((string) $appTimezone)'));
     $routes=file_get_contents(dirname(__DIR__).'/src/Http/Routes.php');if(!is_string($routes))throw new RuntimeException('cannot read routes');
     $same(true,str_contains($routes,"'appTimezone'=>(string)\$app->config->get('APP_TIMEZONE','Asia/Bangkok')"));
@@ -1747,7 +1747,7 @@ $test('LINE and slip safety states are wired through UI, routes, and schema',fun
     $same(true,str_contains($js,'เปิด Use webhook และ Webhook redelivery แล้วกด Verify'));
     $same(false,str_contains($js,'Webhook พร้อมใช้งาน'));
     $same(true,str_contains($admin,'name="channel_secret" type="password"'));
-    $same(true,str_contains($admin,'name="basic_id"'));
+    $same(false,str_contains($admin,'name="basic_id"'));
     $same(true,str_contains($admin,'id="line-oa-diagnostics"'));
     $same(false,str_contains($admin,'name="line_channel_secret"'));
     $same(false,str_contains($settingsService,'curl_error('));

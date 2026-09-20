@@ -19,8 +19,8 @@ $q=$pdo->prepare("INSERT INTO admin_users(username,password_hash,role,auth_versi
 $app->settings()->update(['line_basic_id'=>'@legacytest','line_channel_access_token'=>'platform-legacy-token','line_channel_secret'=>'platform-legacy-secret'],$admin);
 $identity=static fn(string $token):array=>match($token){'platform-token-a'=>['userId'=>'U'.str_repeat('e',32),'basicId'=>'@platform_a'],'platform-token-b'=>['userId'=>'U'.str_repeat('f',32),'basicId'=>'@platform_b'],default=>throw new RuntimeException('Unknown fixture token')};
 $oas=new LineOfficialAccountService($app,$identity);(new ReflectionProperty($app,'lineOfficialAccounts'))->setValue($app,$oas);
-$a=$oas->create(['slug'=>'platform-a','name'=>'Platform A','basic_id'=>'@platform_a','channel_access_token'=>'platform-token-a','channel_secret'=>'platform-secret-a','enabled'=>true],$admin)['id'];
-$b=$oas->create(['slug'=>'platform-b','name'=>'Platform B','basic_id'=>'@platform_b','channel_access_token'=>'platform-token-b','channel_secret'=>'platform-secret-b','enabled'=>true],$admin)['id'];$oas->setDefault($a,$admin);
+$a=$oas->update(0,['channel_access_token'=>'platform-token-a','channel_secret'=>'platform-secret-a','enabled'=>true],$admin)['id'];
+$b=0; // Distinct recipients use the same dormitory bot.
 $today=(new DateTimeImmutable('today',new DateTimeZone('Asia/Bangkok')))->format('Y-m-d');$period=substr($today,0,7);
 $room=$app->rooms()->create(['room_code'=>'PLATFORM-101','floor'=>1,'room_type'=>'LINE test','monthly_rent'=>'4500.00']);
 $created=$app->bookings()->createAdminResident($admin,['room_id'=>$room['id'],'full_name'=>'ผู้พักทดสอบแพลตฟอร์ม','phone'=>'0815667788','move_in_date'=>$today,'opening_water_reading'=>'100.00','opening_electric_reading'=>'200.00','idempotency_key'=>'line-platform-resident']);$resident=(int)$created['resident_id'];
@@ -39,11 +39,11 @@ $send=static function(int $oaId,string $text,string $user,?string $secret=null,?
     $request=new Request('POST',$oaId===0?'/api/webhooks/line':'/api/webhooks/line/oa/'.$oa['route_token'],['content-type'=>'application/json','x-line-signature'=>base64_encode(hash_hmac('sha256',$raw,$secret??$oa['channel_secret'],true))],[],[],[],['REMOTE_ADDR'=>'127.0.0.1'],'line-platform-test',$raw);
     return(new LineWebhookService($app,$replyTransport,$oaId))->handle($request);
 };
-$test('OA-scoped webhook checks signature and destination before consuming room codes',function()use($app,$resident,$admin,$a,$b,$users,$send,$expect,$assert,&$codes,&$replies):void{
+$test('OA-scoped webhook checks signature and destination before consuming room codes',function()use($app,$oas,$resident,$admin,$a,$b,$users,$send,$expect,$assert,&$codes,&$replies):void{
     $codes[]=$app->lineRoomBindings()->issue($resident,['oa_id'=>$a],$admin);
     $expect(fn()=>$send($a,$codes[0]['code'],$users[0],'wrong-secret'),'LINE_WEBHOOK_SIGNATURE_INVALID');
     $expect(fn()=>$send($a,$codes[0]['code'],$users[0],null,'U'.str_repeat('0',32)),'LINE_DESTINATION_MISMATCH');
-    $send($b,$codes[0]['code'],$users[0]);$assert(!str_contains(end($replies)['text'],'PLATFORM-101'));
+    $expect(fn()=>$oas->credentials(1),'LINE_SINGLE_BOT_ONLY');
     $assert($app->lineRoomBindings()->detail($resident)['bound_count']===0);
 });
 $test('multiple verified accounts bind one room and reply only through their own OA',function()use($app,$resident,$admin,$a,$b,$users,$send,$assert,&$codes,&$replies):void{
@@ -52,8 +52,8 @@ $test('multiple verified accounts bind one room and reply only through their own
     $profile=$app->residents()->profile($resident);$assert($profile['line_verified']===true&&$profile['line_bound_count']===3);$assert(!isset($profile['pending_codes'],$profile['line_user_id']));
     $assert(count($app->notifications()->recipients($resident))===3);
 });
-$test('same event IDs are scoped to OA and same-OA redelivery is deduplicated',function()use($a,$b,$users,$send,$assert,&$replies):void{
-    $id='01'.str_repeat('A',24);$before=count($replies);$send($a,'สถานะ',$users[0],null,null,$id);$send($b,'สถานะ',$users[2],null,null,$id);$duplicate=$send($a,'สถานะ',$users[0],null,null,$id);
+$test('distinct events reach distinct recipients while redelivery is deduplicated',function()use($a,$b,$users,$send,$assert,&$replies):void{
+    $id='01'.str_repeat('A',24);$before=count($replies);$send($a,'สถานะ',$users[0],null,null,$id);$send($b,'สถานะ',$users[2],null,null,'01'.str_repeat('B',24));$duplicate=$send($a,'สถานะ',$users[0],null,null,$id);
     $assert(count($replies)===$before+2&&$duplicate['duplicates']===1);
 });
 $app->billing()->updateSettings(['water_rate'=>'18.50','electric_rate'=>'7.25','due_days'=>7],$admin);
@@ -62,13 +62,13 @@ $input=['period'=>$period,'room_ids'=>[$room['id']],'due_date'=>$today,'confirm_
 $test('one bill fans out once per account and default changes cannot reroute recipients',function()use($notifications,$bill,$oas,$b,$admin,$pdo,$assert,$a):void{
     $oas->setDefault($b,$admin);$queued=$notifications->enqueueBill($bill);$assert($queued['recipient_count']===3);$notifications->enqueueBill($bill);
     $rows=$pdo->query('SELECT line_oa_id,line_binding_id FROM notification_outbox ORDER BY id')->fetchAll();$assert(count($rows)===3);
-    $ids=array_count_values(array_column($rows,'line_oa_id'));$assert($ids[$a]===2&&$ids[$b]===1);
+    $ids=array_count_values(array_column($rows,'line_oa_id'));$assert($ids[0]===3&&count($ids)===1);
 });
 $test('transient retries preserve the exact payload, recipient, OA token and retry UUID',function()use($notifications,$pdo,$assert,&$sent,&$failOnce):void{
     $failOnce=true;$result=$notifications->process(3);$assert($result['retried']===1&&$result['sent']===2);$first=$sent[0];
     $pdo->exec("UPDATE notification_outbox SET next_attempt_at=UTC_TIMESTAMP(6) WHERE status='pending'");$result=$notifications->process(1);$assert($result['sent']===1);$assert(end($sent)===$first,'Retry payload identity changed');
     $byRetry=[];foreach($sent as$attempt)$byRetry[$attempt['retry']]=$attempt;
-    $assert(count($byRetry)===3&&count(array_filter($byRetry,fn($r)=>$r['token']==='platform-token-b'))===1);
+    $assert(count($byRetry)===3&&count(array_filter($byRetry,fn($r)=>$r['token']==='platform-token-a'))===3);
 });
 $test('bill list contains one row and reports all delivery outcomes',function()use($app,$period,$assert):void{
     $rows=$app->billing()->adminList($period);$assert(count($rows)===1,'Outbox fanout duplicated bill rows');$assert(($rows[0]['line_delivery_counts']['sent']??null)===3);
@@ -78,7 +78,7 @@ $test('a newly linked account gets its own delivery without resending to existin
 });
 $test('admin claims require the correct OA, preserve active owner when a pending key is disabled, and validate mute values',function()use($app,$a,$b,$admin,$oas,$expect,$assert,&$owner,&$staff,&$claimCodes):void{
     $service=$app->lineAdminRecipients();$owner=$service->issue(['oa_id'=>$a,'label'=>'Owner test','is_owner'=>true],$admin);$claimCodes[]=$owner['code'];
-    $expect(fn()=>$oas->withRegistryLock(fn()=>$service->consume($owner['code'],'U'.str_repeat('a',32),$b)),'LINE_ADMIN_CODE_INVALID');
+    $expect(fn()=>$oas->withRegistryLock(fn()=>$service->consume($owner['code'],'U'.str_repeat('a',32),1)),'LINE_SINGLE_BOT_ONLY');
     $oas->withRegistryLock(fn()=>$service->consume($owner['code'],'U'.str_repeat('a',32),$a));
     $pending=$service->issue(['oa_id'=>$a,'label'=>'Disabled owner','is_owner'=>true],$admin);$claimCodes[]=$pending['code'];$service->update($pending['id'],['enabled'=>false],$admin);
     $expect(fn()=>$oas->withRegistryLock(fn()=>$service->consume($pending['code'],'U'.str_repeat('b',32),$a)),'LINE_RECIPIENT_DISABLED');
@@ -90,7 +90,7 @@ $test('admin notices encrypt message bodies, deduplicate events, and recheck mut
     $notice=$app->lineNotices();$before=(int)$pdo->query('SELECT COUNT(*) FROM line_notice_outbox')->fetchColumn();$message='มีสถานะบิลใหม่ กรุณาตรวจสอบในหน้าผู้ดูแล';
     $notice->enqueueAdmin('billing',$message,'integration-event-1');$notice->enqueueAdmin('billing',$message,'integration-event-1');$assert((int)$pdo->query('SELECT COUNT(*) FROM line_notice_outbox')->fetchColumn()===$before+2);
     $assert(!str_contains((string)$pdo->query('SELECT message_enc FROM line_notice_outbox ORDER BY id DESC LIMIT 1')->fetchColumn(),$message));
-    $app->lineAdminRecipients()->update($owner['id'],['muted_categories'=>['billing']],$admin);$old=count($sent);$result=$notice->process(100);$assert($result['sent']===1&&$result['failed']===1);$assert(count($sent)===$old+1&&end($sent)['token']==='platform-token-b');
+    $app->lineAdminRecipients()->update($owner['id'],['muted_categories'=>['billing']],$admin);$old=count($sent);$result=$notice->process(100);$assert($result['sent']===1&&$result['failed']===1);$assert(count($sent)===$old+1&&end($sent)['token']==='platform-token-a');
 });
 $test('queued account revocation and room blocking prevent later bill and command disclosure',function()use($app,$resident,$admin,$a,$users,$send,$pdo,$notifications,$assert,&$sent,&$replies,$codes):void{
     $pdo->exec("UPDATE notification_outbox SET status='pending',sent_at=NULL,line_request_id=NULL,line_accepted_request_id=NULL,next_attempt_at=UTC_TIMESTAMP(6),attempts=0 WHERE line_binding_id=".(int)$codes[0]['id']);

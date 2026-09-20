@@ -18,7 +18,7 @@ try{
         $identity='U'.bin2hex(random_bytes(16));
         $registry=new Dormitory\Domain\LineOfficialAccountService($app,static fn(string $token):array=>['userId'=>$identity,'basicId'=>'@billingtest']);
         (new ReflectionProperty($app,'lineOfficialAccounts'))->setValue($app,$registry);
-        $oa=$registry->create(['slug'=>'bill-'.$suffix,'name'=>'Billing test','basic_id'=>'@billingtest','channel_access_token'=>'offline-billing-token-'.$suffix,'channel_secret'=>'offline-billing-secret-'.$suffix,'enabled'=>true],$owner);
+        $oa=$registry->update(0,['channel_access_token'=>'offline-billing-token-'.$suffix,'channel_secret'=>'offline-billing-secret-'.$suffix,'enabled'=>true],$owner);
         $room=$app->rooms()->create(['room_code'=>'BILL-LINE-'.$suffix,'floor'=>1,'room_type'=>'Test','monthly_rent'=>'4500.00']);
         $today=(new DateTimeImmutable('today',new DateTimeZone('Asia/Bangkok')))->format('Y-m-d');$period=substr($today,0,7);
         $resident=$app->bookings()->createAdminResident($owner,['room_id'=>$room['id'],'full_name'=>'Bill LINE Test','phone'=>'089'.substr(str_pad((string)random_int(0,9999999),7,'0',STR_PAD_LEFT),0,7),'move_in_date'=>$today,'opening_water_reading'=>'0.00','opening_electric_reading'=>'0.00','idempotency_key'=>'billing-line-'.$suffix]);

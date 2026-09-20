@@ -19,15 +19,15 @@ final class BillingService
     }
 
     /** @return array<string,mixed> */
-    public function settings(): array
+    public function settings(bool $lock = false): array
     {
         $row = $this->app->database()->pdo()->query(
-            'SELECT water_rate,electric_rate,due_days,updated_by,updated_at FROM billing_settings WHERE id=1'
+            'SELECT water_rate,electric_rate,due_days,updated_by,updated_at FROM billing_settings WHERE id=1' . ($lock ? ' FOR UPDATE' : '')
         )->fetch();
         if (!$row) {
             return [
                 'water_rate' => '0.00', 'electric_rate' => '0.00', 'due_days' => 7,
-                'configured' => false, 'updated_at' => null,
+                'configured' => false, 'updated_at' => null, 'default_due_date' => null,
             ];
         }
         return $this->mapSettings($row);
@@ -417,9 +417,16 @@ final class BillingService
             'period','room_ids','water_rate','electric_rate','other_description',
             'other_amount','due_date','confirm_current_period',
         ]);
+        // Missing optional values are derived on the server, never from hidden form fields.
+        // Lock settings during issuance so another update cannot race the snapshot.
+        $settings = null;
+        $rawDueDate = $input['due_date'] ?? null;
+        if (!array_key_exists('due_date', $input)) {
+            $settings = $this->settings($lock);
+            $rawDueDate = $settings['default_due_date'] ?? $this->defaultDueDate(7);
+        }
         [$period, $periodDate, $dueDate] = $this->validatedBillingDates(
-            $input['period'] ?? null,
-            $input['due_date'] ?? null,
+            $input['period'] ?? null, $rawDueDate,
         );
         $timezone=new \DateTimeZone((string)$this->app->config->get('APP_TIMEZONE','Asia/Bangkok'));
         $currentPeriod=(new \DateTimeImmutable('now',$timezone))->format('Y-m');
@@ -439,7 +446,7 @@ final class BillingService
             && !is_string($input['other_description'])) {
             throw new HttpException(422, 'other_description is invalid', 'VALIDATION_ERROR', ['field' => 'other_description']);
         }
-        $settings = $this->settings();
+        $settings ??= $this->settings($lock);
         if(($settings['configured']??false)!==true){
             throw new HttpException(409,'กรุณาตรวจสอบและบันทึกค่าน้ำ ค่าไฟ และวันครบกำหนดในหน้า “ตั้งค่า” ก่อนออกบิล','BILLING_SETTINGS_NOT_CONFIRMED');
         }
@@ -782,11 +789,18 @@ final class BillingService
     }
 
     /** @param array<string,mixed> $row @return array<string,mixed> */
+    private function defaultDueDate(int $days): string
+    {
+        $timezone = new \DateTimeZone((string)$this->app->config->get('APP_TIMEZONE', 'Asia/Bangkok'));
+        return (new \DateTimeImmutable('today', $timezone))->modify('+' . $days . ' days')->format('Y-m-d');
+    }
+
     private function mapSettings(array $row): array
     {
         return [
             'water_rate'=>(string)$row['water_rate'],'electric_rate'=>(string)$row['electric_rate'],'due_days'=>(int)$row['due_days'],
             'configured'=>isset($row['updated_by'])&&$row['updated_by']!==null,
+            'default_due_date'=>$this->defaultDueDate((int)$row['due_days']),
             'updated_at'=>$row['updated_at'],
         ];
     }

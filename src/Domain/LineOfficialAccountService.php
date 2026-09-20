@@ -12,10 +12,11 @@ use Dormitory\Support\Validator;
 use PDO;
 use PDOException;
 
-/** OA 0 is a compatibility adapter; positive IDs own their encrypted secrets. */
+/** One bot per dormitory. OA 0 keeps existing resident bindings and credentials. */
 final class LineOfficialAccountService
 {
-    private const FIELDS = ['slug','name','description','basic_id','channel_id','add_friend_url','channel_access_token','channel_access_token_clear','channel_secret','channel_secret_clear','enabled'];
+    // Identity, labels and links are provider-derived; clients cannot override them.
+    private const FIELDS = ['channel_access_token','channel_access_token_clear','channel_secret','channel_secret_clear','enabled'];
     private readonly SecretCipher $cipher;
     private int $registryDepth = 0;
 
@@ -49,8 +50,7 @@ final class LineOfficialAccountService
 
     public function all(): array
     {
-        $rows=$this->app->database()->pdo()->query('SELECT * FROM line_official_accounts WHERE deleted_at IS NULL ORDER BY is_default DESC,id')->fetchAll();
-        return array_map($this->safeRow(...),$rows);
+        return [$this->get(0)];
     }
 
     public function get(int $id): array { return $this->safeRow($this->row($id,false,true)); }
@@ -58,6 +58,7 @@ final class LineOfficialAccountService
     /** Internal only: never serialize this return value into a response or audit. */
     public function credentials(int $id): array
     {
+        $this->assertBotId($id);
         $row=$this->row($id);
         if (!(bool)$row['enabled'] || $row['deleted_at']!==null) throw new HttpException(409,'บัญชี LINE นี้ถูกปิดใช้งาน','LINE_OA_DISABLED');
         $secrets=$this->secrets($row);
@@ -69,35 +70,20 @@ final class LineOfficialAccountService
 
     public function defaultId(): int
     {
-        $id=$this->app->database()->pdo()->query('SELECT id FROM line_official_accounts WHERE is_default=1 AND enabled=1 AND deleted_at IS NULL LIMIT 1')->fetchColumn();
+        $id=$this->app->database()->pdo()->query('SELECT id FROM line_official_accounts WHERE id=0 AND enabled=1 AND deleted_at IS NULL')->fetchColumn();
         if ($id===false) throw new HttpException(409,'ยังไม่ได้เลือกบัญชี LINE เริ่มต้นที่เปิดใช้งาน','LINE_DEFAULT_NOT_CONFIGURED');
         return (int)$id;
     }
 
     public function create(array $input,int $adminId): array
     {
-        Validator::only($input,self::FIELDS); $this->adminId($adminId);
-        return $this->withRegistryLock(fn():array=>$this->app->database()->transaction(function(PDO $pdo)use($input,$adminId):array{
-            $id=(int)$pdo->query('SELECT COALESCE(MAX(id),0)+1 FROM line_official_accounts')->fetchColumn();
-            $row=['id'=>$id,'slug'=>'','name'=>'','description'=>null,'basic_id'=>null,'channel_id'=>null,'add_friend_url'=>null,
-                'access_token_enc'=>null,'channel_secret_enc'=>null,'enabled'=>0,'is_default'=>0,'legacy_route_enabled'=>0,
-                'route_token'=>bin2hex(random_bytes(24)),'provider_user_id'=>null,'token_fingerprint'=>null,'identity_verified_at'=>null,'last_error'=>null];
-            $row=$this->merge($row,$input);
-            if ((bool)$row['enabled']) $row=$this->verifyIdentity($row);
-            $this->assertMetadata($row);
-            $autoDefault=(bool)$row['enabled']&&!$this->readyDefaultExists();
-            if($autoDefault){$pdo->exec('UPDATE line_official_accounts SET is_default=0 WHERE is_default=1');$row['is_default']=1;}
-            $columns=['id','slug','name','description','basic_id','channel_id','add_friend_url','access_token_enc','channel_secret_enc','enabled','is_default','legacy_route_enabled','route_token','provider_user_id','token_fingerprint','identity_verified_at','last_error'];
-            $statement=$pdo->prepare('INSERT INTO line_official_accounts ('.implode(',',$columns).',created_by,updated_by) VALUES ('.implode(',',array_fill(0,count($columns)+2,'?')).')');
-            try { $statement->execute([...array_map(static fn(string $key)=>$row[$key],$columns),$adminId,$adminId]); }
-            catch(PDOException $error){$this->duplicate($error);}
-            $this->audit($adminId,'line.oa_created',$id,['enabled'=>(bool)$row['enabled'],'auto_default'=>$autoDefault]);
-            return $this->get($id);
-        }));
+        $this->adminId($adminId);
+        throw new HttpException(409,'หอพักใช้ LINE Bot ได้เพียงบัญชีเดียว กรุณาแก้ไขบอทของหอพัก','LINE_SINGLE_BOT_ONLY');
     }
 
     public function update(int $id,array $input,int $adminId): array
     {
+        $this->assertBotId($id);
         Validator::only($input,self::FIELDS); $this->adminId($adminId);
         return $this->withRegistryLock(fn():array=>$this->app->database()->transaction(function(PDO $pdo)use($id,$input,$adminId):array{
             $old=$this->row($id,true); $oldSecrets=$this->secrets($old); $oldBasicId=$this->basicId($old); $row=$this->merge($old,$input);
@@ -114,8 +100,8 @@ final class LineOfficialAccountService
             $identityChanged=$changedToken || $oldBasicId!==$this->basicId($row) || $old['channel_id']!==$row['channel_id'];
             $needsDiscovery=$newSecrets['access_token']!==''&&($row['name']===''||$row['slug']===''||$this->basicId($row)===null);
             $readinessChanged=$identityChanged||!(bool)$old['enabled']||$changedSecret;
-            if((bool)$row['enabled']&&$readinessChanged&&($newSecrets['access_token']===''||$newSecrets['channel_secret']===''))throw new HttpException(422,'กรุณาตั้งค่า Channel secret ให้ครบก่อนเปิดใช้งาน','LINE_NOT_CONFIGURED');
-            if((bool)$row['enabled'] && ($identityChanged || !(bool)$old['enabled'] || $needsDiscovery))$row=$this->verifyIdentity($row,$adminId);
+            if((bool)$row['enabled']&&($newSecrets['access_token']===''||$newSecrets['channel_secret']===''))throw new HttpException(422,'กรุณาตั้งค่า Channel secret ให้ครบก่อนเปิดใช้งาน','LINE_NOT_CONFIGURED');
+            if((bool)$row['enabled'] && ($identityChanged || !(bool)$old['enabled'] || $needsDiscovery || $newSecrets['access_token']!==''))$row=$this->verifyIdentity($row,$adminId);
             elseif($identityChanged){$row['token_fingerprint']=null;$row['identity_verified_at']=null;}
             if($changedSecret){$row['last_seen_at']=null;$row['last_error']=null;}
             $this->assertMetadata($row);
@@ -131,61 +117,12 @@ final class LineOfficialAccountService
     public function remove(int $id,int $adminId): array
     {
         $this->adminId($adminId);
-        return $this->withRegistryLock(function()use($id,$adminId):array{
-            $this->row($id);
-            $pdo=$this->app->database()->pdo();
-            $statement=$pdo->prepare("SELECT DISTINCT resident_id FROM line_room_bindings WHERE oa_id=? AND status IN ('pending','bound')");
-            $statement->execute([$id]);$residentIds=array_map('intval',$statement->fetchAll(PDO::FETCH_COLUMN));
-            if($id===0){
-                $legacyIds=$pdo->query("SELECT id AS resident_id FROM residents WHERE line_user_id IS NOT NULL
-                    UNION SELECT resident_id FROM line_link_codes WHERE status IN ('pending','bound')")->fetchAll(PDO::FETCH_COLUMN);
-                $residentIds=array_merge($residentIds,array_map('intval',$legacyIds));
-            }
-            $residentIds=array_values(array_unique($residentIds));sort($residentIds,SORT_NUMERIC);
-            $remove=fn():array=>$this->app->database()->transaction(function(PDO $pdo)use($id,$adminId):array{
-                $oa=$this->row($id,true);
-                $bindings=$pdo->prepare("UPDATE line_room_bindings SET status='revoked',code_enc=NULL,revoked_at=UTC_TIMESTAMP(6),updated_at=UTC_TIMESTAMP(6)
-                    WHERE oa_id=? AND status IN ('pending','bound')");
-                $bindings->execute([$id]);$bindingCount=$bindings->rowCount();
-                $contacts=$pdo->prepare('UPDATE line_admin_recipients SET enabled=0,revoked_at=UTC_TIMESTAMP(6),code_enc=NULL,updated_at=UTC_TIMESTAMP(6) WHERE oa_id=? AND revoked_at IS NULL');
-                $contacts->execute([$id]);$contactCount=$contacts->rowCount();
-                $legacyCount=0;$legacyCodeCount=0;
-                if($id===0){
-                    $legacy=$pdo->query('SELECT id,line_user_id FROM residents WHERE line_user_id IS NOT NULL ORDER BY id FOR UPDATE')->fetchAll();
-                    $legacyCount=count($legacy);
-                    $legacyCodeCount=$pdo->exec("UPDATE line_link_codes SET status='revoked',revoked_at=UTC_TIMESTAMP(6),updated_at=UTC_TIMESTAMP(6) WHERE status IN ('pending','bound')");
-                    $pdo->exec('UPDATE residents SET line_user_id=NULL,updated_at=UTC_TIMESTAMP(6) WHERE line_user_id IS NOT NULL');
-                    foreach($legacy as $resident){
-                        $request=new Request('POST','/internal/line/oa',[],[],[],[],[],'line-oa-unlink-'.bin2hex(random_bytes(8)));
-                        $this->app->audit()->writeStrict($request,['type'=>'admin','id'=>$adminId],'resident.line_unlinked','resident',(int)$resident['id'],[
-                            'reason'=>'line_oa_deleted','oa_id'=>0,
-                            'line_user_id_hash'=>$this->app->notifications()->lineBindingHash((int)$resident['id'],(string)$resident['line_user_id']),
-                        ]);
-                    }
-                }
-                // Archived bindings retain this OA ID. Release the live labels
-                // so re-adding the same provider creates a fresh, unbound OA.
-                $archivedSlug='deleted-'.$id.'-'.bin2hex(random_bytes(4));
-                $statement=$pdo->prepare('UPDATE line_official_accounts SET slug=?,provider_user_id=NULL,token_fingerprint=NULL,identity_verified_at=NULL,
-                    enabled=0,is_default=0,legacy_route_enabled=0,deleted_at=UTC_TIMESTAMP(6),last_seen_at=NULL,last_error=NULL,updated_by=?,updated_at=UTC_TIMESTAMP(6) WHERE id=?');
-                $statement->execute([$archivedSlug,$adminId,$id]);
-                $this->audit($adminId,'line.oa_deleted',$id,['soft_deleted'=>true,'revoked_bindings'=>$bindingCount,'revoked_admin_recipients'=>$contactCount,
-                    'unlinked_legacy_residents'=>$legacyCount,'revoked_legacy_invitations'=>$legacyCodeCount,'previous_slug'=>$oa['slug'],
-                    'provider_identity_hash'=>$oa['provider_user_id']===null?null:hash_hmac('sha256',"line-oa-provider\0".$oa['provider_user_id'],$this->app->config->appKey())]);
-                return ['id'=>$id,'deleted'=>true];
-            });
-            // Keep every resident fence until the transaction commits. Build the
-            // chain in reverse so acquisition follows the same ascending order.
-            foreach(array_reverse($residentIds)as$residentId){
-                $next=$remove;
-                $remove=fn():array=>$this->app->notifications()->withLineBindingLock($residentId,$next);
-            }
-            return $remove();
-        });
+        throw new HttpException(409,'ไม่สามารถลบบอทของหอพักได้ กรุณาปิดใช้งานหากต้องการหยุดรับส่ง','LINE_SINGLE_BOT_ONLY');
     }
 
     public function setDefault(int $id,int $adminId): array
     {
+        $this->assertBotId($id);
         $this->adminId($adminId);
         return $this->withRegistryLock(fn():array=>$this->app->database()->transaction(function(PDO $pdo)use($id,$adminId):array{
             $row=$this->row($id,true);
@@ -199,6 +136,7 @@ final class LineOfficialAccountService
 
     public function rotateRoute(int $id,int $adminId): array
     {
+        $this->assertBotId($id);
         $this->adminId($adminId);
         return $this->withRegistryLock(fn():array=>$this->app->database()->transaction(function(PDO $pdo)use($id,$adminId):array{
             $this->row($id,true);
@@ -210,6 +148,7 @@ final class LineOfficialAccountService
 
     public function test(int $id,int $adminId): array
     {
+        $this->assertBotId($id);
         $this->adminId($adminId);
         return $this->withRegistryLock(fn():array=>$this->app->database()->transaction(function(PDO $pdo)use($id,$adminId):array{
             $row=$this->verifyIdentity($this->row($id,true),$adminId);
@@ -258,15 +197,15 @@ final class LineOfficialAccountService
     {
         $id=(int)$row['id'];$secrets=$this->secrets($row);$basicId=$this->basicId($row);$links=LineBindingService::officialAccountLinks($basicId);
         $statement=$this->app->database()->pdo()->prepare("SELECT SUM(status='pending' AND expires_at>UTC_TIMESTAMP(6)) AS pending_count,SUM(status='bound') AS bound_count FROM line_room_bindings WHERE oa_id=?");$statement->execute([$id]);$counts=$statement->fetch();
-        $credentialsReady=(bool)$row['enabled']&&$row['deleted_at']===null&&$secrets['access_token']!==''&&$secrets['channel_secret']!==''&&$links['line_add_friend_url']!==null;
+        $credentialsReady=$id===0&&(bool)$row['enabled']&&$row['deleted_at']===null&&$secrets['access_token']!==''&&$secrets['channel_secret']!==''&&$links['line_add_friend_url']!==null;
         $identityVerified=is_string($row['provider_user_id'])&&is_string($row['identity_verified_at'])
             &&is_string($row['token_fingerprint'])&&hash_equals($row['token_fingerprint'],hash_hmac('sha256','line-oa-token\0'.$id.'\0'.$secrets['access_token'],$this->app->config->appKey()));
         $webhookVerified=$credentialsReady&&$row['last_seen_at']!==null&&$row['last_error']===null;
         $safe=[];foreach(['name','slug','description','channel_id','add_friend_url','deleted_at','provider_user_id','identity_verified_at','last_seen_at','last_error','created_at','updated_at']as$key)$safe[$key]=$row[$key]??null;
-        $safe+=['id'=>$id,'basic_id'=>$basicId,'enabled'=>(bool)$row['enabled'],'is_default'=>(bool)$row['is_default'],'legacy_route_enabled'=>(bool)$row['legacy_route_enabled'],
+        $safe+=['id'=>$id,'basic_id'=>$basicId,'enabled'=>(bool)$row['enabled'],'is_default'=>$id===0&&(bool)$row['enabled'],'legacy_route_enabled'=>(bool)$row['legacy_route_enabled'],
             'channel_access_token_configured'=>$secrets['access_token']!=='','channel_access_token_hint'=>$this->hint($secrets['access_token']),
             'channel_secret_configured'=>$secrets['channel_secret']!=='','channel_secret_hint'=>$this->hint($secrets['channel_secret']),
-            'line_add_friend_url'=>$row['add_friend_url']??$links['line_add_friend_url'],
+            'line_add_friend_url'=>$links['line_add_friend_url'],
             'line_message_base'=>$links['line_add_friend_url']===null?null:'https://line.me/R/oaMessage/'.rawurlencode((string)$basicId).'/?',
             'webhook_url'=>rtrim($this->app->config->require('APP_URL'),'/').'/api/webhooks/line/oa/'.$row['route_token'],
             'credentials_ready'=>$credentialsReady,'identity_verified'=>$identityVerified,'webhook_verified'=>$webhookVerified,'operational_ready'=>$identityVerified&&$webhookVerified,
@@ -306,13 +245,16 @@ final class LineOfficialAccountService
         if((bool)$row['enabled']&&$secret['channel_secret']==='')throw new HttpException(422,'กรุณาตั้งค่า Channel secret ให้ครบก่อนเปิดใช้งาน','LINE_NOT_CONFIGURED');
         $identity=$this->identityTransport!==null?($this->identityTransport)($secret['access_token']):$this->fetchIdentity($secret['access_token']);
         if(!is_array($identity)||!is_string($identity['userId']??null)||preg_match('/^U[0-9a-f]{32}$/D',$identity['userId'])!==1||!is_string($identity['basicId']??null)||preg_match('/^@[A-Za-z0-9._-]{1,32}$/D',$identity['basicId'])!==1)throw new HttpException(502,'LINE ส่งข้อมูลบัญชีที่ไม่ถูกต้อง','LINE_TEST_FAILED');
-        if($row['provider_user_id']!==null&&!hash_equals((string)$row['provider_user_id'],$identity['userId']))throw new HttpException(409,'Token นี้เป็นของ OA อื่น กรุณาเพิ่มบัญชีใหม่เพื่อรักษาปลายทางเดิม','LINE_OA_IDENTITY_MISMATCH');
+        if($row['provider_user_id']!==null&&!hash_equals((string)$row['provider_user_id'],$identity['userId']))throw new HttpException(409,'Token ต้องเป็นของ LINE Bot เดิมของหอพัก เพื่อรักษาการผูกบัญชีผู้พัก','LINE_OA_IDENTITY_MISMATCH');
         if((int)$row['id']===0){
-            if($this->basicId($row)===null){
+            if($this->basicId($row)!==$identity['basicId']){
+                if($row['provider_user_id']===null&&$this->basicId($row)!==null&&$this->hasLegacyRecipients()){
+                    throw new HttpException(409,'บัญชีเดิมมีผู้รับที่ผูกไว้และ Basic ID ไม่ตรงกับ Token ต้องตรวจสอบบัญชีเดิมก่อนเปลี่ยน','LINE_OA_IDENTITY_MISMATCH');
+                }
                 if($adminId===null)throw new \RuntimeException('Admin identity is required to discover the legacy LINE Basic ID');
                 $this->app->settings()->update(['line_basic_id'=>$identity['basicId']],$adminId);
             }
-            if($row['name']===''||($row['provider_user_id']===null&&$row['name']==='LINE เดิมของหอพัก'))$row['name']=$this->identityName($identity);
+            $row['name']=$this->identityName($identity);
             if($row['slug']==='')$row['slug']='legacy';
         }else{
             if($row['basic_id']===null)$row['basic_id']=$identity['basicId'];
@@ -328,6 +270,15 @@ final class LineOfficialAccountService
     {
         if($row['name']==='')throw new HttpException(422,'กรุณาระบุชื่อบัญชี LINE หรือเปิดใช้งานเพื่อให้ระบบดึงชื่ออัตโนมัติ','VALIDATION_ERROR',['field'=>'name']);
         if(preg_match('/^[a-z0-9][a-z0-9_-]{0,39}$/D',(string)$row['slug'])!==1)throw new HttpException(422,'กรุณาระบุรหัสบัญชี หรือเปิดใช้งานเพื่อให้ระบบสร้างให้อัตโนมัติ','VALIDATION_ERROR',['field'=>'slug']);
+    }
+
+    private function hasLegacyRecipients(): bool
+    {
+        return (bool)$this->app->database()->pdo()->query("SELECT
+          EXISTS(SELECT 1 FROM residents WHERE line_user_id IS NOT NULL)
+          OR EXISTS(SELECT 1 FROM line_room_bindings WHERE oa_id=0 AND status IN ('pending','bound'))
+          OR EXISTS(SELECT 1 FROM line_link_codes WHERE status IN ('pending','bound'))
+          OR EXISTS(SELECT 1 FROM line_admin_recipients WHERE oa_id=0 AND revoked_at IS NULL)")->fetchColumn();
     }
 
     private function identityName(array $identity): string
@@ -374,6 +325,10 @@ final class LineOfficialAccountService
         $this->app->audit()->writeStrict($request,['type'=>'admin','id'=>$adminId],$action,'line_official_account',$id,$details);
     }
     private function adminId(int $id): void { if($id<1)throw new HttpException(401,'กรุณาเข้าสู่ระบบผู้ดูแล','UNAUTHORIZED'); }
+    public function assertBotId(int $id): void
+    {
+        if($id!==0)throw new HttpException(409,'หอพักใช้ LINE Bot ได้เพียงบัญชีเดียว กรุณาใช้บอทของหอพัก','LINE_SINGLE_BOT_ONLY');
+    }
     private function hint(string $value): ?string { return $value===''?null:'********'.(strlen($value)>4?substr($value,-4):''); }
     private function duplicate(PDOException $error): never
     {

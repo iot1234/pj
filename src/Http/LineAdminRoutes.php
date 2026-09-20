@@ -12,7 +12,7 @@ final class LineAdminRoutes
         $auth=['auth'=>'admin'];
         $admin=static fn():int=>(int)$app->actor()['id'];
         $id=static fn(Request $r):int=>Validator::id($r->param('id'),'id');
-        $oa=static function(Request $r):int{$value=$r->param('id');if(!is_string($value)||!preg_match('/^(0|[1-9][0-9]{0,17})$/D',$value))throw new HttpException(422,'OA ID ไม่ถูกต้อง','VALIDATION_ERROR');return(int)$value;};
+        $oa=static function(Request $r)use($app):int{$value=$r->param('id');if(!is_string($value)||!preg_match('/^(0|[1-9][0-9]{0,17})$/D',$value))throw new HttpException(422,'OA ID ไม่ถูกต้อง','VALIDATION_ERROR');$app->lineOfficialAccounts()->assertBotId((int)$value);return(int)$value;};
         $empty=static function(Request $r):void{Validator::only($r->body,[]);};
         $limited=static function(string $kind)use($app,$admin):void{$app->limiter()->hit('admin-line-platform-'.$kind,(string)$admin(),60,3600,300);};
         $router->get('/api/admin/line/oas',function(Request $r)use($app):Response{
@@ -24,7 +24,7 @@ final class LineAdminRoutes
         $router->get('/api/admin/line/oas/{id}',fn(Request $r)=>Response::json($app->lineOfficialAccounts()->get($oa($r))),$auth);
         $router->put('/api/admin/line/oas/{id}',function(Request $r)use($app,$admin,$limited,$oa):Response{$limited('oa');return Response::json($app->lineOfficialAccounts()->update($oa($r),$r->body,$admin()));},$auth);
         $router->delete('/api/admin/line/oas/{id}',function(Request $r)use($app,$admin,$limited,$oa,$empty):Response{$empty($r);$limited('oa');return Response::json($app->lineOfficialAccounts()->remove($oa($r),$admin()));},$auth);
-        foreach(['test'=>'test','default'=>'setDefault','rotate-route'=>'rotateRoute']as$path=>$method)$router->post('/api/admin/line/oas/{id}/'.$path,function(Request $r)use($app,$admin,$limited,$oa,$empty,$method):Response{$empty($r);$limited('oa');return Response::json($app->lineOfficialAccounts()->$method($oa($r),$admin()));},$auth);
+        foreach(['test'=>'test','rotate-route'=>'rotateRoute']as$path=>$method)$router->post('/api/admin/line/oas/{id}/'.$path,function(Request $r)use($app,$admin,$limited,$oa,$empty,$method):Response{$empty($r);$limited('oa');return Response::json($app->lineOfficialAccounts()->$method($oa($r),$admin()));},$auth);
         $router->get('/api/admin/line/oas/{id}/webhook-status',fn(Request $r)=>Response::json($app->lineOfficialAccounts()->get($oa($r))),$auth);
         $router->get('/api/admin/line/bindings',fn(Request $r)=>Response::json($app->lineRoomBindings()->overview()),$auth);
         $router->get('/api/admin/line/residents/{id}',fn(Request $r)=>Response::json($app->lineRoomBindings()->detail($id($r))),$auth);

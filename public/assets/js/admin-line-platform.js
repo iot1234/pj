@@ -107,14 +107,11 @@
       return state.epoch;
     }
 
-    function fillOas(select, selected = state.defaultId) {
-      select.replaceChildren();
-      const available = state.oas.filter((oa) => oa.enabled === true && oa.line_binding_ready === true && !oa.deleted_at);
-      for (const oa of available) { const option = create('option', '', `${oa.name}${oa.is_default ? ' · เริ่มต้น' : ''}`); option.value = String(oa.id); select.append(option); }
-      if (available.some((oa) => String(oa.id) === String(selected))) select.value = String(selected);
-      select.disabled = available.length === 0;
-      if (!available.length) { const option = create('option', '', 'ไม่มี OA ที่พร้อมใช้งาน'); option.value = ''; select.append(option); }
-      return available.length > 0;
+    function primaryBotReady() { return state.oas.some((oa) => Number(oa.id) === 0 && oa.enabled === true && oa.line_binding_ready === true && !oa.deleted_at); }
+    function showPrimaryBot(element, archivedName = '') {
+      const oa = state.oas.find((item) => Number(item.id) === 0);
+      element.textContent = archivedName || (oa ? `${txt(oa.name)} · ${txt(oa.basic_id)}` : 'ยังไม่ได้เชื่อมต่อ LINE ของหอพัก');
+      return primaryBotReady();
     }
 
     async function mutate(button, action, after, confirmation) {
@@ -164,20 +161,17 @@
 
     function renderOas() {
       const container = $('#line-oa-list'); container.replaceChildren();
-      state.oas.filter((oa) => !oa.deleted_at).forEach((oa) => {
+      state.oas.filter((oa) => Number(oa.id) === 0).forEach((oa) => {
         const item = card(oa.name || `OA ${oa.id}`);
         const setup = oa.operational_ready ? 'พร้อมสร้างรหัส' : oa.credentials_ready !== true ? 'ยังตั้งค่า Token หรือ Secret ไม่ครบ' : oa.identity_verified !== true ? 'ยังไม่ได้ตรวจตัวตน OA' : 'รอ Verify Webhook';
-        item.append(note(`${txt(oa.basic_id)} · ${oa.enabled ? 'เปิดใช้งาน' : 'ปิดใช้งาน'}${oa.is_default ? ' · บัญชีเริ่มต้น' : ''}`), note(setup), note(`บัญชีที่ผูก ${Number(oa.bound_count || 0)} · รหัสรอใช้ ${Number(oa.pending_count || 0)}`));
+        item.append(note(`${txt(oa.basic_id)} · ${oa.enabled ? 'เปิดใช้งาน' : 'ปิดใช้งาน'}`), note(setup), note(`บัญชีผู้รับที่ผูก ${Number(oa.bound_count || 0)} · รหัสรอใช้ ${Number(oa.pending_count || 0)}`));
         if (oa.last_error) item.append(note(`ข้อผิดพลาดล่าสุด: ${oa.last_error}`));
         const actions = create('div', 'form-actions');
         actions.append(btn('แก้ไข', () => openOa(oa.id)), btn('Webhook / สถานะ', () => openWebhook(oa.id)), btn('ทดสอบการเชื่อมต่อ', (event) => oaAction(oa, 'test', event.currentTarget)));
-        if (!oa.is_default) actions.append(btn('ตั้งเป็นเริ่มต้น', (event) => oaAction(oa, 'default', event.currentTarget)));
-        actions.append(btn(oa.enabled ? 'ปิดใช้งาน' : 'เปิดใช้งาน', (event) => oaAction(oa, 'toggle', event.currentTarget), !!oa.enabled), btn('เปลี่ยน Webhook URL', (event) => oaAction(oa, 'rotate-route', event.currentTarget), true), btn('ลบ OA', (event) => oaAction(oa, 'delete', event.currentTarget), true));
+        actions.append(btn(oa.enabled ? 'ปิดใช้งาน' : 'เปิดใช้งาน', (event) => oaAction(oa, 'toggle', event.currentTarget), !!oa.enabled), btn('เปลี่ยน Webhook URL', (event) => oaAction(oa, 'rotate-route', event.currentTarget), true));
         item.append(actions); container.append(item);
       });
-      if (!container.children.length) container.append(note('ยังไม่มี OA กรุณาเพิ่มบัญชี'));
-      const setupButton = $('#line-oa-create');
-      if (setupButton) setupButton.textContent = state.oas.some((oa) => oa.credentials_ready === true && !oa.deleted_at) ? 'เพิ่ม OA' : 'เชื่อมต่อ LINE OA';
+      if (!container.children.length) container.append(note('ยังโหลดข้อมูล LINE Bot ไม่สำเร็จ กรุณาลองรีเฟรช'));
       const recipients = $('#line-recipient-list'); recipients.replaceChildren();
       state.recipients.forEach((row) => {
         const item = card(`${row.label} · ${row.is_owner ? 'OWNER' : 'ADMIN'}`);
@@ -205,19 +199,31 @@
       if (succeeded) { await loadOas(); if (action === 'rotate-route') openWebhook(oa.id); }
     }
 
-    async function openOa(id = null) {
-      const epoch = begin('oa', id, id === null ? 'เพิ่มบัญชี LINE OA' : 'แก้ไขบัญชี LINE OA'); if (epoch === null) return;
+    function syncOaRequirements() {
+      const enabled = field(oaForm, 'enabled').checked;
+      for (const name of ['channel_access_token', 'channel_secret']) {
+        field(oaForm, name).required = enabled && oaForm.dataset[name] !== 'true' && !field(oaForm, name + '_clear').checked;
+      }
+    }
+
+    async function openOa(id = 0) {
+      if (Number(id) !== 0 || id === null) { toast('หอพักใช้ LINE Bot ได้เพียงบัญชีเดียว', 'error'); return; }
+      id = 0;
+      const epoch = begin('oa', id, 'ตั้งค่า LINE Bot ของหอพัก'); if (epoch === null) return;
       try {
-        const row = id === null ? { enabled: true } : await api(`/api/admin/line/oas/${pathId(id)}`);
+        const row = await api('/api/admin/line/oas/0');
         if (!isCurrent(epoch, 'oa', id)) return;
-        ['name', 'slug', 'basic_id', 'channel_id', 'description', 'add_friend_url'].forEach((name) => { field(oaForm, name).value = row[name] || ''; });
+        $('#line-oa-identity').textContent = row.identity_verified === true ? `ดึงจาก LINE: ${txt(row.name)} · ${txt(row.basic_id)}` : 'ระบบจะดึงชื่อบัญชี Basic ID และสร้างลิงก์ให้หลังตรวจสอบ Token สำเร็จ';
         field(oaForm, 'enabled').checked = row.enabled === true;
+        oaForm.dataset.channel_access_token = String(row.channel_access_token_configured === true);
+        oaForm.dataset.channel_secret = String(row.channel_secret_configured === true);
+        syncOaRequirements();
         field(oaForm, 'channel_access_token').placeholder = row.channel_access_token_configured ? 'เว้นว่างเพื่อเก็บค่าเดิม' : 'วาง Token จาก Messaging API';
         field(oaForm, 'channel_secret').placeholder = row.channel_secret_configured ? 'เว้นว่างเพื่อเก็บค่าเดิม' : 'วาง Secret จาก Basic settings';
         $('#line-oa-token-hint').textContent = row.channel_access_token_configured || row.access_token_configured ? `ตั้งค่าแล้ว ${txt(row.channel_access_token_hint || row.access_token_hint, '')}` : 'ยังไม่ได้ตั้งค่า';
         $('#line-oa-secret-hint').textContent = row.channel_secret_configured ? `ตั้งค่าแล้ว ${txt(row.channel_secret_hint, '')}` : 'ยังไม่ได้ตั้งค่า';
         diagnostics($('#line-oa-diagnostics'), row); oaForm.hidden = false;
-        $('#line-platform-summary').textContent = id === null ? 'กรอก Token และ Secret เท่านั้น ระบบจะดึงข้อมูลบัญชีจาก LINE ให้เอง' : id === 0 ? 'OA หลักของระบบและบัญชีผู้พักเดิม · ช่องค่าลับที่เว้นว่างจะเก็บค่าเดิม' : 'ช่องค่าลับที่เว้นว่างจะเก็บค่าเดิม';
+        $('#line-platform-summary').textContent = 'หอพักใช้ LINE Bot บัญชีเดียว · กรอก Token และ Secret ของบอทนี้ · ช่องค่าลับที่เว้นว่างจะเก็บค่าเดิม';
       } catch (cause) { if (isCurrent(epoch, 'oa', id)) error(cause); }
     }
 
@@ -291,12 +297,13 @@
         const [row, oas] = await Promise.all([api(`/api/admin/line/residents/${pathId(id)}`), api('/api/admin/line/oas')]);
         if (!isCurrent(epoch, 'binding', id)) return;
         state.oas = list(oas); state.defaultId = oas.default_oa_id;
-        const available = fillOas(field(codeForm, 'oa_id')); $('button[type="submit"]', codeForm).disabled = !available;
+        const available = showPrimaryBot($('#line-binding-bot')); $('button[type="submit"]', codeForm).disabled = !available;
         renderDetail(row);
       } catch (cause) { if (isCurrent(epoch, 'binding', id)) error(cause); }
     }
 
     async function bindingAction(action, id, button) {
+      if (state.mode !== 'binding' || !state.detail) return;
       const resident = state.id, endpoint = `/api/admin/line/residents/${pathId(resident)}`;
       const suffix = action === 'code' ? `/codes/${pathId(id)}` : action === 'account' ? `/accounts/${pathId(id)}` : action === 'all' ? '/accounts' : `/${action}`;
       const reason = $('#line-block-reason').value.trim();
@@ -317,7 +324,7 @@
         $$('[name="muted_categories"]', recipientForm).forEach((node) => { node.checked = list(row.muted_categories).includes(node.value); });
       }
       const editing = state.id !== null;
-      field(recipientForm, 'oa_id').disabled = editing || !field(recipientForm, 'oa_id').options.length;
+      showPrimaryBot($('#line-recipient-bot'), editing && Number(row.oa_id) !== 0 ? txt(row.oa_name) : '');
       $('#line-recipient-owner-field').hidden = editing;
       $('#line-recipient-enabled-field').hidden = !editing; $('#line-recipient-mutes').hidden = !editing;
       $('#line-recipient-delete').hidden = !editing; $('#line-recipient-refresh').hidden = !editing;
@@ -339,12 +346,7 @@
         const [row, oas] = await Promise.all([id === null ? Promise.resolve({ enabled: true }) : api(`/api/admin/line/recipients/${pathId(id)}`), api('/api/admin/line/oas')]);
         if (!isCurrent(epoch, 'recipient', id)) return;
         state.oas = list(oas); state.defaultId = oas.default_oa_id;
-        const select = field(recipientForm, 'oa_id');
-        const available = fillOas(select, row.oa_id ?? state.defaultId);
-        if (id !== null) {
-          if (![...select.options].some((option) => option.value === String(row.oa_id))) { const option = create('option', '', txt(row.oa_name, `OA ${row.oa_id}`)); option.value = String(row.oa_id); select.append(option); }
-          select.value = String(row.oa_id);
-        }
+        const available = showPrimaryBot($('#line-recipient-bot'));
         $('button[type="submit"]', recipientForm).disabled = id === null && !available;
         renderRecipient(row);
       } catch (cause) { if (isCurrent(epoch, 'recipient', id)) error(cause); }
@@ -370,37 +372,40 @@
       finally { if (state.read === token) state.read = null; }
     }
 
+    oaForm.addEventListener('change', syncOaRequirements);
     oaForm.addEventListener('submit', async (event) => {
       event.preventDefault(); if (state.busy || !oaForm.reportValidity()) return;
-      const id = state.id, values = {};
-      ['name', 'slug', 'basic_id', 'channel_id', 'description', 'add_friend_url', 'channel_access_token', 'channel_secret'].forEach((name) => { values[name] = field(oaForm, name).value; });
+      if (state.mode !== 'oa' || state.id !== 0) return;
+      const values = {};
+      ['channel_access_token', 'channel_secret'].forEach((name) => { values[name] = field(oaForm, name).value; });
       ['enabled', 'channel_access_token_clear', 'channel_secret_clear'].forEach((name) => { values[name] = field(oaForm, name).checked; });
       if ((values.channel_access_token_clear && values.channel_access_token) || (values.channel_secret_clear && values.channel_secret)) { error(new Error('เลือกกรอกค่าลับใหม่หรือล้างค่าเดิมอย่างใดอย่างหนึ่ง')); return; }
+      if (values.channel_access_token_clear || values.channel_secret_clear) values.enabled = false;
       const confirmation = values.channel_access_token_clear || values.channel_secret_clear ? ['ล้างค่าลับ LINE', 'OA นี้จะหยุดรับส่งจนกว่าจะตั้งค่าครบอีกครั้ง', 'ล้างค่าที่เลือก', true] : null;
-      const succeeded = await mutate($('button[type="submit"]', oaForm), () => api('/api/admin/line/oas' + (id === null ? '' : `/${pathId(id)}`), { method: id === null ? 'POST' : 'PUT', body: values }), (row) => { closeDialog(dialog); toast('บันทึก OA แล้ว'); if (row && validId(row.id)) openWebhook(row.id); }, confirmation);
+      const succeeded = await mutate($('button[type="submit"]', oaForm), () => api('/api/admin/line/oas/0', { method: 'PUT', body: values }), () => { closeDialog(dialog); toast('บันทึก LINE Bot แล้ว'); openWebhook(0); }, confirmation);
       if (succeeded) loadOas();
     });
 
     codeForm.addEventListener('submit', async (event) => {
-      event.preventDefault(); if (state.busy || !state.detail || state.detail.blocked || !codeForm.reportValidity()) return;
-      const resident = state.id, oa = field(codeForm, 'oa_id').value, ttl = Number(field(codeForm, 'ttl_days').value), replace = field(codeForm, 'replace_pending').value !== 'false';
-      if (!validId(oa) || oa === '' || !Number.isInteger(ttl) || ttl < 1 || ttl > 30) { error(new Error('เลือก OA ที่พร้อมและอายุรหัส 1–30 วัน')); return; }
+      event.preventDefault(); if (state.mode !== 'binding' || state.busy || !state.detail || state.detail.blocked || !codeForm.reportValidity()) return;
+      const resident = state.id, ttl = Number(field(codeForm, 'ttl_days').value), replace = field(codeForm, 'replace_pending').value !== 'false';
+      if (!primaryBotReady() || !Number.isInteger(ttl) || ttl < 1 || ttl > 30) { error(new Error('เลือก OA ที่พร้อมและอายุรหัส 1–30 วัน')); return; }
       const confirmation = replace && list(state.detail.pending_codes).length ? ['สร้างรหัสใหม่แทนรหัสเดิม', 'รหัสและ QR ที่ยังรอใช้ทั้งหมดของผู้พักรายนี้จะถูกยกเลิก บัญชีที่ผูกแล้วจะยังอยู่', 'ยกเลิกรหัสเดิมและสร้างใหม่', true] : null;
       let sent = false;
       const succeeded = await mutate($('button[type="submit"]', codeForm), () => {
         sent = true;
         if (replace) { clearCodes(); $('#line-pending-list').replaceChildren(note('กำลังตรวจผลสร้างรหัสใหม่…')); }
-        return api(`/api/admin/line/residents/${pathId(resident)}/codes`, { method: 'POST', body: { oa_id: Number(oa), ttl_days: ttl, replace_pending: replace } });
+        return api(`/api/admin/line/residents/${pathId(resident)}/codes`, { method: 'POST', body: { ttl_days: ttl, replace_pending: replace } });
       }, (row) => { renderDetail(row.detail); toast('สร้างรหัสแล้ว ให้ผู้พักส่งรหัสใน LINE ของตนเอง'); }, confirmation);
       if (succeeded) loadBindings();
       else if (sent) refreshDialog(true);
     });
 
     recipientForm.addEventListener('submit', async (event) => {
-      event.preventDefault(); if (state.busy || !recipientForm.reportValidity()) return;
-      const id = state.id, creating = id === null, oa = field(recipientForm, 'oa_id').value;
-      if (creating && (!validId(oa) || oa === '')) { error(new Error('เลือก OA ที่พร้อมใช้งาน')); return; }
-      const values = creating ? { oa_id: Number(oa), label: field(recipientForm, 'label').value, is_owner: field(recipientForm, 'is_owner').checked } : { label: field(recipientForm, 'label').value, enabled: field(recipientForm, 'enabled').checked, muted_categories: $$('[name="muted_categories"]', recipientForm).filter((node) => node.checked).map((node) => node.value) };
+      event.preventDefault(); if (state.mode !== 'recipient' || state.busy || !recipientForm.reportValidity()) return;
+      const id = state.id, creating = id === null;
+      if (creating && !primaryBotReady()) { error(new Error('เลือก OA ที่พร้อมใช้งาน')); return; }
+      const values = creating ? { label: field(recipientForm, 'label').value, is_owner: field(recipientForm, 'is_owner').checked } : { label: field(recipientForm, 'label').value, enabled: field(recipientForm, 'enabled').checked, muted_categories: $$('[name="muted_categories"]', recipientForm).filter((node) => node.checked).map((node) => node.value) };
       const succeeded = await mutate($('button[type="submit"]', recipientForm), () => api('/api/admin/line/recipients' + (creating ? '' : `/${pathId(id)}`), { method: creating ? 'POST' : 'PUT', body: values }), (row) => { state.id = row.id; renderRecipient(row); toast(creating ? 'สร้างรหัสแล้ว ให้ผู้รับกดส่งจาก LINE ของตนเอง' : 'บันทึกผู้รับแล้ว'); }, creating && values.is_owner ? ['สร้างรหัสผู้รับหลัก OWNER', 'เมื่อยืนยันรหัสนี้ ระบบจะเปลี่ยนผู้รับหลักของ OA ตามรายการที่เลือก ให้เจ้าของตัวจริงส่งรหัสด้วยตนเอง', 'สร้างรหัส OWNER', false] : null);
       if (succeeded) loadOas();
     });
@@ -411,11 +416,7 @@
       const succeeded = await mutate(event.currentTarget, () => api(`/api/admin/line/recipients/${pathId(id)}`, { method: 'DELETE', body: {} }), () => { closeDialog(dialog); toast('ยกเลิกผู้รับแล้ว'); }, ['ยกเลิกผู้รับแจ้งเตือน', 'ผู้รับนี้จะหยุดรับแจ้งเตือน และรหัสที่ยังรอใช้จะใช้ไม่ได้', 'ยกเลิกผู้รับ', true]);
       if (succeeded) loadOas();
     });
-    $('#line-oa-create').addEventListener('click', () => {
-      const legacy = state.oas.find((oa) => Number(oa.id) === 0 && !oa.deleted_at);
-      const configured = state.oas.some((oa) => oa.credentials_ready === true && !oa.deleted_at);
-      openOa(!configured && legacy ? 0 : null);
-    });
+    $('#line-oa-configure').addEventListener('click', () => openOa());
     $('#line-recipient-create').addEventListener('click', () => openRecipient());
     $('#line-binding-search').addEventListener('input', renderBindings);
     $('#line-binding-filter').addEventListener('change', renderBindings);

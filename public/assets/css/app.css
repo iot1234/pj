@@ -552,3 +552,6 @@ tbody tr:last-child td { border-bottom: 0; }
   :root { --line: #aaa49a; --line-strong: #777169; }
   .button, input, select, textarea { border-width: 2px; }
 }
+
+/* Provider-derived and calculated values are readable, never editable controls. */
+.auto-value { display: block; min-height: 2.5rem; padding: .55rem 0; font-weight: 700; overflow-wrap: anywhere; }

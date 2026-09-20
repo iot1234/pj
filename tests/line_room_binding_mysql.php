@@ -45,8 +45,9 @@ $oaService = new LineOfficialAccountService($app, static function (string $token
         default => throw new RuntimeException('Unexpected test OA credential'),
     };
 });
-$oaOne = $oaService->create(['slug'=>'room-one','name'=>'Room OA One','basic_id'=>'@roomone','channel_access_token'=>'room-oa-one-test-token','channel_secret'=>'room-oa-one-secret','enabled'=>true], $ownerId);
-$oaTwo = $oaService->create(['slug'=>'room-two','name'=>'Room OA Two','basic_id'=>'@roomtwo','add_friend_url'=>'https://lin.ee/roomTwo','channel_access_token'=>'room-oa-two-test-token','channel_secret'=>'room-oa-two-secret','enabled'=>true], $ownerId);
+$oaOne = $oaService->update(0,['channel_access_token'=>'room-oa-one-test-token','channel_secret'=>'room-oa-one-secret','enabled'=>true], $ownerId);
+$oaTwo = $oaOne;
+(new ReflectionProperty($app,'lineOfficialAccounts'))->setValue($app,$oaService);
 $oa1 = (int) $oaOne['id']; $oa2 = (int) $oaTwo['id'];
 $oaService->setDefault($oa1, $ownerId);
 $today = (new DateTimeImmutable('today',new DateTimeZone('Asia/Bangkok')))->format('Y-m-d');
@@ -81,7 +82,7 @@ $assert($service->status($r1)['line_verified'] === false,'Safe status tried to u
 $pdo->prepare('UPDATE line_room_bindings SET code_enc=? WHERE id=?')->execute([$stored['code_enc'],$first['id']]);
 $ttl = $pdo->prepare('SELECT TIMESTAMPDIFF(DAY,created_at,expires_at) FROM line_room_bindings WHERE id=?'); $ttl->execute([$first['id']]);
 $assert((int) $ttl->fetchColumn() === 7, 'Default invitation is not valid for seven days');
-$expect(fn() => $service->consume($first['code'],$user1,$oa2,0), 'LINE_BINDING_WRONG_OA');
+$expect(fn() => $service->consume($first['code'],$user1,1,0), 'LINE_OA_NOT_FOUND');
 $assert($row($first['id'])['status'] === 'pending', 'Wrong OA consumed an invitation');
 $pass('encrypted reusable invitation display, default TTL and OA-specific deep link');
 
@@ -136,7 +137,7 @@ $pass('strict audit rollback, atomic proof and same-sender replay');
 $second = $service->issue($r1,['replace_pending'=>false],$ownerId);
 $third = $service->issue($r1,['oa_id'=>$oa2,'replace_pending'=>false,'ttl_days'=>30],$ownerId);
 $assert($service->detail($r1)['pending_count'] === 2 && $service->detail($r1)['bound_count'] === 1, 'Additional keys changed existing bindings');
-$assert($third['line_add_friend_url'] === 'https://lin.ee/roomTwo', 'Custom official add-friend link was discarded');
+$assert($third['line_add_friend_url'] === 'https://line.me/R/ti/p/%40roomone', 'Custom official add-friend link was discarded');
 $ttl->execute([$third['id']]); $assert((int)$ttl->fetchColumn() === 30,'Thirty-day invitation TTL was not preserved');
 $replacement = $service->issue($r1,[],$ownerId);
 $assert($row($second['id'])['status'] === 'revoked' && $row($third['id'])['status'] === 'revoked', 'Replace pending did not revoke all old keys');
@@ -144,7 +145,7 @@ $assert($service->detail($r1)['bound_count'] === 1 && $service->detail($r1)['pen
 $expect(fn() => $service->consume($replacement['code'],$user1,$oa1,0), 'LINE_ALREADY_LINKED');
 $service->consume($replacement['code'],$user2,$oa1,0);
 $sameUserOtherOa = $service->issue($r1,['oa_id'=>$oa2],$ownerId);
-$service->consume($sameUserOtherOa['code'],$user1,$oa2,0);
+$service->consume($sameUserOtherOa['code'],'U'.str_repeat('e',32),$oa2,0);
 $assert(count($service->recipients($r1)) === 3, 'Multiple recipients or same user on another OA is unsupported');
 $assert($service->status($r1) === ['line_verified'=>true,'line_user_id_hint'=>null,'line_bound_count'=>3,'line_blocked'=>false], 'Multiple account profile projection is incorrect');
 $otherRoom = $service->issue($r2,['oa_id'=>$oa1],$ownerId);
@@ -239,7 +240,7 @@ $assert($service->recipients($r2) === [] && $service->detail($r2)['bound_count']
 $assert($service->status($r2) === ['line_verified'=>true,'line_user_id_hint'=>'•••333333','line_bound_count'=>1,'line_blocked'=>false],'Disabled OA erased the administrative bound status');
 $expect(fn() => $service->issue($r2,['oa_id'=>$oa1],$ownerId), 'LINE_OA_NOT_AVAILABLE');
 $assert($service->detail($r2)['bound_accounts'][0]['line_user_id_hint'] === '•••333333', 'Bound account is not masked');
-$assert($providerCalls === 2, 'A room operation unexpectedly tested a provider credential');
+$assert($providerCalls === 1, 'A room operation unexpectedly tested a provider credential');
 foreach ($pdo->query("SELECT details FROM audit_logs WHERE action LIKE 'line.room_binding.%' OR action='resident.line_unlinked'")->fetchAll(PDO::FETCH_COLUMN) as $audit) {
     $assert(!str_contains((string)$audit,'BIND-') && !str_contains((string)$audit,'oaMessage'), 'An invitation leaked to audit');
     foreach ([$user1,$user2,$user3,$user4,$legacyUser] as $user) $assert(!str_contains((string)$audit,$user), 'A raw LINE recipient leaked to audit');
@@ -248,6 +249,7 @@ $history = $service->detail($r1)['history'];
 foreach ($history as $entry) $assert(!array_key_exists('code',$entry) && !array_key_exists('code_enc',$entry) && !array_key_exists('line_user_id',$entry), 'History exposes a credential');
 $pass('disabled OA delivery, masked accounts, safe history and secret-free audits');
 
+$oaService->update(0,['enabled'=>true],$ownerId);
 // Exercise the real domain transitions with an explicitly claimed administrator.
 $adminUser = 'U' . str_repeat('6',32);
 $adminRecipient = $app->lineAdminRecipients()->issue(['oa_id'=>$oa2,'label'=>'Event test administrator','is_owner'=>false],$ownerId);
@@ -346,82 +348,37 @@ $service->consume($deleteTargetBound['code'],'U' . str_repeat('7',32),$oa2,0);
 $assert($adminCount('tenancy') === $noticeBeforeBind + 1,'Successful binding recovery did not notify its OA administrator once');
 $pass('binding, proof audit and OA administrator notice commit or roll back together');
 
-$oaService->update($oa1,['enabled'=>true],$ownerId);
-$deleteKeepBound = $service->issue($r1,['oa_id'=>$oa1,'replace_pending'=>false],$ownerId);
-$service->consume($deleteKeepBound['code'],'U' . str_repeat('8',32),$oa1,0);
-$deleteKeepPending = $service->issue($r1,['oa_id'=>$oa1,'replace_pending'=>false],$ownerId);
-$deleteTargetPending = $service->issue($r1,['oa_id'=>$oa2,'replace_pending'=>false],$ownerId);
-$deleteTargetAdminPending = $app->lineAdminRecipients()->issue(['oa_id'=>$oa2,'label'=>'Delete target pending'],$ownerId);
-$deleteKeepAdminPending = $app->lineAdminRecipients()->issue(['oa_id'=>$oa1,'label'=>'Keep OA pending'],$ownerId);
-$deleteKeepAdminBound = $app->lineAdminRecipients()->issue(['oa_id'=>$oa1,'label'=>'Keep OA claimed'],$ownerId);
-$app->lineOfficialAccounts()->withRegistryLock(fn() => $app->lineAdminRecipients()->consume($deleteKeepAdminBound['code'],'U' . str_repeat('9',32),$oa1));
-$beforeDeleteNotices = $notices();
-$auditFailure('line.oa_deleted',fn() => $oaService->remove($oa2,$ownerId));
-$assert($oaService->get($oa2)['deleted_at'] === null && $row($deleteTargetBound['id'])['status'] === 'bound' && $row($deleteTargetPending['id'])['status'] === 'pending','Failed OA deletion audit partially revoked its OA or room bindings');
-$assert($app->lineAdminRecipients()->get((int)$adminRecipient['id'])['status'] === 'claimed'
-    && $app->lineAdminRecipients()->get((int)$deleteTargetAdminPending['id'])['code'] === $deleteTargetAdminPending['code'],'Failed OA deletion audit revoked administrator recipients');
-$oaService->remove($oa2,$ownerId);
-$assert($row($deleteTargetBound['id'])['status'] === 'revoked' && $row($deleteTargetPending['id'])['status'] === 'revoked'
-    && $row($deleteTargetPending['id'])['code_enc'] === null,'Deleted OA left a bound account or reusable pending code');
-$assert($row($deleteKeepBound['id'])['status'] === 'bound' && $row($deleteKeepPending['id'])['status'] === 'pending','Deleting one OA changed another OA room binding');
-$deleteDetail = $service->detail($r1);
-$assert(count($deleteDetail['bound_accounts']) === 1 && $deleteDetail['bound_accounts'][0]['id'] === $deleteKeepBound['id']
-    && count($deleteDetail['pending_codes']) === 1 && $deleteDetail['pending_codes'][0]['id'] === $deleteKeepPending['id'],'Room detail still exposes deleted OA codes/accounts');
-foreach ([(int)$adminRecipient['id'],(int)$deleteTargetAdminPending['id']] as $recipientId) {
-    $contact = $app->lineAdminRecipients()->get($recipientId);
-    $assert($contact['status'] === 'revoked' && !$contact['enabled'] && !isset($contact['code']),'Deleted OA left an administrator claim active');
-}
-$assert($app->lineAdminRecipients()->get((int)$deleteKeepAdminPending['id'])['code'] === $deleteKeepAdminPending['code']
-    && $app->lineAdminRecipients()->get((int)$deleteKeepAdminBound['id'])['status'] === 'claimed','Deleting one OA changed another OA administrator claim');
-$expect(fn() => $service->consume($deleteTargetPending['code'],$user2,$oa2,0),'LINE_OA_NOT_AVAILABLE');
-$assert($notices() === $beforeDeleteNotices,'OA deletion attempted to notify through the disabled OA');
-$pass('OA deletion revokes only its room/admin bindings atomically and removes shareable codes');
-
-$readdedOa = $oaService->create(['slug'=>'room-two','name'=>'Room OA Two Re-added','basic_id'=>'@roomtwo','channel_access_token'=>'room-oa-two-test-token','channel_secret'=>'room-oa-two-secret','enabled'=>true],$ownerId);
-$readdedId = (int)$readdedOa['id'];
-$assert($readdedId !== $oa2 && $readdedOa['slug'] === 'room-two' && $readdedOa['bound_count'] === 0 && $readdedOa['pending_count'] === 0,'Deleted provider/slug cannot be safely re-added as a fresh OA');
-$assert($row($deleteTargetBound['id'])['status'] === 'revoked' && $row($deleteTargetPending['id'])['status'] === 'revoked'
-    && $app->lineAdminRecipients()->get((int)$adminRecipient['id'])['status'] === 'revoked','Re-adding the provider revived its previous tenant/admin accounts');
-$freshReaddedCode = $service->issue($r1,['oa_id'=>$readdedId,'replace_pending'=>false],$ownerId);
-$service->consume($freshReaddedCode['code'],'U' . str_repeat('7',32),$readdedId,0);
-$assert($service->verified($freshReaddedCode['id'],'U' . str_repeat('7',32),$readdedId) !== null,'Re-added provider cannot bind with a fresh invitation');
-$pass('deleted slug/provider can be re-added with a fresh OA ID without reviving historical access');
-
-// OA 0 additionally owns the legacy resident field and the old invitation table.
-$legacyDeleteUser = 'U' . str_repeat('c',32);
-$legacyDeleteBound = $app->lineBindings()->issueForAdmin($r1);
-$app->lineBindings()->consumeSerialized($legacyDeleteBound['code'],$legacyDeleteUser,function (array $binding) use ($app,$request): void {
-    $app->audit()->writeStrict($request,null,'resident.line_link_verified','resident',(int)$binding['resident_id'],[
-        'line_user_id_hash'=>$app->notifications()->lineBindingHash((int)$binding['resident_id'],$binding['line_user_id']),
-    ]);
+// The sole bot cannot be deleted or replaced accidentally. Bound identities remain intact.
+$keepBound = $service->issue($r1,['replace_pending'=>false],$ownerId);
+$service->consume($keepBound['code'],'U'.str_repeat('8',32),0,0);
+$keepPending = $service->issue($r1,['replace_pending'=>false],$ownerId);
+$before=$service->detail($r1); $countBefore=$notices();
+$expect(fn()=>$oaService->remove(0,$ownerId),'LINE_SINGLE_BOT_ONLY');
+$expect(fn()=>$oaService->create([],$ownerId),'LINE_SINGLE_BOT_ONLY');
+$expect(fn()=>$service->issue($r1,['oa_id'=>1],$ownerId),'LINE_SINGLE_BOT_ONLY');
+$assert($service->detail($r1)===$before && $notices()===$countBefore,'Rejected bot replacement changed room or notice data');
+$pass('single bot deletion and replacement are rejected without changing recipients or codes');
+$auditFailure('line.oa_updated',fn()=>$oaService->update(0,['enabled'=>false],$ownerId));
+$assert($oaService->get(0)['enabled']===true && $row($keepPending['id'])['status']==='pending','Failed pause audit partially changed bot state');
+$oaService->update(0,['enabled'=>false],$ownerId);
+$assert($service->recipients($r1)===[] && $service->detail($r1)['bound_count']===$before['bound_count'],'Pause erased bindings or allowed delivery');
+$expect(fn()=>$oaService->credentials(0),'LINE_OA_DISABLED');
+$oaService->update(0,['enabled'=>true],$ownerId);
+$assert($row($keepBound['id'])['status']==='bound' && $row($keepPending['id'])['status']==='pending','Resume changed existing binding identity');
+$assert($row($replacement['id'])['status']==='revoked','Resume restored a revoked account');
+$pass('pause is audit-atomic and resume keeps only still-authorized accounts');
+// Preserve and selectively revoke the legacy user independently of normalized accounts.
+$legacyDeleteUser='U'.str_repeat('c',32);
+$legacy=$app->lineBindings()->issueForAdmin($r1);
+$app->lineBindings()->consumeSerialized($legacy['code'],$legacyDeleteUser,function(array $binding)use($app,$request):void{
+ $app->audit()->writeStrict($request,null,'resident.line_link_verified','resident',(int)$binding['resident_id'],['line_user_id_hash'=>$app->notifications()->lineBindingHash((int)$binding['resident_id'],$binding['line_user_id'])]);
 });
-$legacyDeletePending = $app->lineBindings()->issueForAdmin($r2);
-$legacyNewPending = $service->issue($r3,['oa_id'=>0,'replace_pending'=>false],$ownerId);
-$legacyDeleteAdminPending = $app->lineAdminRecipients()->issue(['oa_id'=>0,'label'=>'Legacy pending administrator'],$ownerId);
-$legacyDeleteAdminBound = $app->lineAdminRecipients()->issue(['oa_id'=>0,'label'=>'Legacy claimed administrator'],$ownerId);
-$app->lineOfficialAccounts()->withRegistryLock(fn() => $app->lineAdminRecipients()->consume($legacyDeleteAdminBound['code'],'U' . str_repeat('d',32),0));
-$auditFailure('resident.line_unlinked',fn() => $oaService->remove(0,$ownerId));
-$q = $pdo->prepare('SELECT line_user_id FROM residents WHERE id=?'); $q->execute([$r1]);
-$assert($q->fetchColumn() === $legacyDeleteUser && $app->notifications()->isLineBindingVerified($r1,$legacyDeleteUser),'Failed legacy unlink audit cleared its verified identity');
-$assert($oaService->get(0)['deleted_at'] === null && $row($legacyNewPending['id'])['status'] === 'pending'
-    && $row($legacyCollision['id'])['status'] === 'bound','Failed legacy unlink audit partially deleted OA0');
-$oaService->remove(0,$ownerId);
-$assert((int)$pdo->query('SELECT COUNT(*) FROM residents WHERE line_user_id IS NOT NULL')->fetchColumn() === 0,'Deleted OA0 left a legacy resident identity');
-$assert((int)$pdo->query("SELECT COUNT(*) FROM line_link_codes WHERE status IN ('pending','bound')")->fetchColumn() === 0,'Deleted OA0 left an old pending or bound code');
-$assert($row($legacyNewPending['id'])['status'] === 'revoked' && $row($legacyCollision['id'])['status'] === 'revoked','Deleted OA0 left a normalized pending or bound account');
-$assert(!$app->notifications()->isLineBindingVerified($r1,$legacyDeleteUser),'Legacy audit proof survived OA0 deletion');
-$assert($row($deleteKeepBound['id'])['status'] === 'bound' && $row($deleteKeepPending['id'])['status'] === 'pending'
-    && $app->lineAdminRecipients()->get((int)$deleteKeepAdminBound['id'])['status'] === 'claimed','OA0 deletion affected a different OA');
-foreach ([(int)$legacyDeleteAdminPending['id'],(int)$legacyDeleteAdminBound['id']] as $recipientId) $assert($app->lineAdminRecipients()->get($recipientId)['status'] === 'revoked','OA0 deletion left its administrator recipient active');
-$assert(!str_contains(json_encode($service->detail($r1),JSON_THROW_ON_ERROR),$legacyDeleteUser),'Legacy deletion exposed a raw LINE identity');
-foreach ($pdo->query("SELECT details FROM audit_logs WHERE action IN ('line.oa_deleted','resident.line_unlinked')")->fetchAll(PDO::FETCH_COLUMN) as $details) {
-    $assert(!str_contains((string)$details,$legacyDeleteUser) && !str_contains((string)$details,'BIND-'),'OA deletion audit disclosed a LINE identity or invitation');
-}
-foreach ([$registryLock,$residentLock] as $lock) {
-    $q = $probe->prepare('SELECT GET_LOCK(?,0)'); $q->execute([$lock]); $acquired = (int)$q->fetchColumn();
-    if ($acquired === 1) { $q = $probe->prepare('SELECT RELEASE_LOCK(?)'); $q->execute([$lock]); }
-    $assert($acquired === 1,'OA deletion leaked a registry or resident fence');
-}
-$assert($providerCalls === 4,'OA deletion contacted the provider');
-$pass('OA0 deletion clears legacy invitations/proofs, preserves other OAs and releases all fences');
-fwrite(STDOUT, "PASS LINE room binding MySQL: {$groups} groups; no provider requests\n");
+$expect(fn()=>$oaService->remove(0,$ownerId),'LINE_SINGLE_BOT_ONLY');
+$assert($app->notifications()->isLineBindingVerified($r1,$legacyDeleteUser),'Rejected deletion cleared legacy proof');
+$auditFailure('resident.line_unlinked',fn()=>$service->revokeAccount($r1,0,$ownerId));
+$assert($app->notifications()->isLineBindingVerified($r1,$legacyDeleteUser),'Failed legacy unlink lost proof');
+$service->revokeAccount($r1,0,$ownerId);
+$assert(!$app->notifications()->isLineBindingVerified($r1,$legacyDeleteUser) && $row($keepBound['id'])['status']==='bound','Selective legacy unlink affected another account');
+foreach([$registryLock,$residentLock]as$lock){$q=$probe->prepare('SELECT GET_LOCK(?,0)');$q->execute([$lock]);$assert((int)$q->fetchColumn()===1,'Leaked named lock');$q=$probe->prepare('SELECT RELEASE_LOCK(?)');$q->execute([$lock]);}
+$pass('legacy proof is preserved by rejected deletion and independently revocable with rollback');
+fwrite(STDOUT,"PASS LINE room binding MySQL: {$groups} groups; no provider requests\n");

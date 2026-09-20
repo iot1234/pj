@@ -54,12 +54,12 @@ function harness() {
   for (const id of ['line-platform-title', 'line-platform-summary', 'line-platform-error', 'line-pending-list', 'line-account-list', 'line-binding-history', 'line-recipient-code', 'line-oa-diagnostics', 'line-webhook-detail', 'line-binding-detail', 'line-oa-token-hint', 'line-oa-secret-hint', 'line-binding-policy', 'line-recipient-owner-field', 'line-recipient-enabled-field', 'line-recipient-mutes', 'line-recipient-status']) dialog.append(make(id));
   for (const id of ['line-binding-block', 'line-binding-unblock', 'line-binding-revoke-all', 'line-recipient-delete', 'line-binding-refresh', 'line-recipient-refresh']) dialog.append(make(id, 'button'));
   dialog.append(make('line-block-reason', 'textarea'));
-  for (const id of ['line-oa-create', 'line-recipient-create']) make(id, 'button');
+  for (const id of ['line-oa-configure', 'line-recipient-create']) make(id, 'button');
   make('line-binding-search', 'input'); make('line-binding-filter', 'select');
   const formSpec = {
-    'line-oa-form': ['name', 'slug', 'basic_id', 'channel_id', 'description', 'add_friend_url', 'channel_access_token', 'channel_secret', 'channel_access_token_clear', 'channel_secret_clear', 'enabled'],
-    'line-binding-code-form': ['oa_id', 'ttl_days', 'replace_pending'],
-    'line-recipient-form': ['oa_id', 'label', 'is_owner', 'enabled'],
+    'line-oa-form': ['channel_access_token', 'channel_secret', 'channel_access_token_clear', 'channel_secret_clear', 'enabled'],
+    'line-binding-code-form': ['ttl_days', 'replace_pending'],
+    'line-recipient-form': ['label', 'is_owner', 'enabled'],
   };
   for (const [id, names] of Object.entries(formSpec)) {
     const form = make(id, 'form'), fields = new Map(); form.elements = { namedItem: (key) => fields.get(key) };
@@ -119,12 +119,12 @@ test('cancel replacement preserves the existing usable code and sends no mutatio
   assert.equal(ui.dialog.dataset.dialogBusy, undefined);
 });
 
-test('adding a code sends chosen OA including legacy zero, bounded TTL, and replace=false', async () => {
+test('adding a code lets the server choose the primary bot and preserves TTL and replacement choice', async () => {
   const ui = harness(); await ui.openBinding(detail(1, { pending_codes: [pending()] }));
   ui.field('line-binding-code-form', 'replace_pending').value = 'false'; ui.field('line-binding-code-form', 'ttl_days').value = '30';
   const work = ui.form('line-binding-code-form').dispatch('submit');
   assert.equal(ui.requests.at(-1).url, '/api/admin/line/residents/1/codes');
-  assert.deepEqual(JSON.parse(JSON.stringify(ui.requests.at(-1).options.body)), { oa_id: 0, ttl_days: 30, replace_pending: false });
+  assert.deepEqual(JSON.parse(JSON.stringify(ui.requests.at(-1).options.body)), { ttl_days: 30, replace_pending: false });
   assert.equal(ui.dialog.dataset.dialogBusy, 'true');
   ui.requests.at(-1).resolve({ detail: detail(1, { pending_codes: [pending(), pending(codeB)] }) }); await work;
   assert.equal(ui.$('#line-pending-list').children.length, 2); assert.equal(ui.effects.confirmations.length, 0);
@@ -194,13 +194,17 @@ test('recipient status refresh preserves draft label and category mutes while re
 });
 
 test('OA save blocks switching modal and clears secret fields before a post-save list read', async () => {
-  const ui = harness(); await ui.controller.openOa(); ui.field('line-oa-form', 'name').value = 'ใหม่'; ui.field('line-oa-form', 'slug').value = 'new'; ui.field('line-oa-form', 'channel_access_token').value = 'fake-test-token';
+  const ui = harness(); const opening = ui.controller.openOa();
+  assert.equal(ui.requests[0].url, '/api/admin/line/oas/0');
+  ui.requests[0].resolve({ id: 0, enabled: true }); await opening; ui.field('line-oa-form', 'channel_access_token').value = 'fake-test-token';
   const work = ui.form('line-oa-form').dispatch('submit'); assert.equal(ui.dialog.dataset.dialogBusy, 'true');
-  await ui.controller.openBinding(2); assert.equal(ui.requests.length, 1);
-  ui.requests[0].resolve({ id: 2 }); await work;
+  await ui.controller.openBinding(2); assert.equal(ui.requests.length, 2);
+  assert.equal(ui.requests[1].url, '/api/admin/line/oas/0');
+  assert.equal(ui.requests[1].options.method, 'PUT');
+  ui.requests[1].resolve({ id: 0 }); await work;
   assert.equal(ui.dialog.open, true); assert.equal(ui.field('line-oa-form', 'channel_access_token').value, ''); assert.equal(ui.dialog.dataset.dialogBusy, undefined);
-  assert.ok(ui.requests.some((item) => item.url === '/api/admin/line/oas/2/webhook-status'));
-  assert.equal(ui.requests.filter((item) => item.url === '/api/admin/line/oas').length, 2);
+  assert.ok(ui.requests.some((item) => item.url === '/api/admin/line/oas/0/webhook-status'));
+  assert.equal(ui.requests.filter((item) => item.url === '/api/admin/line/oas').length, 1);
 });
 
 test('polling reads only visible open detail dialogs and close clears timers', async () => {
@@ -214,7 +218,7 @@ test('first connection reuses unconfigured legacy OA and submits only necessary 
   const load = ui.controller.loadOas();
   ui.requests[0].resolve({ rows: [{ id: 0, enabled: true, credentials_ready: false }], default_oa_id: 0 });
   ui.requests[1].resolve({ rows: [] }); await load;
-  const open = ui.$('#line-oa-create').dispatch('click');
+  const open = ui.$('#line-oa-configure').dispatch('click');
   assert.equal(ui.requests.at(-1).url, '/api/admin/line/oas/0');
   ui.requests.at(-1).resolve({ id: 0, enabled: true, name: 'LINE เดิมของหอพัก', slug: 'legacy' });
   await open; await settle();
@@ -224,7 +228,7 @@ test('first connection reuses unconfigured legacy OA and submits only necessary 
   const request = ui.requests.at(-1);
   assert.equal(request.url, '/api/admin/line/oas/0');
   assert.equal(request.options.method, 'PUT');
-  assert.equal(request.options.body.basic_id, '');
+  assert.deepEqual(Object.keys(request.options.body).sort(), ['channel_access_token','channel_access_token_clear','channel_secret','channel_secret_clear','enabled'].sort());
   request.resolve({ id: 0 }); await save;
   assert.equal(ui.field('line-oa-form', 'channel_secret').value, '');
   const statusRead = ui.requests.find((item) => item.url.endsWith('/webhook-status'));
@@ -235,4 +239,41 @@ test('first connection reuses unconfigured legacy OA and submits only necessary 
   ui.requests.at(-1).resolve({ id: 0, name: 'Test OA', credentials_ready: true, identity_verified: true, webhook_verified: true, operational_ready: true });
   await refresh;
   assert.ok(ui.effects.toasts.includes('Verify Webhook สำเร็จแล้ว'));
+});
+
+// ตรวจปุ่มจาก HTML จริง ไม่ให้ DOM จำลองสร้างปุ่มที่หน้าเว็บไม่มีขึ้นมาเอง
+const adminTemplate = fs.readFileSync(path.join(__dirname, '../templates/admin/console.php'), 'utf8');
+test('every directly wired LINE button/input exists in the real admin template', () => {
+  const ids = new Set([...adminTemplate.matchAll(/\bid="([A-Za-z0-9_-]+)"/g)].map((match) => match[1]));
+  const wiredIds = [...source.matchAll(/\$\('#([A-Za-z0-9_-]+)'\)\.addEventListener/g)].map((match) => match[1]);
+  assert.ok(wiredIds.length > 0);
+  for (const id of wiredIds) assert.ok(ids.has(id), `Missing real admin element: #${id}`);
+});
+test('single-bot settings reject creating or switching to another OA', async () => {
+  const ui = harness();
+  for (const id of [null, 1, 2, -1]) await ui.controller.openOa(id);
+  assert.equal(ui.requests.length, 0);
+  assert.equal(ui.effects.toasts.length, 4);
+});
+test('binding picker keeps only the primary bot even when old OA data is returned', async () => {
+  const ui = harness(); await ui.openBinding();
+  assert.equal(ui.field('line-binding-code-form', 'oa_id'), undefined);
+  assert.match(ui.$('#line-binding-bot').textContent, /เดิม/);
+  assert.ok(!ui.$('#line-binding-bot').textContent.includes('OA ใหม่'));
+});
+test('new connection requires both secrets but configured blank fields preserve existing values', async () => {
+  const ui=harness();let opening=ui.controller.openOa();ui.requests.at(-1).resolve({id:0,enabled:true});await opening;
+  assert.equal(ui.field('line-oa-form','channel_access_token').required,true);assert.equal(ui.field('line-oa-form','channel_secret').required,true);
+  opening=ui.controller.openOa();ui.requests.at(-1).resolve({id:0,enabled:true,channel_access_token_configured:true,channel_secret_configured:true});await opening;
+  assert.equal(ui.field('line-oa-form','channel_access_token').required,false);assert.equal(ui.field('line-oa-form','channel_secret').required,false);
+});
+test('explicit credential clear pauses the bot and cancellation submits nothing', async () => {
+  const ui=harness(),opening=ui.controller.openOa();ui.requests.at(-1).resolve({id:0,enabled:true,channel_access_token_configured:true,channel_secret_configured:true});await opening;
+  ui.field('line-oa-form','channel_secret_clear').checked=true;ui.setConfirm(false);await ui.form('line-oa-form').dispatch('submit');assert.equal(ui.requests.length,1);
+  ui.setConfirm(true);const saving=ui.form('line-oa-form').dispatch('submit');await settle();const request=ui.requests.at(-1);
+  assert.equal(request.options.body.enabled,false);assert.equal(request.options.body.channel_secret_clear,true);request.resolve({id:0});await saving;
+});
+test('a queued binding submit cannot act on a different dialog mode', async () => {
+  const ui=harness();await ui.openBinding();const opening=ui.controller.openOa();ui.requests.at(-1).resolve({id:0,enabled:true});await opening;
+  const count=ui.requests.length;await ui.form('line-binding-code-form').dispatch('submit');assert.equal(ui.requests.length,count);
 });
