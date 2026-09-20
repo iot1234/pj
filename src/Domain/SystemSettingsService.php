@@ -337,6 +337,26 @@ final class SystemSettingsService
         return $value === null ? $default : (string) $value;
     }
 
+    /** Internal verification snapshot. Never serialize the key or this array to a response/log. */
+    public function slipVerificationSettings(bool $lock = false): array
+    {
+        $row = $this->row($lock) ?? $this->defaults();
+        $provider = (string)($row['slip_provider'] ?? 'none');
+        $key = '';
+        $secretName = match($provider) { 'slipok'=>'SLIPOK_API_KEY', 'easyslip'=>'EASYSLIP_API_KEY', default=>null };
+        if ($secretName !== null) {
+            $metadata = self::SECRET_COLUMNS[$secretName];
+            $encrypted = $row[$metadata['column']] ?? null;
+            if (is_string($encrypted) && $encrypted !== '') $key = $this->cipher->decrypt($encrypted,$metadata['aad']);
+        }
+        $snapshot = ['provider'=>$provider, 'key'=>$key,
+            'branch_id'=>$provider==='slipok'?(string)($row['slipok_branch_id']??''):'',
+            'receiver_tail'=>(string)($row['payment_receiver_account_tail']??''),
+            'tolerance_seconds'=>$this->databaseInteger($row,'slip_time_tolerance_seconds')];
+        $snapshot['fingerprint'] = hash_hmac('sha256',json_encode($snapshot,JSON_THROW_ON_ERROR),$this->app->config->appKey());
+        return $snapshot;
+    }
+
     public function intValue(string $key, int $default): int
     {
         $normalized = strtoupper(trim($key));
@@ -560,9 +580,9 @@ final class SystemSettingsService
     }
 
     /** @return array<string,mixed>|null */
-    private function row(): ?array
+    private function row(bool $lock = false): ?array
     {
-        $row = $this->app->database()->pdo()->query('SELECT * FROM integration_settings WHERE id=1')->fetch();
+        $row = $this->app->database()->pdo()->query('SELECT * FROM integration_settings WHERE id=1'.($lock?' FOR UPDATE':''))->fetch();
         return $row ?: null;
     }
 

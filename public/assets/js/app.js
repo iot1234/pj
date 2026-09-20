@@ -206,10 +206,19 @@
     const externalSignal = options.signal;
     let timedOut = false;
     const timeoutMs = Math.max(1000, Number(options.timeoutMs) || (mutation ? 35000 : 20000));
-    const abortFromExternal = () => controller.abort(externalSignal?.reason);
+    let rejectDeadline;
+    const deadline = new Promise((_, reject) => { rejectDeadline = reject; });
+    const abortFromExternal = () => {
+      controller.abort(externalSignal?.reason);
+      rejectDeadline(new DOMException('Request cancelled', 'AbortError'));
+    };
     if (externalSignal?.aborted) abortFromExternal();
     else externalSignal?.addEventListener('abort', abortFromExternal, { once: true });
-    const timeout = window.setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+    const timeout = window.setTimeout(() => {
+      timedOut = true;
+      rejectDeadline(new ApiError('เซิร์ฟเวอร์ตอบช้าเกินกำหนด', 0, { code: mutation ? 'MUTATION_OUTCOME_UNKNOWN' : 'REQUEST_TIMEOUT' }));
+      controller.abort();
+    }, timeoutMs);
     if (mutation) activeMutations.add(mutationKey);
     let cleaned = false;
     const cleanupRequest = () => {
@@ -222,13 +231,13 @@
 
     let response;
     try {
-      response = await fetch(url, {
+      response = await Promise.race([fetch(url, {
         method,
         headers,
         body: requestBody,
         credentials: 'same-origin',
         signal: controller.signal,
-      });
+      }), deadline]);
     } catch (error) {
       cleanupRequest();
       if (externalSignal?.aborted && !timedOut) throw error;
@@ -251,7 +260,7 @@
     }
     let raw;
     try {
-      raw = await response.text();
+      raw = await Promise.race([response.text(), deadline]);
     } catch (error) {
       if (externalSignal?.aborted && !timedOut) throw error;
       if (mutation) throw new ApiError('การตอบกลับขาดระหว่างบันทึกและไม่ทราบผล กรุณารีเฟรชเพื่อตรวจสอบก่อนทำซ้ำ', response.status, { code: 'MUTATION_OUTCOME_UNKNOWN' });
@@ -3192,6 +3201,7 @@
       try {
         const result = await api('/api/admin/settings/integrations/test', { method: 'POST', body: { integration } });
         if (form.dataset.revision !== revision || form.dataset.dirty === 'true') return;
+        if (result?.ready !== true) throw new ApiError('ผู้ให้บริการยังไม่ยืนยันว่าพร้อมใช้งาน กรุณาตรวจสถานะอีกครั้ง', 0, { code: 'INTEGRATION_NOT_READY' });
         let detail = result.target_hint || '';
         if (integration === 'promptpay') {
           if (result.ready !== true || !await renderPromptPayTestQr(result, form, revision)) return;
@@ -3204,7 +3214,7 @@
             : (Number.isFinite(Number(quota)) ? `โควตาคงเหลือ ${Number(quota)}` : '');
           detail = `${result.provider}${quotaDetail ? ` · ${quotaDetail}` : ''}`;
         }
-        if (resultNode) { resultNode.className = 'integration-test-result is-success'; resultNode.textContent = `ทดสอบค่าที่บันทึกแล้ว: ผ่าน${detail ? ` · ${text(detail)}` : ''}`; }
+        if (resultNode) { resultNode.className = 'integration-test-result is-success'; resultNode.textContent = `${integration === 'slip' ? 'ตรวจคีย์และโควตาผ่าน ยังไม่ยืนยันสลิปหรือการรับเงิน' : integration === 'promptpay' ? 'สร้าง QR ตามค่าที่บันทึกแล้ว ยังไม่ยืนยันบัญชีหรือการรับเงิน' : 'ตรวจข้อมูลบัญชีแล้ว'}${detail ? ` · ${text(detail)}` : ''}`; }
         toast(`ทดสอบ ${integration === 'promptpay' ? 'PromptPay' : integration === 'line' ? 'LINE Bot' : 'ระบบตรวจสลิป'} สำเร็จ${detail ? ` · ${detail}` : ''}`);
       } catch (error) {
         if (form.dataset.revision !== revision || form.dataset.dirty === 'true') return;

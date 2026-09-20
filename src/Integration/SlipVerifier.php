@@ -9,15 +9,30 @@ use Dormitory\Support\Validator;
 
 final class SlipVerifier
 {
-    public function __construct(private readonly Application $app) {}
+    public function __construct(private readonly Application $app, private readonly ?\Closure $transport = null) {
+        if($transport!==null&&(PHP_SAPI!=='cli'||$app->config->get('APP_ENV')!=='testing'))throw new \InvalidArgumentException('Slip transport injection is restricted to CLI tests');
+    }
 
     /** @return array{decision:string,provider:?string,transaction_ref:?string,receiver_ref:?string,payload:array<string,mixed>,reason:?string} */
     public function verify(string $path,string $mime,string $expectedAmount,string $billCreatedAt): array
     {
-        $provider=strtolower(trim((string)$this->app->settings()->value('slip_provider','none')));
+        try {
+            $settings=$this->app->settings()->slipVerificationSettings();
+            $result=$this->verifyWithSettings($path,$mime,$expectedAmount,$billCreatedAt,$settings);
+            $latest=$this->app->settings()->slipVerificationSettings();
+            if(!hash_equals($settings['fingerprint'],$latest['fingerprint'])){
+                return $this->pending($settings['provider'],'การตั้งค่าตรวจสลิปเปลี่ยนระหว่างรอผล เก็บสลิปไว้ตรวจใหม่ ไม่ต้องโอนซ้ำ',['configuration_changed'=>true]);
+            }
+            return $result+['settings_fingerprint'=>$settings['fingerprint']];
+        } catch(\Throwable) { return $this->pending(null,'อ่านการตั้งค่าตรวจสลิปไม่สำเร็จ กรุณาให้ผู้ดูแลตรวจสอบ โดยไม่ต้องโอนซ้ำ',[]); }
+    }
+
+    private function verifyWithSettings(string $path,string $mime,string $expectedAmount,string $billCreatedAt,array $settings): array
+    {
+        $provider=$settings['provider'];
         if(!in_array($provider,['slipok','easyslip','none'],true))return $this->pending(null,'Unsupported SLIP_PROVIDER',[]);
         if($provider==='none')return $this->pending(null,'Slip verification provider is not configured',[]);
-        try{$raw=$provider==='slipok'?$this->slipOk($path,$mime,$expectedAmount):$this->easySlip($path,$mime,$expectedAmount);}
+        try{$raw=$provider==='slipok'?$this->slipOk($path,$mime,$expectedAmount,$settings):$this->easySlip($path,$mime,$expectedAmount,$settings);}
         catch(\Throwable){return $this->pending($provider,'ผู้ให้บริการตรวจสลิปยังไม่พร้อม กรุณารอตรวจซ้ำ',[]);}
         if(!($raw['ok']??false)){
             // A duplicate response is ambiguous after a provider accepted a
@@ -35,7 +50,7 @@ final class SlipVerifier
         }
         $transaction=trim((string)($raw['transaction_ref']??''));$receiver=trim((string)($raw['receiver_ref']??''));
         $matchedAccountReference=trim((string)($raw['matched_account_ref']??''));
-        $time=self::evaluateTransactionTime($raw['transferred_at']??null,$billCreatedAt,$this->app->settings()->intValue('slip_time_tolerance_seconds',300));
+        $time=self::evaluateTransactionTime($raw['transferred_at']??null,$billCreatedAt,$settings['tolerance_seconds']);
         $raw['transferred_at']=$time['transferred_at'];
         $audit=$this->auditPayload($raw);
         if($transaction===''||strlen($transaction)>191||preg_match('/[\x00-\x1F\x7F]/',$transaction))return $this->pending($provider,'Provider response has no valid transaction reference',$audit);
@@ -48,9 +63,9 @@ final class SlipVerifier
         if($time['decision']==='rejected')return ['decision'=>'rejected','provider'=>$provider,'transaction_ref'=>$transaction,'receiver_ref'=>$receiver?:null,'payload'=>$audit,'reason'=>(string)$time['reason']];
         try{$expected=Validator::scaledDecimal($expectedAmount,'expected_amount',2,12);$actual=Validator::scaledDecimal($raw['amount']??'','provider_amount',2,12);}catch(\Throwable){return $this->pending($provider,'Provider response has an invalid amount',$audit);}
         if($actual!==$expected)return ['decision'=>'rejected','provider'=>$provider,'transaction_ref'=>$transaction,'receiver_ref'=>$receiver?:null,'payload'=>$audit,'reason'=>'Slip amount does not match the bill'];
-        $tail=trim((string)$this->app->settings()->value('payment_receiver_account_tail',''));
+        $tail=$settings['receiver_tail'];
         if($tail==='')return $this->pending($provider,'Payment receiver is not configured',$audit);
-        $configuredBranch=$provider==='slipok'?trim((string)$this->app->settings()->value('slipok_branch_id','')):null;
+        $configuredBranch=$provider==='slipok'?$settings['branch_id']:null;
         $providerMatched=($raw['account_matched']??false)===true;
         $receiverTrusted=PromptPayService::providerReceiverMatches(
             $provider,
@@ -74,11 +89,11 @@ final class SlipVerifier
     }
 
     /** @return array<string,mixed> */
-    private function slipOk(string $path,string $mime,string $amount): array
+    private function slipOk(string $path,string $mime,string $amount,array $settings): array
     {
-        $key=trim((string)$this->app->settings()->value('slipok_api_key',''));
+        $key=$settings['key'];
         if($key==='')throw new \RuntimeException('SlipOK API key is not configured');
-        $branch=trim((string)$this->app->settings()->value('slipok_branch_id',''));
+        $branch=$settings['branch_id'];
         if($branch===''||!preg_match('/^[A-Za-z0-9_-]{1,80}$/',$branch))throw new \RuntimeException('SlipOK branch ID is missing or invalid');
         if(!class_exists(\CURLFile::class))throw new \RuntimeException('PHP cURL extension is required');
         $json=$this->request(
@@ -86,6 +101,11 @@ final class SlipVerifier
             ['x-authorization: '.$key],
             ['files'=>new \CURLFile($path,$mime,self::uploadFilenameForMime($mime)),'log'=>'true','amount'=>$amount],
         );
+        return $this->parseSlipOk($json,$branch);
+    }
+
+    private function parseSlipOk(array $json,string $branch): array
+    {
         $d=is_array($json['data']??null)?$json['data']:[];
         $status=(int)($json['_status']??0);
         $providerCode=is_scalar($json['code']??null)?strtoupper(trim((string)$json['code'])):'';
@@ -111,16 +131,16 @@ final class SlipVerifier
                 'currency'=>$this->scalarString($d['paidLocalCurrency']??null),
             ];
         }
-        $success=$status===200&&($json['success']??false)===true&&($d['success']??false)===true&&$d!==[];
+        $success=$status===200&&($json['success']??false)===true&&($d['success']??false)===true&&$d!==[]&&$providerCode==='';
         if(!$success){
             $contractIncomplete=$status===200&&($json['success']??false)===true&&(!$success||$d===[]);
             return [
                 'ok'=>false,
                 'transient'=>$contractIncomplete||self::isTransientProviderError('slipok',$json['code']??null,$status),
-                'reason'=>$contractIncomplete?'SlipOK returned an incomplete receiver-verification contract':$this->providerReason($json,'SlipOK rejected the slip'),
+                'reason'=>$contractIncomplete?'SlipOK returned an incomplete receiver-verification contract':$this->providerReason($json,self::isTransientProviderError('slipok',$json['code']??null,$status)?'บริการตรวจสลิปยังยืนยันผลไม่ได้ เก็บสลิปไว้ตรวจต่อ ไม่ต้องโอนซ้ำ':'ตรวจสลิปไม่ผ่าน กรุณาตรวจหลักฐานและติดต่อผู้ดูแล'),
                 'provider_code'=>$json['code']??null,
                 'http_status'=>$status,
-                'ambiguous_duplicate'=>$providerCode==='1012'||str_contains(strtoupper((string)($json['message']??'')),'DUPLICATE'),
+                'ambiguous_duplicate'=>$providerCode==='1012'||(is_string($json['message']??null)&&str_contains(strtoupper($json['message']),'DUPLICATE')),
             ];
         }
         return [
@@ -145,9 +165,9 @@ final class SlipVerifier
     }
 
     /** @return array<string,mixed> */
-    private function easySlip(string $path,string $mime,string $amount): array
+    private function easySlip(string $path,string $mime,string $amount,array $settings): array
     {
-        $key=trim((string)$this->app->settings()->value('easyslip_api_key',''));
+        $key=$settings['key'];
         if($key==='')throw new \RuntimeException('EasySlip API key is not configured');
         if(!class_exists(\CURLFile::class))throw new \RuntimeException('PHP cURL extension is required');
         $json=$this->request(
@@ -155,6 +175,11 @@ final class SlipVerifier
             ['Authorization: Bearer '.$key],
             ['image'=>new \CURLFile($path,$mime,self::uploadFilenameForMime($mime)),'checkDuplicate'=>'true','matchAmount'=>$amount,'matchAccount'=>'true'],
         );
+        return $this->parseEasySlip($json);
+    }
+
+    private function parseEasySlip(array $json): array
+    {
         $d=is_array($json['data']??null)?$json['data']:[];
         $raw=is_array($d['rawSlip']??null)?$d['rawSlip']:[];
         $status=(int)($json['_status']??0);
@@ -164,12 +189,13 @@ final class SlipVerifier
             return [
                 'ok'=>false,
                 'transient'=>!$duplicate&&self::isTransientProviderError('easyslip',$providerCode,$status),
-                'reason'=>$duplicate?'EasySlip reports a duplicate slip; manual reconciliation is required':$this->providerReason($json,'EasySlip rejected the slip'),
+                'reason'=>$duplicate?'EasySlip reports a duplicate slip; manual reconciliation is required':$this->providerReason($json,self::isTransientProviderError('easyslip',$providerCode,$status)?'บริการตรวจสลิปยังยืนยันผลไม่ได้ เก็บสลิปไว้ตรวจต่อ ไม่ต้องโอนซ้ำ':'ตรวจสลิปไม่ผ่าน กรุณาตรวจหลักฐานและติดต่อผู้ดูแล'),
                 'provider_code'=>$providerCode,
                 'http_status'=>$status,
                 'ambiguous_duplicate'=>$duplicate,
             ];
         }
+        if(!is_bool($d['isDuplicate']??null))return $this->incompleteContract($status);
         $wasDuplicate=($d['isDuplicate']??false)===true;
         $matchedAccount=is_array($d['matchedAccount']??null)?$d['matchedAccount']:null;
         $matchedAccountReference=$matchedAccount['bankNumber']??null;
@@ -197,6 +223,15 @@ final class SlipVerifier
                 'currency'=>$this->scalarString(is_array($raw['amount']??null)?($raw['amount']['local']['currency']??null):null),
             ];
         }
+        // Requested safety fields must be present with their documented types.
+        if(!is_string($raw['transRef']??null)||!is_bool($d['isAmountMatched']??null)
+            ||!array_key_exists('matchedAccount',$d)||($d['matchedAccount']!==null&&(!is_array($d['matchedAccount'])||!is_string($matchedAccountReference)))
+            ||$this->scalarString($d['amountInSlip']??null)===null||$this->scalarString($rawAmount)===null)return $this->incompleteContract($status);
+        try {
+            $reported=Validator::scaledDecimal($d['amountInSlip'],'amount_in_slip',2,12);
+            $rawReported=Validator::scaledDecimal($rawAmount,'raw_amount',2,12);
+        } catch(\Throwable) { return $this->incompleteContract($status); }
+        if($reported!==$rawReported||$d['isAmountMatched']!==true)return $this->incompleteContract($status);
         return [
             'ok'=>true,
             'transaction_ref'=>$this->scalarString($raw['transRef']??$d['transRef']??null),
@@ -283,25 +318,18 @@ final class SlipVerifier
 
     public static function isTransientProviderError(string $provider,mixed $code,int $status): bool
     {
-        $normalized=strtoupper(trim(is_scalar($code)?(string)$code:''));
-        if($provider==='slipok'){
-            // 1014 means the receiver account does not match the configured
-            // SlipOK branch. Keep it recoverable so an owner can correct the
-            // branch/receiver setting and retry the same immutable evidence.
-            if(in_array($normalized,['1000','1001','1002','1003','1004','1009','1010','1014'],true))return true;
-            if(preg_match('/^10(?:0[5-9]|1[1-4])$/',$normalized))return false;
+        $normalized=is_string($code)||is_int($code)?strtoupper(trim((string)$code)):'';
+        // Authentication, transport failures and service outages say nothing about a slip.
+        if($status===0||$status>=500||in_array($status,[401,403,408,425,429],true))return true;
+        if($provider==='slipok'&&in_array($status,[200,400,422],true)){
+            return !in_array($normalized,['1005','1006','1007','1008','1011','1012','1013'],true);
         }
         if($provider==='easyslip'){
-            if(in_array($normalized,['SLIP_PENDING','API_SERVER_ERROR','INTERNAL_SERVER_ERROR','NOT_FOUND'],true))return true;
-            // VALIDATION_ERROR describes an invalid provider request, not
-            // proof that the resident's bank evidence is invalid. Preserve
-            // the payment for retry after correcting a contract/config issue.
-            if($normalized==='VALIDATION_ERROR')return true;
-            if(in_array($normalized,['SLIP_NOT_FOUND','INVALID_IMAGE_TYPE','INVALID_IMAGE_FORMAT','IMAGE_SIZE_TOO_LARGE','DUPLICATE_SLIP'],true))return false;
-            if(in_array($status,[401,403],true))return true;
-            if($status===404)return $normalized==='SLIP_PENDING';
+            if($status===404&&$normalized==='SLIP_NOT_FOUND')return false;
+            if(in_array($status,[400,422],true)&&in_array($normalized,['INVALID_IMAGE_TYPE','INVALID_IMAGE_FORMAT','IMAGE_SIZE_TOO_LARGE','DUPLICATE_SLIP'],true))return false;
         }
-        return $status===0||$status>=500||in_array($status,[408,425,429],true);
+        // Unknown/malformed contracts are recoverable; never ask the resident to pay again.
+        return true;
     }
 
     /** @param array<string,mixed> $payload */
@@ -313,9 +341,14 @@ final class SlipVerifier
         return $fallback;
     }
 
+    private function incompleteContract(int $status): array
+    {
+        return ['ok'=>false,'transient'=>true,'http_status'=>$status,'provider_code'=>'INVALID_CONTRACT','reason'=>'ผู้ให้บริการส่งข้อมูลยืนยันไม่ครบหรือขัดแย้งกัน เก็บสลิปไว้ตรวจสอบต่อ ไม่ต้องโอนซ้ำ'];
+    }
+
     private function scalarString(mixed $value): ?string
     {
-        return is_scalar($value)?(string)$value:null;
+        return is_string($value)||is_int($value)||(is_float($value)&&is_finite($value))?(string)$value:null;
     }
 
     private static function uploadFilenameForMime(string $mime): string
@@ -331,6 +364,8 @@ final class SlipVerifier
     /** @param list<string> $headers @param array<string,mixed>|string $body @return array<string,mixed> */
     private function request(string $url,array $headers,array|string $body): array
     {
+        if(!preg_match('~^https://(?:api\.slipok\.com/api/line/apikey/[A-Za-z0-9_-]{1,80}|api\.easyslip\.com/v2/verify/bank)$~D',$url))throw new \InvalidArgumentException('Unsupported slip endpoint');
+        if($this->transport!==null)return ($this->transport)($url,$headers,$body);
         if(!function_exists('curl_init'))throw new \RuntimeException('PHP cURL extension is required');
         $ch=curl_init($url);if($ch===false)throw new \RuntimeException('Cannot initialize cURL');
         $response='';$tooLarge=false;
@@ -338,7 +373,7 @@ final class SlipVerifier
         $executed=curl_exec($ch);$status=(int)curl_getinfo($ch,CURLINFO_RESPONSE_CODE);$errorCode=(int)curl_errno($ch);curl_close($ch);
         if($tooLarge)throw new \RuntimeException('Provider response exceeded limit');if($executed===false)throw new \RuntimeException('Provider HTTPS request failed (curl '.$errorCode.')');
         try{$decoded=json_decode($response,true,32,JSON_THROW_ON_ERROR);}catch(\Throwable){throw new \RuntimeException('Provider returned malformed JSON');}
-        if(!is_array($decoded))throw new \RuntimeException('Provider returned an invalid response');$decoded['_status']=$status;return $decoded;
+        if(!is_array($decoded)||array_is_list($decoded))throw new \RuntimeException('Provider returned an invalid response');$decoded['_status']=$status;return $decoded;
     }
 
     /** @param array<string,mixed> $payload @return array<string,mixed> */
@@ -354,7 +389,11 @@ final class SlipVerifier
         $source=is_string($payload['receiver_match_source']??null)&&in_array($payload['receiver_match_source'],['slipok_branch_log','easyslip_registered_account'],true)?$payload['receiver_match_source']:null;
         $country=is_scalar($payload['country_code']??null)?strtoupper(substr(trim((string)$payload['country_code']),0,3)):null;
         $currency=is_scalar($payload['currency']??null)?strtoupper(substr(trim((string)$payload['currency']),0,4)):null;
-        return ['ok'=>(bool)($payload['ok']??false),'http_status'=>$payload['http_status']??null,'provider_code'=>$payload['provider_code']??null,'amount'=>$amount,'receiver_tail'=>$receiver!==''?substr($receiver,-6):null,'matched_receiver_tail'=>$matched!==''?substr($matched,-6):null,'account_matched'=>$payload['account_matched']??null,'receiver_match_source'=>$source,'provider_branch'=>$branch,'country_code'=>$country,'currency'=>$currency,'transferred_at'=>$transferredAt];
+        $rawCode=$payload['provider_code']??null;
+        $code=is_int($rawCode)||is_string($rawCode)?strtoupper(trim((string)$rawCode)):null;
+        $allowed=['1000','1001','1002','1003','1004','1005','1006','1007','1008','1009','1010','1011','1012','1013','1014','INVALID_CONTRACT','DUPLICATE','DUPLICATE_SLIP','SLIP_NOT_FOUND','SLIP_PENDING','INVALID_IMAGE_TYPE','INVALID_IMAGE_FORMAT','IMAGE_SIZE_TOO_LARGE','API_SERVER_ERROR','INTERNAL_SERVER_ERROR','NOT_FOUND','VALIDATION_ERROR','MISSING_API_KEY','INVALID_API_KEY','BRANCH_INACTIVE','SERVICE_BANNED','USER_BANNED','IP_NOT_ALLOWED','QUOTA_EXCEEDED'];
+        if(!in_array($code,$allowed,true))$code=null;
+        return ['ok'=>(bool)($payload['ok']??false),'http_status'=>$payload['http_status']??null,'provider_code'=>$code,'amount'=>$amount,'receiver_tail'=>$receiver!==''?substr($receiver,-6):null,'matched_receiver_tail'=>$matched!==''?substr($matched,-6):null,'account_matched'=>$payload['account_matched']??null,'receiver_match_source'=>$source,'provider_branch'=>$branch,'country_code'=>$country,'currency'=>$currency,'transferred_at'=>$transferredAt];
     }
 
     /** @param array<string,mixed> $payload @return array{decision:string,provider:?string,transaction_ref:?string,receiver_ref:?string,payload:array<string,mixed>,reason:string} */

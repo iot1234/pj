@@ -83,7 +83,7 @@ final class NotificationService
 
             $payload=$this->billPayload($bill);
             $encoded=json_encode($payload,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR);
-            $existingStatement=$pdo->prepare("SELECT id,status,attempts FROM notification_outbox WHERE bill_id=? AND purpose='bill_delivery' AND line_delivery_key=? LIMIT 1 FOR UPDATE");
+            $existingStatement=$pdo->prepare("SELECT id,status,attempts,recipient,(created_at<=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 24 HOUR)) AS retry_expired FROM notification_outbox WHERE bill_id=? AND purpose='bill_delivery' AND line_delivery_key=? LIMIT 1 FOR UPDATE");
             $existingStatement->execute([$billId,(int)$target['id']]);
             $existing=$existingStatement->fetch();
             $enqueueState='newly_queued';
@@ -98,14 +98,17 @@ final class NotificationService
                 $outboxId=(int)$existing['id'];
                 $enqueueState='already_'.$existing['status'];
                 if($existing['status']==='failed'){
-                    $update=$pdo->prepare("UPDATE notification_outbox
-                        SET resident_id=?,recipient=?,payload=?,status='pending',attempts=0,last_error=NULL,
-                            next_attempt_at=UTC_TIMESTAMP(),retry_key=?,sent_at=NULL,
-                            line_request_id=NULL,line_accepted_request_id=NULL,
-                            claim_token=NULL,lease_until=NULL,
-                            created_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP()
+                    if((int)$existing['retry_expired']===1){
+                        throw new HttpException(409,'พ้นช่วงลองส่งซ้ำที่ LINE ป้องกันข้อความซ้ำได้ กรุณาตรวจประวัติการส่งก่อน ไม่สร้างคำขอใหม่อัตโนมัติ','LINE_RETRY_WINDOW_EXPIRED');
+                    }
+                    if(!is_string($existing['recipient'])||!hash_equals($existing['recipient'],(string)$bill['line_user_id'])){
+                        throw new HttpException(409,'ผู้รับเปลี่ยนจากคำขอเดิม กรุณาตรวจการผูก LINE ก่อนส่ง','LINE_DELIVERY_IDENTITY_CHANGED');
+                    }
+                    // Retry the original generation: never rotate its key, recipient, body or creation time.
+                    $update=$pdo->prepare("UPDATE notification_outbox SET status='pending',last_error=NULL,
+                        next_attempt_at=UTC_TIMESTAMP(),claim_token=NULL,lease_until=NULL,updated_at=UTC_TIMESTAMP()
                         WHERE id=? AND status='failed'");
-                    $update->execute([$bill['resident_id'],$bill['line_user_id'],$encoded,$this->randomUuid(),$outboxId]);
+                    $update->execute([$outboxId]);
                     $enqueueState='requeued';
                 }elseif($existing['status']==='pending'&&(int)$existing['attempts']===0){
                     $update=$pdo->prepare("UPDATE notification_outbox

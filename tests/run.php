@@ -1495,7 +1495,12 @@ $test('LINE outbox retries preserve identity, payload bytes, and retry UUID',fun
     $source=file_get_contents(dirname(__DIR__).'/src/Domain/NotificationService.php');
     if(!is_string($source))throw new RuntimeException('cannot read NotificationService');
     $same(true,str_contains($source,"\$existing['status']==='pending'&&(int)\$existing['attempts']===0"));
-    $same(true,str_contains($source,"line_request_id=NULL,line_accepted_request_id=NULL"));
+    $same(false,str_contains($source,"line_request_id=NULL,line_accepted_request_id=NULL"));
+    $failedStart=strpos($source,"if(\$existing['status']==='failed'){");
+    $failedEnd=strpos($source,"}elseif(\$existing['status']==='pending'",$failedStart);
+    $failedSource=substr($source,$failedStart,$failedEnd-$failedStart);
+    foreach(['retry_key=?','created_at=','payload=?','attempts=0']as$reset)$same(false,str_contains($failedSource,$reset));
+    $same(true,str_contains($failedSource,'LINE_RETRY_WINDOW_EXPIRED'));
     $same(true,str_contains($source,'created_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP()'));
     $same(true,str_contains($source,'SELECT id,resident_id,line_oa_id,line_binding_id,retry_key,attempts,recipient,payload'));
     $same(true,str_contains($source,'retry_generation_expired'));
@@ -2478,4 +2483,5 @@ $test('LINE binding lock rejects an unbounded wait before touching MySQL',functi
 });
 
 require __DIR__.'/line_setup_unit.php';
+require __DIR__.'/external_api_unit.php';
 fwrite(STDOUT,"\n{$passed} passed, {$failed} failed".PHP_EOL);exit($failed===0?0:1);

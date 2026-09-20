@@ -42,6 +42,7 @@ try{
         $pdo->exec("UPDATE notification_outbox SET status='sent',attempts=2,last_error=NULL,sent_at=UTC_TIMESTAMP(6) WHERE bill_id=".$billId);
         $row=$get()[0];$check('All sent recipients suppress redundant queueing',$row['line_status']==='sent'&&$row['line_can_queue']===false&&$row['line_delivery_counts']['sent']===3);
         $bind();$row=$get()[0];$check('A newly bound fourth account can receive an existing bill',$row['line_can_queue']===true&&$row['line_recipient_count']===4);
+        require __DIR__.'/external_api_mysql.inc.php';
         $registry->update($oa['id'],['enabled'=>false],$owner);$row=$get()[0];
         $check('Disabled OA cannot leave bill queue controls enabled',$row['line_ready']===false&&$row['line_can_queue']===false);
         throw new BillingLineFixtureRollback('Rollback test fixtures');
