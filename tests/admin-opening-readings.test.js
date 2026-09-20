@@ -43,6 +43,8 @@ function meterHarness(meter) {
     $$: (_selector, root) => descendants(root).filter((item) => item.tagName === 'input'),
     text: (value, fallback = '—') => value == null || value === '' ? fallback : String(value),
     number: (value) => Number(value) || 0,
+    finiteNumber: value => value === '' || value == null ? null : Number(value),
+    formatPeriod: value => String(value),
     td: (content) => { const cell = node('td'); cell.append(content); return cell; },
     actionButton: (label, action, id) => ({ ...node('button', '', label), dataset: { action, id: String(id) } }),
     setStat: (key, value) => { statistics[key] = value; },
@@ -169,4 +171,23 @@ test('a completed list refresh cannot unlock a newer opening-reading save', asyn
   ui.requests[1].resolve({ opening_readings_pending: false });
   await second;
   assert.equal(ui.dialog.open, false);
+});
+
+test('missing history is locked and links to the missing month rather than a zero baseline', () => {
+  const issue={code:'METER_HISTORY_GAP',message:'ขาดงวดก่อน',recovery_period:'2026-08',required_previous_period:'2026-08'};
+  const ui=meterHarness({water_previous:null,electric_previous:null,water_locked:true,electric_locked:true,water_lock_reason:'history_gap',electric_lock_reason:'history_gap',water_issue:issue,electric_issue:issue,water_vacant_baseline:false,electric_vacant_baseline:false});
+  assert.ok(ui.inputs.every(i=>i.disabled));assert.ok(!ui.all.some(i=>i.dataset?.action==='save-meter'));
+  const links=ui.all.filter(i=>i.dataset?.action==='meter-missing-period');assert.equal(links.length,1);assert.equal(links[0].dataset.period,'2026-08');
+  assert.equal(ui.all.filter(i=>i.textContent==='ขาดงวดก่อน').length,2);assert.ok(!ui.all.some(i=>String(i.textContent).includes('หน่วย 0')));
+});
+test('only an explicit vacant baseline may preview zero usage without a previous reading', () => {
+  const vacant=meterHarness({water_previous:null,electric_previous:null,water_current:'100',electric_current:'200',water_vacant_baseline:true,electric_vacant_baseline:true});
+  assert.deepEqual(vacant.all.filter(i=>i.dataset?.meterDelta).map(i=>i.textContent),['0.00','0.00']);
+  const unknown=meterHarness({water_previous:null,electric_previous:null,water_current:'100',electric_current:'200'});
+  assert.deepEqual(unknown.all.filter(i=>i.dataset?.meterDelta).map(i=>i.textContent),['—','—']);
+});
+test('negative usage is shown as a wrong reading instead of being clamped to zero', () => {
+  const ui=meterHarness({water_previous:'100',water_current:'99',electric_previous:'200',electric_current:'201'});
+  assert.equal(ui.all.find(i=>i.dataset?.meterDelta==='water').textContent,'เลขลดลง');
+  assert.equal(ui.inputs[0].min,'100');
 });

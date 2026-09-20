@@ -87,7 +87,12 @@ final class MeterService
         $this->assertPeriodIsNotFuture(substr($periodDate, 0, 7));
         $statement = $this->app->database()->pdo()->prepare(
             "SELECT r.id AS room_id,r.room_code,mt.meter_type,
-                    m.previous_reading,m.current_reading,m.units_used,m.updated_at,m.occupancy_id,
+                    m.id AS reading_id,m.previous_reading,m.current_reading,m.units_used,m.updated_at,m.occupancy_id,
+                    (SELECT history.period FROM meter_readings history WHERE history.room_id=r.id AND history.meter_type=mt.meter_type AND history.period<? ORDER BY history.period DESC LIMIT 1) AS prior_period,
+                    (SELECT history.occupancy_id FROM meter_readings history WHERE history.room_id=r.id AND history.meter_type=mt.meter_type AND history.period<? ORDER BY history.period DESC LIMIT 1) AS prior_occupancy_id,
+                    (SELECT COUNT(*) FROM occupancies o WHERE o.room_id=r.id AND o.move_in_date<=LAST_DAY(?) AND (o.move_out_date IS NULL OR o.move_out_date>=?)) AS occupancy_count,
+                    (SELECT o.id FROM occupancies o WHERE o.room_id=r.id AND o.move_in_date<=LAST_DAY(?) AND (o.move_out_date IS NULL OR o.move_out_date>=?) ORDER BY o.id DESC LIMIT 1) AS selected_occupancy_id,
+                    (SELECT MIN(later.period) FROM meter_readings later WHERE later.room_id=r.id AND later.meter_type=mt.meter_type AND later.period>?) AS next_period,
                     (SELECT history.current_reading
                        FROM meter_readings history
                       WHERE history.room_id=r.id
@@ -136,32 +141,19 @@ final class MeterService
               WHERE r.deleted_at IS NULL
               ORDER BY r.floor,r.room_code,FIELD(mt.meter_type,'water','electric')"
         );
-        $statement->execute([
-            $periodDate,
-            $periodDate,
-            $periodDate,
-            $periodDate,
-            $periodDate,
-            $periodDate,
-            $periodDate,
-            $periodDate,
-            $periodDate,
-            $periodDate,
-        ]);
+        $statement->execute(array_fill(0,17,$periodDate));
         $grouped = [];
         foreach ($statement->fetchAll() as $row) {
             $id = (int) $row['room_id'];
             $grouped[$id] ??= ['room_id'=>$id,'room_code'=>$row['room_code'],'period'=>$period,'water'=>null,'electric'=>null,
-                'is_billed'=>(bool)$row['is_billed'],
+                'is_billed'=>(bool)$row['is_billed'],'occupancy_id'=>$row['selected_occupancy_id']===null?null:(int)$row['selected_occupancy_id'],
                 'opening_readings_pending'=>(bool)$row['opening_readings_pending'],
                 'water_previous'=>null,'water_current'=>null,'water_units'=>null,'electric_previous'=>null,'electric_current'=>null,'electric_units'=>null];
             if ($row['meter_type']) {
                 $meterType=(string)$row['meter_type'];
                 $hasCurrent=$row['current_reading']!==null;
-                $startsThisPeriod=(string)($row['occupancy_move_in_period']??'')===$periodDate;
-                $previous=$hasCurrent
-                    ?$row['previous_reading']
-                    :($startsThisPeriod?$row['occupancy_opening']:$row['prior_current']);
+                $readiness=MeterReadiness::describe($row,$periodDate);
+                $previous=$readiness['previous'];
                 if($hasCurrent){
                 $grouped[$id][$row['meter_type']] = [
                     'previous'=>(string)$row['previous_reading'],'current'=>(string)$row['current_reading'],
@@ -172,21 +164,38 @@ final class MeterService
                 $grouped[$id][$meterType.'_current']=$hasCurrent?(string)$row['current_reading']:null;
                 $grouped[$id][$meterType.'_units']=$hasCurrent?(string)$row['units_used']:null;
                 $grouped[$id][$meterType.'_opening_required']=(bool)$row['opening_readings_pending'];
-                $grouped[$id][$meterType.'_locked']=(bool)$row['opening_readings_pending']||(bool)$row['is_billed']||(bool)$row['has_later_reading'];
-                $grouped[$id][$meterType.'_lock_reason']=(bool)$row['opening_readings_pending']
-                    ?'opening_readings_pending'
-                    :((bool)$row['is_billed']
-                    ?'billed'
-                    :((bool)$row['has_later_reading']?'later_reading':null));
+                $grouped[$id][$meterType.'_locked']=$readiness['locked'];
+                $grouped[$id][$meterType.'_lock_reason']=$readiness['lock_reason'];
+                $grouped[$id][$meterType.'_baseline_state']=$readiness['baseline_state'];
+                $grouped[$id][$meterType.'_vacant_baseline']=$readiness['is_vacant_baseline'];
+                $grouped[$id][$meterType.'_next_period']=$row['next_period']===null?null:substr($row['next_period'],0,7);
+                $grouped[$id][$meterType.'_issue']=$readiness['issue_code']===null?null:[
+                    'code'=>$readiness['issue_code'],'message'=>$readiness['issue_message'],'meter_type'=>$meterType,
+                    'required_previous_period'=>$readiness['required_previous_period'],
+                    'recovery_period'=>$readiness['lock_reason']==='history_gap'
+                        ? $this->firstMissingPeriod($id,(int)$row['selected_occupancy_id'],$meterType,(string)$row['occupancy_move_in_period'],$periodDate) : null];
+                $versionRow=$hasCurrent?array_replace($row,['id'=>$row['reading_id']]):null;
+                $grouped[$id][$meterType.'_version']=MeterReadiness::version($id,$period,$meterType,$versionRow,$this->app->config->appKey(),[$grouped[$id]['occupancy_id'],$previous]);
             }
         }
         return array_values($grouped);
     }
 
     /** @return array<string,mixed> */
+    private function firstMissingPeriod(int $roomId, int $occupancyId, string $type, string $start, string $end): string
+    {
+        $query=$this->app->database()->pdo()->prepare('SELECT period FROM meter_readings WHERE room_id=? AND occupancy_id=? AND meter_type=? AND period>=? AND period<? ORDER BY period');
+        $query->execute([$roomId,$occupancyId,$type,$start,$end]); $expected=$start;
+        foreach($query->fetchAll(PDO::FETCH_COLUMN) as $saved){
+            if($saved!==$expected) break;
+            $expected=(new \DateTimeImmutable($expected,new \DateTimeZone('UTC')))->modify('+1 month')->format('Y-m-01');
+        }
+        return substr($expected,0,7);
+    }
+
     public function record(array $input, int $adminId): array
     {
-        Validator::only($input, ['room_id','period','water_current','electric_current','confirm_large_usage']);
+        Validator::only($input, ['room_id','period','water_current','electric_current','confirm_large_usage','water_version','electric_version']);
         $roomId = Validator::id($input['room_id'] ?? null, 'room_id');
         $period = Validator::period($input['period'] ?? null);
         $this->assertPeriodIsNotFuture($period);
@@ -194,6 +203,9 @@ final class MeterService
         $confirmLarge=array_key_exists('confirm_large_usage',$input)?Validator::boolean($input['confirm_large_usage'],'confirm_large_usage'):false;
         if (!array_key_exists('water_current', $input) && !array_key_exists('electric_current', $input)) {
             throw new HttpException(422, 'ต้องระบุเลขมิเตอร์น้ำหรือไฟอย่างน้อยหนึ่งรายการ', 'VALIDATION_ERROR');
+        }
+        foreach(['water_version','electric_version'] as $field){
+            if(array_key_exists($field,$input)&&(!is_string($input[$field])||preg_match('/^[a-f0-9]{64}$/D',$input[$field])!==1))throw new HttpException(422,'ข้อมูลรุ่นมิเตอร์ไม่ถูกต้อง กรุณาโหลดรายการใหม่','VALIDATION_ERROR',['field'=>$field]);
         }
         $values = [];
         foreach (['water'=>'water_current','electric'=>'electric_current'] as $type=>$field) {
@@ -208,7 +220,7 @@ final class MeterService
             throw new HttpException(422, 'ต้องระบุเลขมิเตอร์น้ำหรือไฟอย่างน้อยหนึ่งรายการ', 'VALIDATION_ERROR');
         }
 
-        return $this->app->database()->transaction(function (PDO $pdo) use ($roomId,$period,$periodDate,$values,$adminId,$confirmLarge): array {
+        return $this->app->database()->transaction(function (PDO $pdo) use ($roomId,$period,$periodDate,$values,$adminId,$confirmLarge,$input): array {
             $room = $pdo->prepare('SELECT id FROM rooms WHERE id=? AND deleted_at IS NULL FOR UPDATE');
             $room->execute([$roomId]);
             if (!$room->fetch()) throw new HttpException(404, 'ไม่พบห้อง', 'ROOM_NOT_FOUND');
@@ -228,16 +240,16 @@ final class MeterService
             $prepared=[];
             $anomalies=[];
             foreach ($values as $type=>$currentScaled) {
-                $existing = $pdo->prepare('SELECT id,occupancy_id,previous_reading,current_reading FROM meter_readings WHERE room_id=? AND meter_type=? AND period=? FOR UPDATE');
+                $existing = $pdo->prepare('SELECT id,occupancy_id,previous_reading,current_reading,units_used,updated_at FROM meter_readings WHERE room_id=? AND meter_type=? AND period=? FOR UPDATE');
                 $existing->execute([$roomId,$type,$periodDate]);
                 $row = $existing->fetch();
                 $expectedOccupancyId=$occupancy['id']??null;
                 if($row){
                     $storedOccupancyId=$row['occupancy_id']===null?null:(int)$row['occupancy_id'];
-                    if($storedOccupancyId!==null&&$storedOccupancyId!==$expectedOccupancyId){
+                    if($storedOccupancyId!==$expectedOccupancyId){
                         throw new HttpException(
                             409,
-                            'This meter row belongs to a different occupancy and cannot be reassigned',
+                            'เลขมิเตอร์นี้เป็นของผู้พักคนละรอบ ไม่สามารถย้ายมาใช้แทนกันได้',
                             'METER_OCCUPANCY_MISMATCH',
                             [
                                 'meter_type'=>$type,
@@ -276,7 +288,7 @@ final class MeterService
                         if(($occupancy[$openingField]??null)===null){
                             throw new HttpException(
                                 409,
-                                'Opening meter reading is required before recording the first resident period',
+                                'กรุณาเติมเลขมิเตอร์ ณ วันเข้าพักก่อนบันทึกเดือนแรก',
                                 'METER_OPENING_REQUIRED',
                                 ['meter_type'=>$type,'occupancy_id'=>(int)$occupancy['id'],'period'=>$period]
                             );
@@ -299,12 +311,13 @@ final class MeterService
                             ||$priorOccupancyId!==(int)$occupancy['id']){
                             throw new HttpException(
                                 409,
-                                'An earlier meter period is missing or belongs to another occupancy',
+                                'ยังขาดมิเตอร์งวดก่อนของผู้พักรอบนี้ กรุณาเติมงวดที่ขาดก่อนบันทึก',
                                 'METER_HISTORY_GAP',
                                 [
                                     'meter_type'=>$type,
                                     'occupancy_id'=>(int)$occupancy['id'],
                                     'required_previous_period'=>substr($expectedPriorPeriod,0,7),
+                                    'recovery_period'=>$this->firstMissingPeriod($roomId,(int)$occupancy['id'],$type,$moveInPeriod,$periodDate),
                                     'requested_period'=>$period,
                                 ]
                             );
@@ -352,12 +365,13 @@ final class MeterService
                         if($priorCurrent===false){
                             throw new HttpException(
                                 409,
-                                'The previous meter period for this occupancy is missing',
+                                'ยังขาดมิเตอร์งวดก่อนของผู้พักรอบนี้ กรุณาเติมงวดที่ขาดก่อนบันทึก',
                                 'METER_HISTORY_GAP',
                                 [
                                     'meter_type'=>$type,
                                     'occupancy_id'=>(int)$occupancy['id'],
                                     'required_previous_period'=>substr($expectedPriorPeriod,0,7),
+                                    'recovery_period'=>$this->firstMissingPeriod($roomId,(int)$occupancy['id'],$type,$moveInPeriod,$periodDate),
                                     'requested_period'=>$period,
                                 ]
                             );
@@ -378,11 +392,17 @@ final class MeterService
                     if($storedPrevious!==$expectedBaseline){
                         throw new HttpException(
                             409,
-                            'The stored meter baseline does not match this occupancy history',
+                            'เลขก่อนหน้าที่บันทึกไม่ตรงกับประวัติผู้พัก กรุณาตรวจประวัติก่อน',
                             'METER_BASELINE_MISMATCH',
                             ['meter_type'=>$type,'occupancy_id'=>(int)$occupancy['id']]
                         );
                     }
+                }
+                $submittedVersion=$input[$type.'_version']??null;
+                $versionPrevious=$row ? (string)$row['previous_reading'] : (($occupancy!==null||$previousRow) ? Validator::decimalString($previousScaled,2) : null);
+                if($submittedVersion!==null&&!hash_equals(MeterReadiness::version($roomId,$period,$type,$row?:null,$this->app->config->appKey(),[$expectedOccupancyId,$versionPrevious]),$submittedVersion)
+                    &&(!$row||Validator::scaledDecimal($row['current_reading'],'current_reading',2,12)!==$currentScaled)){
+                    throw new HttpException(409,'ประวัติผู้พักหรือเลขมิเตอร์ถูกแก้หลังเปิดหน้า กรุณาตรวจค่าล่าสุดก่อนบันทึก','METER_CHANGED',['meter_type'=>$type,'period'=>$period,'latest_current'=>$row['current_reading']??null]);
                 }
                 if ($currentScaled < $previousScaled) {
                     throw new HttpException(409, 'เลขมิเตอร์ปัจจุบันน้อยกว่าเดือนก่อน', 'METER_ROLLBACK', [
@@ -446,6 +466,9 @@ final class MeterService
                         $adminId,
                     ]);
                 }
+                $versionQuery=$pdo->prepare('SELECT id,occupancy_id,previous_reading,current_reading,units_used,updated_at FROM meter_readings WHERE room_id=? AND meter_type=? AND period=?');
+                $versionQuery->execute([$roomId,$type,$periodDate]);
+                $result[$type.'_version']=MeterReadiness::version($roomId,$period,$type,$versionQuery->fetch(),$this->app->config->appKey(),[$occupancy['id']??null,Validator::decimalString($previousScaled,2)]);
                 $result[$type] = ['previous'=>Validator::decimalString($previousScaled,2),'current'=>Validator::decimalString($currentScaled,2),'units'=>Validator::decimalString($units,2)];
                 if($unchanged){
                     $result['unchanged_meter_types'][]=$type;
@@ -492,7 +515,7 @@ final class MeterService
         if(count($rows)>1){
             throw new HttpException(
                 409,
-                'More than one occupancy overlaps this meter period',
+                'พบผู้พักมากกว่าหนึ่งรอบทับเดือนนี้ กรุณาตรวจวันเข้าและวันย้ายออก',
                 'AMBIGUOUS_OCCUPANCY',
                 ['room_id'=>$roomId,'period'=>substr($periodDate,0,7)]
             );
@@ -509,7 +532,7 @@ final class MeterService
         if ($period > $maximum) {
             throw new HttpException(
                 422,
-                'period cannot be later than the current month',
+                'เลือกงวดมิเตอร์ได้ไม่เกินเดือนปัจจุบัน',
                 'VALIDATION_ERROR',
                 ['field' => 'period', 'maximum' => $maximum]
             );

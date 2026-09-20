@@ -367,7 +367,7 @@ $test('critical usability guards remain in the web UI',function()use($same):void
     $same(true,str_contains($js,'function hasDirtyMeterRows()'));
     $same(1,preg_match("/activeView === 'meters'.*?hasDirtyMeterRows\(\).*?renderMeters\(\);/s",$js));
     foreach(['is_billed','has_later_reading',"'_locked'", "'_lock_reason'"]as$item)$same(true,str_contains($meters,$item));
-    foreach(['waterLocked','electricLocked','editableInputs','ออกบิลแล้ว']as$item)$same(true,str_contains($js,$item));
+    foreach(['input.disabled=locked','inputs.filter(i=>!i.disabled)','ออกบิลแล้ว']as$item)$same(true,str_contains($js,$item));
     $same(true,str_contains($js,"profile.line_user_id_hint"));
     $same(true,str_contains($resident,"unset(\$row['line_user_id'],\$row['auth_version'])"));
     $same(2,preg_match_all('/id="(?:preview-bills-button|create-bills-button)" disabled/',$admin));
@@ -2366,7 +2366,7 @@ $test('admin console opens on an overview that surfaces pending work and worker 
     $same(true,str_contains($admin,'<?php if ($canManageIntegrations): ?>'));
 
     // A half-entered room still needs attention, so progress counts both meters.
-    $same(true,str_contains($js,"const meterIsComplete = (meter) => !meterHasPendingOpening(meter) && ['water', 'electric'].every((type) => {"));
+    $same(true,str_contains($js,"const meterIsComplete = (m) => !meterHasPendingOpening(m) && ['water','electric'].every(t =>"));
     $same(true,str_contains($admin,'id="meter-progress"'));
 });
 
@@ -2484,4 +2484,5 @@ $test('LINE binding lock rejects an unbounded wait before touching MySQL',functi
 
 require __DIR__.'/line_setup_unit.php';
 require __DIR__.'/external_api_unit.php';
+require __DIR__.'/meter_readiness_unit.php';
 fwrite(STDOUT,"\n{$passed} passed, {$failed} failed".PHP_EOL);exit($failed===0?0:1);

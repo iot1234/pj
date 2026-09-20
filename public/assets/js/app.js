@@ -155,6 +155,10 @@
     LINE_NOT_CONFIGURED: 'กรอก Channel access token และ Channel secret ของ Messaging API บัญชีเดียวกันให้ครบ แล้วบันทึกการเชื่อมต่อ',
     LINE_NOT_VERIFIED: 'บัญชี LINE ยังไม่ผ่านรหัสยืนยัน',
     LINE_LINK_STALE: 'ข้อมูลบัญชีเปลี่ยนหลังขอรหัส LINE กรุณาขอรหัสใหม่',
+    METER_HISTORY_GAP: 'ยังขาดเลขมิเตอร์งวดก่อนของผู้พักรอบนี้ กรุณากดไปเติมงวดที่ขาด ไม่ต้องกรอกเลขศูนย์แทน',
+    METER_BASELINE_MISMATCH: 'เลขก่อนหน้าไม่ตรงกับประวัติผู้พัก กรุณาตรวจประวัติก่อน ไม่แก้ตัวเลขเพื่อข้ามเงื่อนไข',
+    METER_CHANGED: 'เลขมิเตอร์ถูกแก้ไขจากอีกหน้าต่างแล้ว ค่าที่คุณกรอกยังอยู่ กรุณาตรวจและใช้ข้อมูลล่าสุดก่อนบันทึก',
+    AMBIGUOUS_OCCUPANCY: 'พบผู้พักหลายรอบทับเดือนเดียวกัน กรุณาตรวจวันเข้าพักและวันย้ายออก',
     METER_HISTORY_LOCKED: 'แก้เลขมิเตอร์นี้ไม่ได้ เพราะมีรอบเดือนถัดไปอ้างอิงแล้ว',
     METER_ALREADY_BILLED: 'แก้เลขมิเตอร์ไม่ได้หลังออกบิลแล้ว',
     METER_OCCUPANCY_MISMATCH: 'เลขมิเตอร์นี้ผูกกับผู้พักคนละรอบและย้ายมาใช้ซ้ำไม่ได้ กรุณาตรวจประวัติห้อง',
@@ -1732,6 +1736,7 @@
     const state = {
       rooms: [], bookings: [], residents: [], meters: [], bills: [], payments: [], users: [], settings: {},
       loaded: new Set(), meterController: null, billController: null, bookingController: null, paymentController: null,
+      meterListReady: false, meterSaving: false, meterDrafts: new Map(), meterErrors: new Map(), meterReturnPeriod: null,
       meterPeriod: '', billPeriod: '', billingSettingsAvailable: false, billPreview: null,
       bookingOffset: 0, bookingHasMore: false, bookingPendingCount: 0, paymentOffset: 0, paymentHasMore: false,
       paymentPendingCount: 0, overviewController: null,
@@ -1881,6 +1886,7 @@
     function switchView(name, force = false, updateHash = true) {
       if (!titles[name] || (name === 'users' && role !== 'owner')) return false;
       const activeView = $('[data-admin-view].is-active', app)?.dataset.adminView;
+      if (activeView === 'meters' && state.meterSaving) { toast('กำลังบันทึกมิเตอร์ กรุณารอผลก่อนเปลี่ยนหน้า', 'error'); return false; }
       if (activeView === 'settings' && name !== 'settings' && settingsSaveInProgress) {
         toast('กำลังบันทึกการตั้งค่า กรุณารอให้เสร็จก่อนเปลี่ยนหน้า', 'error');
         return false;
@@ -1895,7 +1901,7 @@
           ? 'มีเลขมิเตอร์ที่แก้ไขแต่ยังไม่ได้บันทึก ต้องการโหลดข้อมูลใหม่และทิ้งค่าที่กรอกหรือไม่?'
           : 'มีเลขมิเตอร์ที่แก้ไขแต่ยังไม่ได้บันทึก ต้องการออกจากหน้านี้และทิ้งค่าที่กรอกหรือไม่?';
         if (!window.confirm(message)) return false;
-        renderMeters();
+        state.meterDrafts?.clear(); state.meterErrors?.clear(); renderMeters();
       }
       const menuWasOpen = mobileMenu.matches && app.classList.contains('sidebar-open');
       $$('[data-admin-view]', app).forEach((view) => { const active = view.dataset.adminView === name; view.hidden = !active; view.classList.toggle('is-active', active); });
@@ -2397,75 +2403,71 @@
         await Promise.all([loadResidents(), loadRooms(), loadBills(), loadPayments()]);
       } catch (requestError) { showFormError(error, errorMessage(requestError)); } finally { setBusy(button, false); }
     });
-    // A room counts as read for the period only when both meters carry a saved
-    // current reading; a half-entered row still needs the admin's attention.
-    const meterHasPendingOpening = (meter) => meter.opening_readings_pending === true
-      || meter.water_lock_reason === 'opening_readings_pending' || meter.electric_lock_reason === 'opening_readings_pending';
-    const meterIsComplete = (meter) => !meterHasPendingOpening(meter) && ['water', 'electric'].every((type) => {
-      const value = meter[`${type}_current`];
-      return value !== null && value !== undefined && value !== '';
-    });
-    function renderMeters() {
-      const rows = $('#meter-rows'); rows.replaceChildren();
-      state.meters.forEach((meter) => {
-        const roomId = meter.room_id || meter.id;
-        const roomCode = text(meter.room_code || meter.room?.room_code);
-        const waterPreviousRaw = meter.water_previous ?? meter.previous_water ?? null;
-        const electricPreviousRaw = meter.electric_previous ?? meter.previous_electric ?? null;
-        const hasWaterPrevious = waterPreviousRaw !== null && waterPreviousRaw !== '';
-        const hasElectricPrevious = electricPreviousRaw !== null && electricPreviousRaw !== '';
-        const waterPrevious = hasWaterPrevious ? number(waterPreviousRaw) : null;
-        const electricPrevious = hasElectricPrevious ? number(electricPreviousRaw) : null;
-        const openingPending = meterHasPendingOpening(meter);
-        const waterLocked = openingPending || meter.water_locked === true || meter.water_locked === 1;
-        const electricLocked = openingPending || meter.electric_locked === true || meter.electric_locked === 1;
-        const lockMessage = (reason) => openingPending ? 'ยังขาดเลขมิเตอร์ ณ วันเข้าพัก'
-          : (reason === 'billed' ? 'ออกบิลรอบนี้แล้ว' : 'มีเลขมิเตอร์รอบถัดไปแล้ว');
-        const deltaText = (value, previous, hasPrevious) => openingPending || value === '' || value === null || value === undefined
-          ? '—' : (hasPrevious ? Math.max(0, number(value) - previous).toFixed(2) : '0.00');
-        const tr = create('tr'); tr.dataset.roomId = String(roomId); tr.dataset.period = state.meterPeriod;
-        tr.classList.toggle('meter-row-baseline', !hasWaterPrevious || !hasElectricPrevious);
-        const previousCell = (type, raw, hasPrevious) => {
-          const value = openingPending ? create('span', 'meter-baseline-label', 'รอเลข ณ วันเข้าพัก')
-            : (hasPrevious ? text(raw) : create('span', 'meter-baseline-label', 'เดือนแรก · หน่วย 0'));
-          const cell = td(value); cell.dataset.meterPrevious = type; return cell;
-        };
-        const configureInput = (type, value, previous, hasPrevious, locked, reason) => {
-          const input = create('input', 'meter-input');
-          input.type = 'number'; input.min = hasPrevious ? String(previous) : '0'; input.max = '9999999'; input.step = '0.01'; input.value = value ?? '';
-          input.dataset.meterType = type; input.dataset.savedValue = input.value; input.dataset.previous = hasPrevious ? String(previous) : '0'; input.dataset.hasPrevious = String(hasPrevious);
-          const label = type === 'water' ? 'น้ำ' : 'ไฟ';
-          const lockedText = locked ? ` ล็อกเพราะ${lockMessage(reason)}` : '';
-          input.setAttribute('aria-label', `เลขมิเตอร์${label}ปัจจุบัน ห้อง ${roomCode}${hasPrevious || openingPending ? '' : ' เดือนแรกใช้เป็นค่าตั้งต้นและหน่วยเท่ากับ 0'}${lockedText}`);
-          input.disabled = locked;
-          if (locked) input.title = lockMessage(reason);
-          else if (!hasPrevious) input.title = 'เดือนแรก: เลขนี้เป็นค่าตั้งต้น (baseline) และหน่วยที่ใช้เท่ากับ 0';
-          return input;
-        };
-        const waterInput = configureInput('water', meter.water_current, waterPrevious, hasWaterPrevious, waterLocked, meter.water_lock_reason);
-        const electricInput = configureInput('electric', meter.electric_current, electricPrevious, hasElectricPrevious, electricLocked, meter.electric_lock_reason);
-        const waterDelta = create('strong', 'meter-delta', deltaText(meter.water_current, waterPrevious, hasWaterPrevious)); waterDelta.dataset.meterDelta = 'water';
-        const electricDelta = create('strong', 'meter-delta', deltaText(meter.electric_current, electricPrevious, hasElectricPrevious)); electricDelta.dataset.meterDelta = 'electric';
-        const updateDirtyState = () => {
-          const dirty = $$('input[data-meter-type]', tr).some((input) => input.value !== input.dataset.savedValue);
-          tr.classList.toggle('meter-row-dirty', dirty); tr.dataset.dirty = String(dirty);
-        };
-        waterInput.addEventListener('input', () => { waterDelta.textContent = deltaText(waterInput.value, number(waterInput.dataset.previous), waterInput.dataset.hasPrevious === 'true'); updateDirtyState(); });
-        electricInput.addEventListener('input', () => { electricDelta.textContent = deltaText(electricInput.value, number(electricInput.dataset.previous), electricInput.dataset.hasPrevious === 'true'); updateDirtyState(); });
-        const allLocked = waterLocked && electricLocked;
-        const action = openingPending
-          ? actionButton('เติมเลขเริ่มต้น', 'meter-opening-readings', roomId, 'button-secondary', `ไปเติมเลขมิเตอร์ ณ วันเข้าพัก ห้อง ${roomCode}`)
-          : (allLocked
-            ? create('span', 'status-badge status-neutral', meter.is_billed ? 'ออกบิลแล้ว' : 'ล็อกแล้ว')
-            : actionButton('บันทึก', 'save-meter', roomId, 'button-primary', `บันทึกเลขมิเตอร์ห้อง ${roomCode}`));
-        tr.append(td(roomCode), previousCell('water', waterPreviousRaw, hasWaterPrevious), td(waterInput), td(waterDelta), previousCell('electric', electricPreviousRaw, hasElectricPrevious), td(electricInput), td(electricDelta), td(action, 'align-right')); rows.append(tr);
+    const meterHasPendingOpening = (m) => m.opening_readings_pending === true || m.water_lock_reason === 'opening_readings_pending' || m.electric_lock_reason === 'opening_readings_pending';
+    const meterIsComplete = (m) => !meterHasPendingOpening(m) && ['water','electric'].every(t => m[`${t}_current`] !== null && m[`${t}_current`] !== undefined && m[`${t}_current`] !== '' && !['history_gap','occupancy_mismatch','baseline_mismatch','ambiguous_occupancy'].includes(m[`${t}_lock_reason`]));
+    function meterDraftKey(tr) { return `${tr.dataset.period}/${tr.dataset.roomId}`; }
+    function rememberMeterDrafts() {
+      state.meterDrafts ??= new Map();
+      $$('#meter-rows tr[data-room-id]').forEach(tr => {
+        const draft = {};
+        $$('input[data-meter-type]',tr).forEach(input => {
+          if(input.value !== input.dataset.savedValue) draft[input.dataset.meterType] = {value:input.value,version:input.dataset.version || ''};
+        });
+        if(Object.keys(draft).length) state.meterDrafts.set(meterDraftKey(tr),draft); else state.meterDrafts.delete(meterDraftKey(tr));
       });
-      const complete = state.meters.filter(meterIsComplete).length;
-      const remaining = state.meters.length - complete;
-      setStat('#meter-progress', state.meters.length === 0
-        ? 'ยังไม่มีห้องให้จด'
-        : (remaining === 0 ? `จดครบแล้วทั้ง ${state.meters.length} ห้อง` : `จดแล้ว ${complete}/${state.meters.length} ห้อง · เหลืออีก ${remaining} ห้อง`));
-      setTableState($('#meter-state'), state.meters.length ? 'ready' : 'empty', 'ไม่พบห้องที่ต้องจดมิเตอร์');
+    }
+    function meterRowMessage(tr, message, kind = 'error') {
+      const node = $('[data-meter-feedback]',tr); if(!node) return;
+      node.textContent = message; node.hidden = !message; node.dataset.state = kind; node.setAttribute('role',kind === 'error' ? 'alert' : 'status');
+    }
+    function updateMeterProgress() {
+      const total = state.meters.length, complete = state.meters.filter(meterIsComplete).length;
+      setStat('#meter-progress',!total ? 'ยังไม่มีห้องให้จด' : complete === total ? `จดครบแล้วทั้ง ${total} ห้อง` : `จดแล้ว ${complete}/${total} ห้อง · เหลืออีก ${total-complete} ห้อง`);
+    }
+    function renderMeters() {
+      const rows = $('#meter-rows'); rows.replaceChildren(); state.meterDrafts ??= new Map();
+      state.meters.forEach(meter => {
+        const roomId = meter.room_id || meter.id, roomCode = text(meter.room_code || meter.room?.room_code);
+        const tr = create('tr'); tr.dataset.roomId=String(roomId); tr.dataset.period=state.meterPeriod;
+        const roomCell=td(create('strong','',roomCode)); roomCell.dataset.label='ห้อง'; tr.append(roomCell);
+        const actions=create('div','meter-actions'), issues=[], recovery=new Set(), draft=state.meterDrafts.get(meterDraftKey(tr));
+        ['water','electric'].forEach(type => {
+          const label=type==='water'?'น้ำ':'ไฟฟ้า', raw=meter[`${type}_previous`]??null, has=raw!==null&&raw!=='', previous=has?number(raw):null;
+          const issue=meter[`${type}_issue`], locked=meterHasPendingOpening(meter)||meter[`${type}_locked`]===true||meter[`${type}_locked`]===1;
+          const vacant=meter[`${type}_vacant_baseline`]===true, input=create('input','meter-input');
+          input.type='number'; input.inputMode='decimal'; input.min=has?String(previous):'0'; input.max='9999999'; input.step='0.01'; input.value=meter[`${type}_current`]??''; input.disabled=locked;
+          Object.assign(input.dataset,{meterType:type,savedValue:input.value,version:meter[`${type}_version`]||'',previous:has?String(previous):'0',hasPrevious:String(has)});
+          input.setAttribute('aria-label',`เลขมิเตอร์${label}ปัจจุบัน ห้อง ${roomCode}${meterHasPendingOpening(meter)?' ยังขาดเลขมิเตอร์ ณ วันเข้าพัก':''}`);
+          if(locked) input.title=issue?.message || (meter.is_billed?'ออกบิลรอบนี้แล้ว':'มีงวดถัดไปอ้างอิงแล้ว');
+          if(draft?.[type]&&!locked){input.value=draft[type].value; input.dataset.version=draft[type].version;}
+          const before=td(has?text(raw):create('span','meter-baseline-label',meterHasPendingOpening(meter)?'รอเลข ณ วันเข้าพัก':vacant?'ตั้งต้นห้องว่าง':issue?.code==='METER_HISTORY_GAP'?'ขาดงวดก่อน':'ยังไม่มีข้อมูล'));
+          before.dataset.meterPrevious=type; before.dataset.label=`${label} · ก่อนหน้า`;
+          const current=td(input); current.dataset.label=`${label} · ปัจจุบัน`;
+          const delta=create('strong','meter-delta'); delta.dataset.meterDelta=type;
+          const update=()=>{
+            const n=finiteNumber(input.value); delta.textContent=n===null?'—':has?(n<previous?'เลขลดลง':(n-previous).toFixed(2)):vacant?'0.00':'—';
+            const dirty=$$('input[data-meter-type]',tr).some(i=>i.value!==i.dataset.savedValue); tr.dataset.dirty=String(dirty); tr.classList.toggle('meter-row-dirty',dirty);
+          };
+          input.addEventListener('input',()=>{update(); rememberMeterDrafts();});
+          const used=td(delta); used.dataset.label=`${label} · หน่วยที่ใช้`; tr.append(before,current,used); update();
+          if(issue?.message) issues.push(`${label}: ${issue.message}`);
+          if(issue?.code==='METER_HISTORY_GAP' && /^\d{4}-\d{2}$/.test(issue.recovery_period||issue.required_previous_period||'')) recovery.add(issue.recovery_period||issue.required_previous_period);
+        });
+        if(meterHasPendingOpening(meter)) actions.append(actionButton('เติมเลขเริ่มต้น','meter-opening-readings',roomId,'button-secondary'));
+        for(const period of recovery){const button=actionButton(`เติมงวด ${formatPeriod(period)}`,'meter-missing-period',roomId,'button-secondary');button.dataset.period=period;actions.append(button);}
+        const editable=$$('input[data-meter-type]',tr).some(i=>!i.disabled);
+        if(editable) actions.append(actionButton(['water','electric'].some(t=>meter[`${t}_current`]!=null)?'บันทึกการแก้ไข':'บันทึก','save-meter',roomId,'button-primary',`บันทึกเลขมิเตอร์ห้อง ${roomCode}`));
+        else if(!recovery.size&&!meterHasPendingOpening(meter)) actions.append(create('span','status-badge status-neutral',meter.is_billed?'ออกบิลแล้ว':'ตรวจประวัติก่อน'));
+        const reload=actionButton('ใช้ค่าล่าสุดของห้องนี้','meter-read-latest',roomId,'button-secondary'); reload.dataset.meterReload=''; reload.hidden=true; actions.append(reload);
+        const message=create('p','meter-row-feedback');message.dataset.meterFeedback='';message.hidden=true;actions.append(message);
+        const cell=td(actions,'align-right');cell.dataset.label='จัดการ';tr.append(cell);rows.append(tr);
+        if(issues.length) meterRowMessage(tr,issues.join(' · '),'attention');
+        const stale=$$('input[data-meter-type]',tr).some(i=>!i.disabled&&i.dataset.version!==String(meter[`${i.dataset.meterType}_version`]||''));
+        if(stale){reload.hidden=false;meterRowMessage(tr,'ข้อมูลถูกแก้ที่อื่น ร่างที่คุณกรอกยังอยู่ ตรวจเทียบก่อนเลือกใช้ค่าล่าสุด');}
+        if(state.meterErrors?.has(meterDraftKey(tr))) meterRowMessage(tr,state.meterErrors.get(meterDraftKey(tr)));
+      });
+      updateMeterProgress(); setTableState($('#meter-state'),state.meters.length?'ready':'empty','ไม่พบห้องที่ต้องจดมิเตอร์');
+      const back=$('#meter-recovery-return'); if(back){back.hidden=!state.meterReturnPeriod||state.meterReturnPeriod===state.meterPeriod;back.textContent=`กลับงวด ${formatPeriod(state.meterReturnPeriod||state.meterPeriod)}`;}
     }
 
     function applySavedMeterResult(tr, result, submittedValues) {
@@ -2479,6 +2481,7 @@
           meter[`${type}_previous`] = reading.previous;
           meter[`${type}_current`] = reading.current;
           meter[`${type}_units`] = reading.units;
+          if (result[`${type}_version`]) meter[`${type}_version`] = result[`${type}_version`];
         }
         const previousCell = $(`[data-meter-previous="${type}"]`, tr);
         const input = $(`input[data-meter-type="${type}"]`, tr);
@@ -2490,6 +2493,7 @@
           input.min = text(reading.previous, '0'); input.dataset.savedValue = text(reading.current, ''); input.dataset.previous = input.min; input.dataset.hasPrevious = 'true';
           if (changedDuringSave) hasUnsavedEdit = true;
           else input.value = input.dataset.savedValue;
+          if (result[`${type}_version`]) input.dataset.version = result[`${type}_version`];
           input.title = ''; input.setAttribute('aria-label', `เลขมิเตอร์${type === 'water' ? 'น้ำ' : 'ไฟ'}ปัจจุบัน ห้อง ${text(meter?.room_code || meter?.room?.room_code || tr.dataset.roomId)}`);
           if (delta) delta.textContent = input.value === '' ? '—' : Math.max(0, number(input.value) - number(input.dataset.previous)).toFixed(2);
         }
@@ -2516,6 +2520,8 @@
       });
     }
     async function loadMeters() {
+      if (state.meterSaving) { $('#meter-period').value = state.meterPeriod; toast('กำลังบันทึกมิเตอร์ กรุณารอผลก่อน', 'error'); return; }
+      rememberMeterDrafts(); state.meterListReady = false;
       const period = $('#meter-period').value || todayPeriod(); $('#meter-period').value = period;
       state.meterController?.abort(); const controller = new AbortController(); state.meterController = controller;
       if (state.meterPeriod !== period) $('#meter-rows').replaceChildren();
@@ -2524,9 +2530,11 @@
       try {
         const data = await api(`/api/admin/meters?period=${encodeURIComponent(period)}`, { signal: controller.signal });
         if (state.meterController !== controller || $('#meter-period').value !== period) return;
-        state.meterPeriod = period; state.meters = listFrom(data, 'meters'); state.loaded.add('meters'); renderMeters();
+        if (!Array.isArray(data) && !Array.isArray(data?.meters)) throw new Error('ข้อมูลมิเตอร์ตอบกลับไม่ครบ กรุณาลองโหลดใหม่');
+        state.meterPeriod = period; state.meters = listFrom(data, 'meters'); state.meterListReady = true; state.loaded.add('meters'); renderMeters();
       } catch (error) {
         if (state.meterController === controller && $('#meter-period').value === period && error?.name !== 'AbortError') {
+          state.meters = []; $('#meter-rows').replaceChildren(); setStat('#meter-progress', 'ยังโหลดมิเตอร์ไม่สำเร็จ · เก็บร่างที่กรอกไว้แล้ว');
           setTableState($('#meter-state'), 'error', errorMessage(error));
         }
       } finally {
@@ -2539,49 +2547,61 @@
     }
     loaders.meters = loadMeters;
     $('#meter-period').value = todayPeriod();
-    $('#meter-period').addEventListener('change', async (event) => {
-      const field = event.currentTarget;
-      if (hasDirtyMeterRows() && field.value !== state.meterPeriod
-        && !window.confirm('มีเลขมิเตอร์ที่ยังไม่ได้บันทึก ต้องการเปลี่ยนเดือนและทิ้งค่าที่กรอกหรือไม่?')) {
-        field.value = state.meterPeriod || todayPeriod();
-        return;
-      }
-      await loadMeters();
+    $('#meter-period').addEventListener('change', async () => { await loadMeters(); });
+    $('#meter-recovery-return').addEventListener('click', async () => {
+      if(state.meterSaving||!state.meterReturnPeriod) return;
+      rememberMeterDrafts(); $('#meter-period').value=state.meterReturnPeriod; await loadMeters();
     });
     async function saveMeterRow(button, confirmLargeUsage = false) {
-      if (state.meterController) { toast('กำลังโหลดเลขมิเตอร์ กรุณารอข้อมูลล่าสุดก่อนบันทึก', 'error'); return; }
-      const tr = button.closest('tr'); const inputs = $$('input', tr);
-      const editableInputs = inputs.filter((input) => !input.disabled);
-      if (tr.dataset.period !== $('#meter-period').value) { toast('รอบเดือนเปลี่ยนแล้ว ระบบจะโหลดข้อมูลใหม่เพื่อป้องกันการบันทึกผิดเดือน', 'error'); await loadMeters(); return; }
-      if (!editableInputs.length) { toast('เลขมิเตอร์รอบนี้ถูกล็อกแล้ว', 'error'); return; }
-      if (!editableInputs.every((input) => input.reportValidity()) || editableInputs.some((input) => input.value === '')) { toast('กรุณากรอกค่ามิเตอร์ที่แก้ไขได้ให้ครบ', 'error'); return; }
-      let confirmRetry = false;
-      setBusy(button, true, 'กำลังบันทึก…');
-      try {
-        const payload = { room_id: Number(button.dataset.id), period: tr.dataset.period };
-        editableInputs.forEach((input) => { payload[`${input.dataset.meterType}_current`] = number(input.value); });
-        if (confirmLargeUsage) payload.confirm_large_usage = true;
-        const result = objectFrom(await api('/api/admin/meters', { method: 'POST', body: payload }));
-        if ($('#meter-period').value === tr.dataset.period && state.meterPeriod === tr.dataset.period) {
-          applySavedMeterResult(tr, result, payload);
-          toast('บันทึกห้องนี้แล้ว ค่าแถวอื่นที่ยังไม่ได้บันทึกยังอยู่ครบ');
-        } else {
-          toast(`บันทึกมิเตอร์รอบ ${tr.dataset.period} แล้ว`);
+      if(state.meterController||state.meterListReady===false){toast('กรุณาโหลดเลขมิเตอร์ล่าสุดให้สำเร็จก่อนบันทึก','error');return;}
+      if(state.meterSaving||button.getAttribute('aria-busy')==='true') return;
+      const tr=button.closest('tr'), inputs=$$('input[data-meter-type]',tr), editable=inputs.filter(i=>!i.disabled);
+      if(tr.dataset.period!==$('#meter-period').value){meterRowMessage(tr,'เดือนที่เลือกเปลี่ยนแล้ว กรุณาโหลดข้อมูลใหม่');return;}
+      if(!editable.length){meterRowMessage(tr,'เลขมิเตอร์นี้ถูกล็อก ตรวจเหตุผลที่แสดงก่อน');return;}
+      if(!editable.every(i=>i.reportValidity())||editable.some(i=>i.value==='')){meterRowMessage(tr,'กรุณากรอกเลขมิเตอร์ที่แก้ไขได้ให้ครบ');return;}
+      const payload={room_id:Number(button.dataset.id),period:tr.dataset.period};
+      editable.forEach(i=>{payload[`${i.dataset.meterType}_current`]=i.value;if(i.dataset.version)payload[`${i.dataset.meterType}_version`]=i.dataset.version;});
+      if(confirmLargeUsage)payload.confirm_large_usage=true;
+      state.meterSaving=true;rememberMeterDrafts();meterRowMessage(tr,'กำลังบันทึกห้องนี้…','loading');setBusy(button,true,'กำลังบันทึก…');
+      const locks=inputs.map(i=>[i,i.disabled]); inputs.forEach(i=>i.disabled=true); let confirmRetry=false;
+      try{
+        const result=objectFrom(await api('/api/admin/meters',{method:'POST',body:payload}));
+        if(String(result.room_id)!==String(payload.room_id)||result.period!==payload.period||!editable.every(i=>result[i.dataset.meterType]&&finiteNumber(result[i.dataset.meterType].current)!==null)) throw new ApiError('ไม่สามารถยืนยันข้อมูลตอบกลับ กรุณาอ่านค่าล่าสุดก่อนส่งซ้ำ',0,{code:'MUTATION_OUTCOME_UNKNOWN'});
+        if(state.meterPeriod===payload.period){
+          applySavedMeterResult(tr,result,payload); state.meterErrors?.delete(meterDraftKey(tr));state.meterDrafts.delete(meterDraftKey(tr));
+          meterRowMessage(tr,'บันทึกแล้ว · แก้เลขแล้วบันทึกใหม่ได้จนกว่าจะมีบิลหรืองวดถัดไปอ้างอิง','ready');updateMeterProgress();
+          state.billPreview=null;['bills','overview'].forEach(name=>state.loaded.delete(name));
+          toast('บันทึกห้องนี้แล้ว ค่าห้องอื่นที่ยังไม่บันทึกยังอยู่ครบ');
         }
-      } catch (error) {
-        if (!confirmLargeUsage && error?.details?.code === 'METER_USAGE_ANOMALY') {
-          const anomalies = Array.isArray(error.details.anomalies) && error.details.anomalies.length ? error.details.anomalies : [error.details];
-          const summary = anomalies.map((item) => {
-            const kind = item.meter_type === 'water' ? 'น้ำ' : 'ไฟ';
-            return `มิเตอร์${kind} ${text(item.units)} หน่วย (จาก ${text(item.previous)} เป็น ${text(item.current)})`;
-          }).join(' และ ');
-          confirmRetry = await confirmAction('หน่วยมิเตอร์สูงผิดปกติ', `${summary} ตรวจเลขทุกค่าจากหน้ามิเตอร์แล้วและยืนยันว่าถูกต้องหรือไม่?`, 'ยืนยันค่าทั้งหมด', true);
-        } else toast(errorMessage(error), 'error');
-      } finally { setBusy(button, false); }
-      if (confirmRetry) await saveMeterRow(button, true);
+      }catch(error){
+        const message=errorMessage(error);meterRowMessage(tr,message);state.meterErrors??=new Map();state.meterErrors.set(meterDraftKey(tr),message);
+        const code=error?.details?.code, period=error?.details?.recovery_period||error?.details?.required_previous_period;
+        if(code==='METER_HISTORY_GAP'&&/^\d{4}-\d{2}$/.test(period||'')){
+          const target=actionButton(`เติมงวด ${formatPeriod(period)}`,'meter-missing-period',payload.room_id,'button-secondary');target.dataset.period=period;$('[data-meter-feedback]',tr).parentNode.append(target);
+        }
+        const reload=$('[data-meter-reload]',tr);if(reload&&['METER_CHANGED','MUTATION_OUTCOME_UNKNOWN','METER_ALREADY_BILLED','METER_HISTORY_LOCKED'].includes(code))reload.hidden=false;
+        if(!confirmLargeUsage&&code==='METER_USAGE_ANOMALY'){
+          const entries=Array.isArray(error.details.anomalies)?error.details.anomalies:[error.details];
+          const summary=entries.map(i=>`${i.meter_type==='water'?'น้ำ':'ไฟฟ้า'} ${text(i.units)} หน่วย จาก ${text(i.previous)} เป็น ${text(i.current)}`).join(' · ');
+          confirmRetry=await confirmAction('หน่วยสูงผิดปกติ',summary+' ตรวจเลขจากมิเตอร์จริงแล้วหรือไม่?','ยืนยันตัวเลข',true);
+        }
+      }finally{locks.forEach(([i,disabled])=>i.disabled=disabled);state.meterSaving=false;setBusy(button,false);}
+      if(confirmRetry)await saveMeterRow(button,true);
     }
     $('#meter-rows').addEventListener('click', async (event) => {
       const button = event.target.closest('[data-action]'); if (!button) return;
+      if (state.meterSaving || state.meterController) return;
+      if (button.dataset.action === 'meter-missing-period') {
+        const period=button.dataset.period; if(!/^\d{4}-\d{2}$/.test(period||'')||period>todayPeriod()) return;
+        rememberMeterDrafts(); state.meterReturnPeriod??=state.meterPeriod;
+        $('#meter-period').value=period; await loadMeters(); toast('เก็บร่างเดือนเดิมไว้แล้ว เติมงวดที่ขาดแล้วกดกลับงวดเดิม'); return;
+      }
+      if (button.dataset.action === 'meter-read-latest') {
+        const tr=button.closest('tr');
+        if(!await confirmAction('อ่านค่าล่าสุดของห้องนี้','ร่างห้องนี้จะถูกแทนด้วยค่าที่บันทึกบนเซิร์ฟเวอร์ ห้องอื่นยังเก็บไว้ ตรวจเลขที่กรอกก่อนดำเนินการ','ใช้ค่าล่าสุด',false))return;
+        $$('input[data-meter-type]',tr).forEach(i=>i.value=i.dataset.savedValue); tr.dataset.dirty='false';tr.classList.remove('meter-row-dirty');
+        state.meterDrafts.delete(meterDraftKey(tr)); state.meterErrors?.delete(meterDraftKey(tr)); await loadMeters(); return;
+      }
       if (button.dataset.action === 'meter-opening-readings') {
         const meter = state.meters.find((item) => String(item.room_id || item.id) === button.dataset.id);
         if (!meter) return;

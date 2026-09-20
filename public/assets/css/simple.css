@@ -69,3 +69,34 @@ input[readonly] { cursor: text; background: #f5f7fa; }
 .line-setup-feedback { padding: .75rem; border: 1px solid var(--line); border-radius: 6px; overflow-wrap: anywhere; background: var(--canvas); }
 .line-setup-feedback[data-state="error"] { color: var(--red); background: var(--red-soft); }
 .line-setup-feedback[data-state="attention"] { color: var(--amber); background: var(--amber-soft); }
+
+/* Meter feedback stays with its room. Mobile meters use cards, not an obscured sticky column. */
+.meter-actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; justify-content: flex-start; min-width: 10rem; max-width: 22rem; white-space: normal; }
+.meter-row-feedback { flex-basis: 100%; margin: .3rem 0 0; text-align: left; font-size: .85rem; line-height: 1.6; overflow-wrap: anywhere; }
+.meter-row-feedback[data-state="error"] { color: var(--red); }
+.meter-row-feedback[data-state="ready"] { color: var(--green); }
+.meter-row-feedback[data-state="attention"] { color: var(--ink-soft); }
+@media (max-width: 760px) {
+  .meter-table { overflow: visible; background: var(--canvas); }
+  .meter-table table, .meter-table tbody { display: block; min-width: 0; width: 100%; }
+  .meter-table thead { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .meter-table tbody { display: grid; gap: .8rem; }
+  .meter-table tbody tr { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: .8rem; }
+  .meter-table tbody td { display: block; min-width: 0; padding: .4rem; border: 0; position: static; box-shadow: none; text-align: left; white-space: normal; }
+  .meter-table tbody td::before { content: attr(data-label); display: block; margin-bottom: .25rem; font-size: .78rem; font-weight: 600; color: var(--ink-soft); }
+  .meter-table tbody td:first-child { grid-column: 1 / -1; order: 0; font-size: 1.1rem; }
+  .meter-table tbody td:nth-child(2) { order: 1; }
+  .meter-table tbody td:nth-child(5) { order: 2; }
+  .meter-table tbody td:nth-child(3) { order: 3; }
+  .meter-table tbody td:nth-child(6) { order: 4; }
+  .meter-table tbody td:nth-child(4) { order: 5; }
+  .meter-table tbody td:nth-child(7) { order: 6; }
+  .meter-table tbody td:last-child { order: 7; grid-column: 1 / -1; position: static; box-shadow: none; background: transparent; }
+  .meter-table .meter-input { width: 100%; min-width: 0; max-width: none; font-size: 16px; }
+  .meter-table .meter-actions { min-width: 0; max-width: none; }
+  .meter-table .meter-actions .button { min-height: 44px; white-space: normal; }
+}
+@media (max-width: 760px) {
+  .admin-content .table-scroll.meter-table th:last-child,
+  .admin-content .table-scroll.meter-table td:last-child { position: static; right: auto; z-index: auto; box-shadow: none; background: transparent; }
+}

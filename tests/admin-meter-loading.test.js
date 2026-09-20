@@ -51,7 +51,7 @@ function harness() {
   };
   renderMeters();
   const context = {
-    AbortController, state,
+    AbortController, state, rememberMeterDrafts: () => {}, setStat: () => {}, toast: () => {},
     $: (selector) => ({ '#meter-period': period, '#meter-state': status, '#meter-rows': rows })[selector],
     $$: (_selector, root) => root.controls,
     todayPeriod: () => '2026-08',
@@ -95,18 +95,11 @@ test('pending meter reload prevents edits to the old visible values', async () =
   assert.equal(ui.rows.hasAttribute('inert'), false);
 });
 
-test('failed reload restores the previous values and input locks for the same month', async () => {
-  const ui = harness();
-  ui.typeWater('125.00');
-  const work = ui.load();
-  ui.requests[0].reject(new Error('Temporary failure'));
-  await work;
-  assert.equal(ui.status.dataset.state, 'error');
-  assert.equal(ui.rows.controls[0].value, '125.00');
-  assert.equal(ui.rows.controls[0].disabled, false);
-  assert.equal(ui.rows.controls[1].disabled, true);
-  assert.equal(ui.rows.controls[2].disabled, false);
-  assert.equal(ui.rows.hasAttribute('inert'), false);
+test('failed reload clears stale controls and disables writes until a successful retry', async () => {
+  const ui=harness(),work=ui.load();ui.requests[0].reject(new Error('Temporary failure'));await work;
+  assert.equal(ui.status.dataset.state,'error');assert.equal(ui.rows.controls.length,0);assert.equal(ui.state.meterListReady,false);
+  const retry=ui.load();ui.requests[1].resolve({meters:[{water_current:'101.00',electric_current:'201.00'}]});await retry;
+  assert.equal(ui.state.meterListReady,true);assert.equal(ui.rows.controls[0].value,'101.00');
 });
 
 test('an older failed request cannot unlock or overwrite the loading state of its replacement', async () => {
@@ -121,8 +114,8 @@ test('an older failed request cannot unlock or overwrite the loading state of it
   assert.equal(ui.rows.controls[2].disabled, true);
   ui.requests[1].reject(new Error('Latest request failed'));
   await latestWork;
-  assert.equal(ui.rows.controls[0].disabled, false, 'overlapping requests preserve the original enabled state');
-  assert.equal(ui.rows.controls[1].disabled, true);
+  assert.equal(ui.rows.controls.length, 0, 'a failed newest read cannot expose old writable inputs');
+  assert.equal(ui.state.meterListReady, false);
 });
 
 test('switching month removes old inputs even when the new month fails to load', async () => {
@@ -173,7 +166,7 @@ test('a save that is still pending remains disabled when a meter reload fails', 
   ui.requests[0].reject(new Error('Reload failed'));
   await work;
   assert.equal(button.disabled, true);
-  assert.equal(ui.rows.controls[0].disabled, false);
+  assert.equal(ui.rows.controls.length, 0);
 });
 
 test('a queued save event cannot submit the old table while its reload is pending', async () => {
