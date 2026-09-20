@@ -82,13 +82,13 @@ final class LineBotService
         $room = self::label($resident['room_code']);
         $private = ['private_resident_id' => (int) $resident['id'], 'private_intent' => $intent];
         if ($intent === 'bound') {
-            return ['text' => "✅ ผูกบัญชี LINE สำเร็จ\nผู้พัก: {$name}\nห้อง: {$room}\n"
+            return ['text' => "ผูกบัญชี LINE สำเร็จ\nผู้พัก: {$name}\nห้อง: {$room}\n"
                 . "คุณจะได้รับบิลของห้องผ่านบัญชีนี้\n"
                 . "พิมพ์ “สถานะ” เพื่อตรวจการผูก หรือ “บิล” เพื่อดูบิลล่าสุด\n"
                 . $this->portalUrl('bills'), 'outcome' => 'bound'] + $private;
         }
         if ($intent === 'status') {
-            return ['text' => "✅ ยืนยันการผูก LINE แล้ว\nผู้พัก: {$name}\nห้อง: {$room}\n"
+            return ['text' => "ยืนยันการผูก LINE แล้ว\nผู้พัก: {$name}\nห้อง: {$room}\n"
                 . "สถานะห้อง: มีผู้พัก\n"
                 . "พิมพ์ “บิล” เพื่อตรวจยอดและสถานะการชำระ ค่าน้ำ/ไฟให้ดูตามรอบในบิล\n"
                 . $this->portalUrl('bills'), 'outcome' => 'status'] + $private;

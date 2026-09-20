@@ -13,9 +13,9 @@ $residentInitial = preg_match('/^./us', $residentName, $initialMatch) === 1 ? $i
       <span><strong>หอพักของคุณ</strong><small>Resident Portal</small></span>
     </a>
     <nav class="portal-nav">
-      <button class="nav-item is-active" type="button" data-resident-view="dashboard" aria-current="page"><span aria-hidden="true">⌂</span>ภาพรวม</button>
-      <button class="nav-item" type="button" data-resident-view="bills"><span aria-hidden="true">▤</span>บิลของฉัน <span class="nav-count" id="resident-unpaid-count" hidden></span></button>
-      <button class="nav-item" type="button" data-resident-view="profile"><span aria-hidden="true">◉</span>ข้อมูลส่วนตัว</button>
+      <button class="nav-item is-active" type="button" data-resident-view="dashboard" aria-current="page">ภาพรวม</button>
+      <button class="nav-item" type="button" data-resident-view="bills">บิลของฉัน <span class="nav-count" id="resident-unpaid-count" hidden></span></button>
+      <button class="nav-item" type="button" data-resident-view="profile">ข้อมูลส่วนตัว</button>
     </nav>
     <div class="sidebar-profile">
       <span class="avatar" aria-hidden="true"><?= e($residentInitial) ?></span>
@@ -83,7 +83,7 @@ $residentInitial = preg_match('/^./us', $residentName, $initialMatch) === 1 ? $i
           <button type="button" data-bill-filter="paid" aria-pressed="false">ชำระแล้ว</button>
         </div>
         <div class="bill-list" id="resident-bill-list" aria-live="polite" aria-busy="true"></div>
-        <div class="empty-state" id="resident-bills-empty" hidden><span class="empty-icon" aria-hidden="true">▤</span><h3 id="resident-bills-empty-title">ยังไม่มีบิล</h3><p id="resident-bills-empty-copy">เมื่อมีการออกบิล รายการจะแสดงที่นี่</p></div>
+        <div class="empty-state" id="resident-bills-empty" hidden><h3 id="resident-bills-empty-title">ยังไม่มีบิล</h3><p id="resident-bills-empty-copy">เมื่อมีการออกบิล รายการจะแสดงที่นี่</p></div>
       </section>
 
       <section class="portal-view" id="resident-view-profile" data-view-panel="profile" aria-labelledby="resident-profile-title" hidden>
@@ -134,10 +134,10 @@ $residentInitial = preg_match('/^./us', $residentName, $initialMatch) === 1 ? $i
     </main>
 
     <nav class="mobile-bottom-nav" aria-label="เมนูพอร์ทัลบนมือถือ">
-      <button class="is-active" type="button" data-resident-view="dashboard"><span aria-hidden="true">⌂</span>ภาพรวม</button>
-      <button type="button" data-resident-view="bills"><span aria-hidden="true">▤</span>บิล</button>
-      <button type="button" data-resident-view="profile"><span aria-hidden="true">◉</span>โปรไฟล์</button>
-      <button type="button" data-resident-logout><span aria-hidden="true">↪</span>ออกจากระบบ</button>
+      <button class="is-active" type="button" data-resident-view="dashboard">ภาพรวม</button>
+      <button type="button" data-resident-view="bills">บิล</button>
+      <button type="button" data-resident-view="profile">โปรไฟล์</button>
+      <button type="button" data-resident-logout>ออกจากระบบ</button>
     </nav>
   </div>
 </div>
@@ -147,7 +147,7 @@ $residentInitial = preg_match('/^./us', $residentName, $initialMatch) === 1 ? $i
     <span class="bill-row-main"><strong data-bill-no></strong><small data-bill-period></small></span>
     <span class="status-badge" data-bill-status></span>
     <span class="bill-row-amount" data-bill-total></span>
-    <span class="bill-row-arrow" aria-hidden="true">›</span>
+    <span class="bill-row-detail">ดูบิล</span>
   </button>
 </template>
 
@@ -155,7 +155,7 @@ $residentInitial = preg_match('/^./us', $residentName, $initialMatch) === 1 ? $i
   <div class="dialog-panel dialog-panel-wide">
     <div class="dialog-header">
       <div><span class="eyebrow">รายละเอียดใบแจ้งหนี้</span><h2 id="resident-bill-dialog-title">รายละเอียดบิล</h2></div>
-      <button class="icon-button" type="button" data-close-dialog aria-label="ปิดหน้าต่าง">×</button>
+      <button class="text-control" type="button" data-close-dialog aria-label="ปิดหน้าต่าง">ปิด</button>
     </div>
     <div class="bill-detail-loading" id="resident-bill-loading" role="status">
       <p id="resident-bill-loading-message">กำลังโหลดรายละเอียดบิล…</p>
@@ -189,7 +189,7 @@ $residentInitial = preg_match('/^./us', $residentName, $initialMatch) === 1 ? $i
           </form>
         </section>
         <section class="payment-complete" id="resident-payment-complete" hidden>
-          <span class="success-mark" aria-hidden="true">✓</span><h3>บิลนี้ชำระแล้ว</h3><p>ไม่ต้องส่งสลิปเพิ่มเติม</p>
+          <h3>บิลนี้ชำระแล้ว</h3><p>ไม่ต้องส่งสลิปเพิ่มเติม</p>
         </section>
       </div>
     </div>
@@ -199,7 +199,7 @@ $residentInitial = preg_match('/^./us', $residentName, $initialMatch) === 1 ? $i
 
 <dialog class="modal confirm-modal" id="confirm-dialog" aria-labelledby="confirm-title">
   <div class="modal-card">
-    <div class="confirm-icon" aria-hidden="true">!</div>
+
     <h2 id="confirm-title">ยืนยันการทำรายการ</h2>
     <p id="confirm-message"></p>
     <div class="form-actions">

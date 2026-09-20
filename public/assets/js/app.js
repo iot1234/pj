@@ -1928,7 +1928,7 @@
       });
       ['all', 'available', 'reserved', 'occupied'].forEach((key) => { const node = $(`[data-room-stat="${key}"]`); node.textContent = String(key === 'all' ? state.rooms.length : state.rooms.filter((room) => room.status === key).length); });
       const emptyMessage = state.rooms.length === 0
-        ? 'ยังไม่มีห้อง เริ่มใช้งานตามลำดับ: ตั้งค่า → เพิ่มห้อง → รับจอง → รับเข้าพัก → จดเลขตั้งต้น'
+        ? 'ยังไม่มีห้อง เริ่มใช้งานตามลำดับ: ตั้งค่า / เพิ่มห้อง / รับจอง / รับเข้าพัก / จดเลขตั้งต้น'
         : 'ไม่พบห้องที่ตรงกับตัวกรอง';
       setTableState($('#admin-room-state'), visible.length ? 'ready' : 'empty', emptyMessage);
     }

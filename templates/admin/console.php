@@ -21,40 +21,40 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
         <nav class="admin-nav">
             <p class="admin-nav-label">สรุปประจำวัน</p>
             <button class="admin-nav-item is-active" type="button" data-admin-nav="overview" aria-current="page">
-                <span aria-hidden="true">◉</span><span>ภาพรวม</span>
+                <span>ภาพรวม</span>
             </button>
 
             <p class="admin-nav-label">จัดการหอพัก</p>
             <button class="admin-nav-item" type="button" data-admin-nav="rooms">
-                <span aria-hidden="true">▦</span><span>ห้องพัก</span>
+                <span>ห้องพัก</span>
             </button>
             <button class="admin-nav-item" type="button" data-admin-nav="bookings">
-                <span aria-hidden="true">▣</span><span>การจอง</span><span class="nav-count" id="booking-nav-count" hidden>0</span>
+                <span>การจอง</span><span class="nav-count" id="booking-nav-count" hidden>0</span>
             </button>
             <button class="admin-nav-item" type="button" data-admin-nav="residents">
-                <span aria-hidden="true">◎</span><span>ผู้พักอาศัย</span>
+                <span>ผู้พักอาศัย</span>
             </button>
             <button class="admin-nav-item" type="button" data-admin-nav="meters">
-                <span aria-hidden="true">∿</span><span>จดมิเตอร์</span>
+                <span>จดมิเตอร์</span>
             </button>
 
             <p class="admin-nav-label">การเงิน</p>
             <button class="admin-nav-item" type="button" data-admin-nav="bills">
-                <span aria-hidden="true">฿</span><span>ใบแจ้งหนี้</span>
+                <span>ใบแจ้งหนี้</span>
             </button>
             <button class="admin-nav-item" type="button" data-admin-nav="payments">
-                <span aria-hidden="true">✓</span><span>การชำระเงิน</span><span class="nav-count" id="payment-nav-count" hidden>0</span>
+                <span>การชำระเงิน</span><span class="nav-count" id="payment-nav-count" hidden>0</span>
             </button>
 
             <p class="admin-nav-label">LINE</p>
-            <button class="admin-nav-item" type="button" data-admin-nav="line-oas"><span aria-hidden="true">L</span><span>บัญชี LINE OA</span></button>
-            <button class="admin-nav-item" type="button" data-admin-nav="line-bindings"><span aria-hidden="true">↔</span><span>การผูก LINE ผู้พัก</span></button>
+            <button class="admin-nav-item" type="button" data-admin-nav="line-oas"><span>บัญชี LINE OA</span></button>
+            <button class="admin-nav-item" type="button" data-admin-nav="line-bindings"><span>การผูก LINE ผู้พัก</span></button>
             <p class="admin-nav-label">ระบบ</p>
             <button class="admin-nav-item owner-only" type="button" data-admin-nav="users" <?= $adminRole === 'owner' ? '' : 'hidden' ?>>
-                <span aria-hidden="true">⚿</span><span>ผู้ดูแลระบบ</span>
+                <span>ผู้ดูแลระบบ</span>
             </button>
             <button class="admin-nav-item" type="button" data-admin-nav="settings">
-                <span aria-hidden="true">⚙</span><span>ตั้งค่า</span>
+                <span>ตั้งค่า</span>
             </button>
         </nav>
 
@@ -66,13 +66,13 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
 
     <div class="admin-main">
         <header class="admin-topbar">
-            <button class="icon-button admin-menu-toggle" type="button" aria-label="เปิดเมนู" aria-controls="admin-sidebar" aria-expanded="false" data-admin-menu-toggle>☰</button>
+            <button class="text-control admin-menu-toggle" type="button" aria-label="เปิดเมนู" aria-controls="admin-sidebar" aria-expanded="false" data-admin-menu-toggle>เมนู</button>
             <div>
                 <p class="eyebrow">ภาพรวมการจัดการ</p>
                 <h1 id="admin-page-title">ภาพรวม</h1>
             </div>
             <div class="admin-topbar-actions">
-                <span class="live-indicator"><span aria-hidden="true"></span>เข้าสู่ระบบแล้ว</span>
+                <span class="live-indicator">เข้าสู่ระบบแล้ว</span>
                 <button class="button button-ghost button-small" type="button" data-admin-logout>ออกจากระบบ</button>
             </div>
         </header>
@@ -96,7 +96,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                 <div class="overview-grid">
                     <section class="panel overview-panel" aria-labelledby="overview-month-title">
                         <div class="panel-heading">
-                            <div><h3 id="overview-month-title">งานรอบเดือน <span id="overview-period">—</span></h3><p>ลำดับงาน: จดมิเตอร์ → ตรวจยอด → ออกบิล → ตามการชำระ</p></div>
+                            <div><h3 id="overview-month-title">งานรอบเดือน <span id="overview-period">—</span></h3><p>ลำดับงาน: จดมิเตอร์ / ตรวจยอด / ออกบิล / ตามการชำระ</p></div>
                         </div>
                         <ul class="overview-tasks">
                             <li class="overview-task">
@@ -136,7 +136,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
             <section class="admin-view" data-admin-view="rooms" aria-labelledby="rooms-title" hidden>
                 <div class="section-heading">
                     <div><p class="eyebrow">สถานะห้องล่าสุด</p><h2 id="rooms-title">ห้องพักทั้งหมด</h2></div>
-                    <div class="section-heading-actions"><button class="button button-secondary" type="button" data-refresh="rooms">รีเฟรช</button><button class="button button-primary" type="button" data-open-room-dialog>+  เพิ่มห้องพัก</button></div>
+                    <div class="section-heading-actions"><button class="button button-secondary" type="button" data-refresh="rooms">รีเฟรช</button><button class="button button-primary" type="button" data-open-room-dialog>เพิ่มห้องพัก</button></div>
                 </div>
                 <div class="stats-grid stats-grid-four" id="room-stats" aria-live="polite">
                     <article class="stat-card"><span>ห้องทั้งหมด</span><strong data-room-stat="all">—</strong></article>
@@ -170,7 +170,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
             </section>
 
             <section class="admin-view" data-admin-view="residents" aria-labelledby="residents-title" hidden>
-                <div class="section-heading"><div><p class="eyebrow">ข้อมูลผู้เช่าปัจจุบัน</p><h2 id="residents-title">ผู้พักอาศัย</h2></div><button class="button button-primary" type="button" data-open-resident-create>+&nbsp; เพิ่มผู้พักเข้าห้อง</button></div>
+                <div class="section-heading"><div><p class="eyebrow">ข้อมูลผู้เช่าปัจจุบัน</p><h2 id="residents-title">ผู้พักอาศัย</h2></div><button class="button button-primary" type="button" data-open-resident-create>เพิ่มผู้พักเข้าห้อง</button></div>
                 <div class="stats-grid stats-grid-four" id="resident-stats" aria-live="polite">
                     <article class="stat-card"><span>ผู้พักทั้งหมด</span><strong data-resident-stat="all">—</strong></article>
                     <article class="stat-card stat-occupied"><span>ผูก LINE แล้ว</span><strong data-resident-stat="line">—</strong><small>รับบิลผ่าน LINE ได้</small></article>
@@ -234,7 +234,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
             </section>
 
             <section class="admin-view owner-only" data-admin-view="users" aria-labelledby="users-title" hidden>
-                <div class="section-heading"><div><p class="eyebrow">เฉพาะเจ้าของระบบ</p><h2 id="users-title">ผู้ดูแลระบบ</h2></div><button class="button button-primary" type="button" data-open-user-dialog>+  เพิ่มผู้ดูแล</button></div>
+                <div class="section-heading"><div><p class="eyebrow">เฉพาะเจ้าของระบบ</p><h2 id="users-title">ผู้ดูแลระบบ</h2></div><button class="button button-primary" type="button" data-open-user-dialog>เพิ่มผู้ดูแล</button></div>
                 <div class="security-note"><strong>สิทธิ์การเข้าถึง</strong><span>เจ้าของ (Owner) จัดการบัญชีได้ ผู้ดูแล (Admin) ใช้งานโมดูลหอพักและการเงิน</span></div>
                 <div class="panel table-panel"><div class="table-scroll" role="region" aria-label="ตารางผู้ดูแลระบบ" tabindex="0"><table><thead><tr><th>ชื่อผู้ใช้</th><th>บทบาท</th><th>สถานะ</th><th>แก้ไขล่าสุด</th><th class="align-right">จัดการ</th></tr></thead><tbody id="user-rows"></tbody></table></div><div class="table-state" id="user-state" data-state="loading"><span class="spinner" aria-hidden="true"></span><p>กำลังโหลดผู้ดูแล…</p></div></div>
             </section>
@@ -262,21 +262,21 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                         <div class="security-note"><strong>กุญแจระบบ</strong><span>ช่องค่าลับที่เว้นว่างจะเก็บค่าเดิม เลือก “ล้างค่า” เมื่อต้องการยกเลิกจริง การเปลี่ยนส่วนนี้ทำได้เฉพาะเจ้าของระบบ</span></div>
                         <div class="integration-form-grid">
                             <fieldset class="integration-fieldset">
-                                <legend><span class="integration-icon">฿</span> PromptPay QR</legend>
+                                <legend> PromptPay QR</legend>
                                 <label class="field"><span>เบอร์พร้อมเพย์ / เลขผู้เสียภาษี</span><input name="promptpay_target" type="text" inputmode="numeric" maxlength="13" pattern="(?:0[0-9]{9}|[0-9]{13})" placeholder="0812345678"<?= $integrationDisabled ?>><small>ใช้สร้าง QR ตามยอดบิล</small></label>
                                 <label class="field"><span>ชื่อบัญชีที่แสดง</span><input name="promptpay_name" type="text" maxlength="120" placeholder="ชื่อผู้รับเงิน"<?= $integrationDisabled ?>></label>
                                 <div class="integration-status-row"><div class="integration-status-copy"><span>ความพร้อมของค่าที่บันทึก</span><small class="integration-test-result" data-integration-test-result="promptpay">ยังไม่ได้ทดสอบค่าที่บันทึกนี้</small></div><div class="integration-status-actions"><span class="status-pill status-neutral" data-integration-status="promptpay">กำลังโหลด</span><button class="button button-small button-secondary" type="button" data-test-integration="promptpay" disabled>สุ่มยอดและแสดง QR ทดสอบ</button></div></div>
                             </fieldset>
 
                             <fieldset class="integration-fieldset">
-                                <legend><span class="integration-icon">L</span> LINE และคิวแจ้งเตือน</legend>
+                                <legend> LINE และคิวแจ้งเตือน</legend>
                                 <p>จัดการ OA, Token, Webhook และผู้รับแจ้งเตือนได้ที่หน้า LINE สำหรับเจ้าของและผู้ดูแลทุกคน</p>
                                 <button class="button button-secondary" type="button" data-admin-nav="line-oas">เปิดบัญชี LINE OA</button>
                                 <p class="field-hint">ระบบใช้ค่าการส่งซ้ำและขนาดคิวที่บันทึกไว้ให้อัตโนมัติ ไม่ต้องตั้งค่าเพิ่ม</p>
                             </fieldset>
 
                             <fieldset class="integration-fieldset integration-fieldset-wide">
-                                <legend><span class="integration-icon">✓</span> ตรวจสลิปอัตโนมัติ</legend>
+                                <legend> ตรวจสลิปอัตโนมัติ</legend>
                                 <div class="form-grid form-grid-two">
                                      <label class="field"><span>ผู้ให้บริการ</span><select name="slip_provider" aria-describedby="slip-provider-help"<?= $integrationDisabled ?>><option value="none">ยังไม่เปิดใช้</option><option value="slipok">SlipOK</option><option value="easyslip">EasySlip</option></select><small id="slip-provider-help" aria-live="polite">เลือกผู้ให้บริการเพื่อแสดงเฉพาะช่องที่ต้องกรอก</small></label>
                                      <label class="field"><span>เลขบัญชีปลายทาง/เลขท้าย</span><input name="payment_receiver_account_tail" type="text" inputmode="numeric" minlength="6" maxlength="20" pattern="[0-9]{6,20}" placeholder="อย่างน้อย 6 หลัก"<?= $integrationDisabled ?>><small>ใช้เทียบผู้รับบนสลิป ไม่ใช่เบอร์พร้อมเพย์ และต้องตรงอย่างน้อย 6 หลัก</small></label>
@@ -304,17 +304,17 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
         </main>
 
         <nav class="mobile-bottom-nav admin-bottom-nav" aria-label="เมนูผู้ดูแลบนมือถือ">
-            <button class="is-active" type="button" data-admin-nav="overview"><span aria-hidden="true">◉</span>ภาพรวม</button>
-            <button type="button" data-admin-nav="bookings"><span aria-hidden="true">▣</span>การจอง<span class="nav-count nav-count-dot" id="booking-bottom-count" hidden>0</span></button>
-            <button type="button" data-admin-nav="payments"><span aria-hidden="true">✓</span>ชำระเงิน<span class="nav-count nav-count-dot" id="payment-bottom-count" hidden>0</span></button>
-            <button type="button" aria-controls="admin-sidebar" aria-expanded="false" data-admin-menu-toggle><span aria-hidden="true">☰</span>เมนูทั้งหมด</button>
+            <button class="is-active" type="button" data-admin-nav="overview">ภาพรวม</button>
+            <button type="button" data-admin-nav="bookings">การจอง<span class="nav-count nav-count-dot" id="booking-bottom-count" hidden>0</span></button>
+            <button type="button" data-admin-nav="payments">ชำระเงิน<span class="nav-count nav-count-dot" id="payment-bottom-count" hidden>0</span></button>
+            <button type="button" aria-controls="admin-sidebar" aria-expanded="false" data-admin-menu-toggle>เมนูทั้งหมด</button>
         </nav>
     </div>
 </div>
 
 <dialog class="modal" id="promptpay-test-dialog" aria-labelledby="promptpay-test-title">
     <div class="modal-card promptpay-test-card">
-        <div class="modal-header"><div><p class="eyebrow">ทดสอบค่าที่บันทึก</p><h2 id="promptpay-test-title">PromptPay QR ทดสอบ</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div>
+        <div class="modal-header"><div><p class="eyebrow">ทดสอบค่าที่บันทึก</p><h2 id="promptpay-test-title">PromptPay QR ทดสอบ</h2></div><button class="text-control" type="button" data-close-dialog aria-label="ปิด">ปิด</button></div>
         <div class="security-note promptpay-transfer-warning" role="alert"><strong>QR นี้ชี้บัญชีจริง</strong><span>ไม่มีโหมด sandbox และไม่หมดอายุอัตโนมัติ สแกนเพื่อตรวจชื่อผู้รับและยอดเท่านั้น แล้วกดยกเลิกในแอปธนาคาร ห้ามกดยืนยันโอน เพราะเงินจะถูกโอนจริง</span></div>
         <div class="qr-stage promptpay-test-qr-stage" id="promptpay-test-qr-stage" aria-live="polite"><div class="qr-placeholder">กดสุ่มยอดจากหน้าตั้งค่าเพื่อสร้าง QR ทดสอบ</div></div>
         <p class="field-hint">การทดสอบนี้สร้าง QR ในระบบเท่านั้น ไม่สร้างบิล ไม่สร้างรายการชำระ และไม่ส่งข้อมูลไปยังผู้ให้บริการตรวจสลิป</p>
@@ -325,7 +325,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
 <dialog class="modal" id="room-dialog" aria-labelledby="room-dialog-title">
     <form class="modal-card modal-card-wide" id="room-form" data-guard-draft>
         <input type="hidden" name="id">
-        <div class="modal-header"><div><p class="eyebrow">จัดการข้อมูลหลัก</p><h2 id="room-dialog-title">เพิ่มห้องพัก</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div>
+        <div class="modal-header"><div><p class="eyebrow">จัดการข้อมูลหลัก</p><h2 id="room-dialog-title">เพิ่มห้องพัก</h2></div><button class="text-control" type="button" data-close-dialog aria-label="ปิด">ปิด</button></div>
         <div class="form-grid form-grid-two"><label class="field"><span>รหัสห้อง</span><input name="room_code" type="text" maxlength="30" required autocomplete="off"></label><label class="field"><span>ชั้น</span><input name="floor" type="number" min="1" max="200" step="1" required></label><label class="field"><span>ประเภทห้อง</span><input name="room_type" type="text" maxlength="50" required></label><label class="field"><span>ค่าเช่ารายเดือน</span><input name="monthly_rent" type="number" min="0.01" step="0.01" required></label></div><details class="optional-fields"><summary>รูปห้องและรายละเอียดเพิ่มเติม</summary><div class="form-grid form-grid-two"><label class="field form-span-two"><span>รูปห้อง</span><select name="image_key" required><option value="room-standard.jpg">ห้องมาตรฐาน</option><option value="room-deluxe.jpg">ห้องดีลักซ์</option><option value="room-suite.jpg">ห้องสวีท</option><option value="room-studio.jpg">ห้องสตูดิโอ</option></select></label><label class="field form-span-two"><span>สิ่งอำนวยความสะดวก</span><input name="amenities" type="text" maxlength="500" placeholder="คั่นด้วยจุลภาค เช่น แอร์, ตู้เย็น, เตียง"></label><label class="field form-span-two"><span>รายละเอียด</span><textarea name="description" rows="3" maxlength="1000"></textarea></label></div></details>
         <p class="form-error" id="room-form-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-primary" type="submit">บันทึกห้อง</button></div>
     </form>
@@ -334,7 +334,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
 <dialog class="modal" id="move-in-dialog" aria-labelledby="move-in-title">
     <form class="modal-card" id="move-in-form">
         <input type="hidden" name="booking_id">
-        <div class="modal-header"><div><p class="eyebrow">เปิดบัญชีผู้พัก</p><h2 id="move-in-title">รับเข้าพัก</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div>
+        <div class="modal-header"><div><p class="eyebrow">เปิดบัญชีผู้พัก</p><h2 id="move-in-title">รับเข้าพัก</h2></div><button class="text-control" type="button" data-close-dialog aria-label="ปิด">ปิด</button></div>
         <p class="modal-lead" id="move-in-summary"></p>
         <div class="form-grid form-grid-two">
             <label class="field"><span>วันที่เข้าพัก</span><input name="move_in_date" type="date" min="2000-01-01" required></label>
@@ -351,13 +351,13 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
 </dialog>
 
 <dialog class="modal" id="booking-cancel-dialog" aria-labelledby="booking-cancel-title">
-    <form class="modal-card" id="booking-cancel-form"><input type="hidden" name="booking_id"><div class="modal-header"><div><p class="eyebrow">บันทึกการตัดสินใจ</p><h2 id="booking-cancel-title">ยกเลิกการจอง</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div><p class="modal-lead" id="booking-cancel-summary"></p><div class="form-grid"><label class="field"><span>เหตุผล (ไม่บังคับ)</span><textarea name="reason" minlength="3" maxlength="500" rows="4" placeholder="เช่น ผู้จองขอยกเลิก หรือไม่สามารถติดต่อได้"></textarea><small>หากระบุ กรุณากรอกอย่างน้อย 3 ตัวอักษร เพื่อใช้ตรวจสอบย้อนหลัง</small></label></div><p class="form-error" id="booking-cancel-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>กลับ</button><button class="button button-danger" type="submit">ยืนยันยกเลิกการจอง</button></div></form>
+    <form class="modal-card" id="booking-cancel-form"><input type="hidden" name="booking_id"><div class="modal-header"><div><p class="eyebrow">บันทึกการตัดสินใจ</p><h2 id="booking-cancel-title">ยกเลิกการจอง</h2></div><button class="text-control" type="button" data-close-dialog aria-label="ปิด">ปิด</button></div><p class="modal-lead" id="booking-cancel-summary"></p><div class="form-grid"><label class="field"><span>เหตุผล (ไม่บังคับ)</span><textarea name="reason" minlength="3" maxlength="500" rows="4" placeholder="เช่น ผู้จองขอยกเลิก หรือไม่สามารถติดต่อได้"></textarea><small>หากระบุ กรุณากรอกอย่างน้อย 3 ตัวอักษร เพื่อใช้ตรวจสอบย้อนหลัง</small></label></div><p class="form-error" id="booking-cancel-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>กลับ</button><button class="button button-danger" type="submit">ยืนยันยกเลิกการจอง</button></div></form>
 </dialog>
 
 <dialog class="modal" id="resident-create-dialog" aria-labelledby="resident-create-title">
     <form class="modal-card modal-card-wide" id="resident-create-form">
         <input type="hidden" name="idempotency_key">
-        <div class="modal-header"><div><p class="eyebrow">ผู้พักหลัก / ผู้ถือบัญชีของห้อง</p><h2 id="resident-create-title">เพิ่มผู้พักเข้าห้อง</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div>
+        <div class="modal-header"><div><p class="eyebrow">ผู้พักหลัก / ผู้ถือบัญชีของห้อง</p><h2 id="resident-create-title">เพิ่มผู้พักเข้าห้อง</h2></div><button class="text-control" type="button" data-close-dialog aria-label="ปิด">ปิด</button></div>
         <div class="security-note"><strong>หนึ่งห้องมีผู้พักหลักได้ครั้งละ 1 คน</strong><span>ระบบจะสร้างหลักฐานรับเข้าพักและรหัสเปิดใช้งานครั้งเดียว ต้องตรวจตัวตน เบอร์ และเลขมิเตอร์จริงก่อนบันทึก</span></div>
         <div class="form-grid form-grid-two">
             <label class="field"><span>ห้องว่าง</span><select name="room_id" required></select><small id="resident-create-room-help">แสดงเฉพาะห้องที่ระบบตรวจว่าไม่มีผู้จองหรือผู้พัก</small></label>
@@ -378,7 +378,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
 <dialog class="modal" id="opening-readings-dialog" aria-labelledby="opening-readings-title">
     <form class="modal-card" id="opening-readings-form">
         <input type="hidden" name="occupancy_id">
-        <div class="modal-header"><div><p class="eyebrow">เติมข้อมูลการเข้าพักที่ยังขาด</p><h2 id="opening-readings-title">เลขมิเตอร์ ณ วันเข้าพัก</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div>
+        <div class="modal-header"><div><p class="eyebrow">เติมข้อมูลการเข้าพักที่ยังขาด</p><h2 id="opening-readings-title">เลขมิเตอร์ ณ วันเข้าพัก</h2></div><button class="text-control" type="button" data-close-dialog aria-label="ปิด">ปิด</button></div>
         <p class="modal-lead" id="opening-readings-summary"></p>
         <div class="security-note" id="opening-readings-help"><strong>ใช้เลขจริงจากวันส่งมอบห้อง</strong><span>ตรวจจากบันทึกหรือภาพมิเตอร์วันเข้าพัก เลขทั้งสองใช้คำนวณบิลและบันทึกได้ครั้งเดียว หากยังหาเลขจริงไม่ได้ ให้กลับมากรอกภายหลังโดยไม่ใส่ค่า 0 แทน</span></div>
         <div class="form-grid form-grid-two">
@@ -391,13 +391,13 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
 </dialog>
 
 <dialog class="modal" id="resident-edit-dialog" aria-labelledby="resident-edit-title">
-    <form class="modal-card" id="resident-edit-form"><input type="hidden" name="resident_id"><div class="modal-header"><div><p class="eyebrow">ข้อมูลผู้พักที่ยืนยันแล้ว</p><h2 id="resident-edit-title">แก้ข้อมูลผู้พัก</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div><p class="modal-lead" id="resident-edit-summary"></p><div class="security-note"><strong>เบอร์โทรเป็นชื่อบัญชี ไม่ใช่รหัสผ่าน</strong><span>ตรวจสอบตัวตนก่อนเปลี่ยนเบอร์ เมื่อบันทึก ระบบจะยกเลิกเซสชันและรหัสผ่านเดิม แล้วออก activation code ใหม่ให้ส่งมอบผู้พัก</span></div><div class="form-grid form-grid-two"><label class="field"><span>ชื่อ–นามสกุล</span><input name="full_name" type="text" minlength="1" maxlength="150" required autocomplete="name"></label><label class="field"><span>เบอร์โทรศัพท์</span><input name="phone" type="tel" minlength="10" maxlength="20" required autocomplete="tel"></label><label class="field"><span>อีเมล</span><input name="email" type="email" maxlength="190" autocomplete="email"></label></div><p class="field-hint">LINE User ID เปลี่ยนได้จากบัญชีผู้พักเท่านั้น และต้องยืนยันรหัสที่ส่งผ่าน LINE</p><p class="form-error" id="resident-edit-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-primary" type="submit">บันทึกข้อมูล</button></div></form>
+    <form class="modal-card" id="resident-edit-form"><input type="hidden" name="resident_id"><div class="modal-header"><div><p class="eyebrow">ข้อมูลผู้พักที่ยืนยันแล้ว</p><h2 id="resident-edit-title">แก้ข้อมูลผู้พัก</h2></div><button class="text-control" type="button" data-close-dialog aria-label="ปิด">ปิด</button></div><p class="modal-lead" id="resident-edit-summary"></p><div class="security-note"><strong>เบอร์โทรเป็นชื่อบัญชี ไม่ใช่รหัสผ่าน</strong><span>ตรวจสอบตัวตนก่อนเปลี่ยนเบอร์ เมื่อบันทึก ระบบจะยกเลิกเซสชันและรหัสผ่านเดิม แล้วออก activation code ใหม่ให้ส่งมอบผู้พัก</span></div><div class="form-grid form-grid-two"><label class="field"><span>ชื่อ–นามสกุล</span><input name="full_name" type="text" minlength="1" maxlength="150" required autocomplete="name"></label><label class="field"><span>เบอร์โทรศัพท์</span><input name="phone" type="tel" minlength="10" maxlength="20" required autocomplete="tel"></label><label class="field"><span>อีเมล</span><input name="email" type="email" maxlength="190" autocomplete="email"></label></div><p class="field-hint">LINE User ID เปลี่ยนได้จากบัญชีผู้พักเท่านั้น และต้องยืนยันรหัสที่ส่งผ่าน LINE</p><p class="form-error" id="resident-edit-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-primary" type="submit">บันทึกข้อมูล</button></div></form>
 </dialog>
 
 <script src="<?= e($assetUrl('/assets/js/admin-line-platform.js')) ?>" defer></script>
 <dialog class="modal" id="line-platform-dialog" aria-labelledby="line-platform-title">
     <div class="modal-card line-platform-modal">
-        <div class="modal-header"><h2 id="line-platform-title">จัดการ LINE</h2><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div>
+        <div class="modal-header"><h2 id="line-platform-title">จัดการ LINE</h2><button class="text-control" type="button" data-close-dialog aria-label="ปิด">ปิด</button></div>
         <p id="line-platform-summary" class="muted"></p><p class="form-error" id="line-platform-error" role="alert" hidden></p>
         <form id="line-oa-form" class="stack-form" hidden>
             <div class="security-note"><strong>กรอกเพียง 2 ค่า</strong><span>นำ Channel access token และ Channel secret จาก LINE Developers มากรอก ระบบจะตรวจบัญชีและดึงชื่อกับ Basic ID ให้เอง</span></div>
@@ -442,7 +442,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
 </dialog>
 <dialog class="modal" id="admin-line-dialog" aria-labelledby="admin-line-title">
     <div class="modal-card stack-form">
-        <div class="modal-header"><div><p class="eyebrow">รับบิลและดูข้อมูลห้องผ่าน LINE</p><h2 id="admin-line-title">ผูก LINE ของผู้พัก</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div>
+        <div class="modal-header"><div><p class="eyebrow">รับบิลและดูข้อมูลห้องผ่าน LINE</p><h2 id="admin-line-title">ผูก LINE ของผู้พัก</h2></div><button class="text-control" type="button" data-close-dialog aria-label="ปิด">ปิด</button></div>
         <p class="modal-lead" id="admin-line-summary"></p>
         <p id="admin-line-status" role="status">กำลังตรวจสอบสถานะ…</p>
         <p class="field-hint" id="admin-line-readiness" hidden>ผู้ดูแลยังตั้งค่า LINE ไม่ครบ กรุณาตั้งค่า Token, Channel secret และ Basic ID ก่อนสร้างรหัส</p>
@@ -473,21 +473,21 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
 </dialog>
 
 <dialog class="modal" id="resident-move-out-dialog" aria-labelledby="resident-move-out-title">
-    <form class="modal-card" id="resident-move-out-form"><input type="hidden" name="resident_id"><div class="modal-header"><div><p class="eyebrow">สิ้นสุดการเข้าพัก</p><h2 id="resident-move-out-title">ย้ายผู้พักออก</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div><p class="modal-lead" id="resident-move-out-summary"></p><div class="security-note"><strong>ตรวจบิลปิดรอบก่อนย้ายออก</strong><span>ต้องไม่มีบิลค้าง และต้องมีบิลของเดือนที่ย้ายออกซึ่งชำระแล้ว กรุณาจดมิเตอร์ปลายงวดและออกบิลให้ครบก่อนดำเนินการ</span></div><div class="form-grid"><label class="field"><span>วันที่ย้ายออก</span><input name="move_out_date" type="date" required></label></div><p class="form-error" id="resident-move-out-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-danger" type="submit">ยืนยันย้ายออก</button></div></form>
+    <form class="modal-card" id="resident-move-out-form"><input type="hidden" name="resident_id"><div class="modal-header"><div><p class="eyebrow">สิ้นสุดการเข้าพัก</p><h2 id="resident-move-out-title">ย้ายผู้พักออก</h2></div><button class="text-control" type="button" data-close-dialog aria-label="ปิด">ปิด</button></div><p class="modal-lead" id="resident-move-out-summary"></p><div class="security-note"><strong>ตรวจบิลปิดรอบก่อนย้ายออก</strong><span>ต้องไม่มีบิลค้าง และต้องมีบิลของเดือนที่ย้ายออกซึ่งชำระแล้ว กรุณาจดมิเตอร์ปลายงวดและออกบิลให้ครบก่อนดำเนินการ</span></div><div class="form-grid"><label class="field"><span>วันที่ย้ายออก</span><input name="move_out_date" type="date" required></label></div><p class="form-error" id="resident-move-out-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-danger" type="submit">ยืนยันย้ายออก</button></div></form>
 </dialog>
 
 <dialog class="modal" id="payment-close-dialog" aria-labelledby="payment-close-title">
-    <form class="modal-card" id="payment-close-form"><input type="hidden" name="payment_id"><div class="modal-header"><div><p class="eyebrow">กู้รายการตรวจสลิปค้าง</p><h2 id="payment-close-title">ปิดรายการชำระถาวร</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div><p class="modal-lead" id="payment-close-summary"></p><div class="security-note"><strong>ปิดแล้วตรวจซ้ำรายการนี้ไม่ได้ และบิลยังไม่เป็นชำระแล้ว</strong><span>สลิปจะถูกเก็บไว้พร้อมผลปฏิเสธ ส่งไฟล์เดิมอีกครั้งจะได้ผลเดิม หากผู้พักโอนแล้วหรือระบบตรวจขัดข้อง ให้ตรวจยอดและลองตรวจซ้ำก่อนปิด การปิดรายการไม่ได้หมายความว่าผู้พักต้องโอนใหม่</span></div><div class="form-grid"><label class="field"><span>เหตุผล</span><textarea name="reason" minlength="3" maxlength="450" rows="4" required placeholder="ระบุเหตุผลและผลตรวจสอบก่อนปิดรายการ"></textarea></label></div><p class="form-error" id="payment-close-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-danger" type="submit">ปิดรายการถาวร</button></div></form>
+    <form class="modal-card" id="payment-close-form"><input type="hidden" name="payment_id"><div class="modal-header"><div><p class="eyebrow">กู้รายการตรวจสลิปค้าง</p><h2 id="payment-close-title">ปิดรายการชำระถาวร</h2></div><button class="text-control" type="button" data-close-dialog aria-label="ปิด">ปิด</button></div><p class="modal-lead" id="payment-close-summary"></p><div class="security-note"><strong>ปิดแล้วตรวจซ้ำรายการนี้ไม่ได้ และบิลยังไม่เป็นชำระแล้ว</strong><span>สลิปจะถูกเก็บไว้พร้อมผลปฏิเสธ ส่งไฟล์เดิมอีกครั้งจะได้ผลเดิม หากผู้พักโอนแล้วหรือระบบตรวจขัดข้อง ให้ตรวจยอดและลองตรวจซ้ำก่อนปิด การปิดรายการไม่ได้หมายความว่าผู้พักต้องโอนใหม่</span></div><div class="form-grid"><label class="field"><span>เหตุผล</span><textarea name="reason" minlength="3" maxlength="450" rows="4" required placeholder="ระบุเหตุผลและผลตรวจสอบก่อนปิดรายการ"></textarea></label></div><p class="form-error" id="payment-close-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-danger" type="submit">ปิดรายการถาวร</button></div></form>
 </dialog>
 
 <dialog class="modal" id="user-dialog" aria-labelledby="user-dialog-title">
-    <form class="modal-card" id="user-form" data-guard-draft><input type="hidden" name="id"><div class="modal-header"><div><p class="eyebrow">เฉพาะ Owner</p><h2 id="user-dialog-title">เพิ่มผู้ดูแล</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div><div class="form-grid"><label class="field"><span>ชื่อผู้ใช้</span><input name="username" type="text" minlength="3" maxlength="64" required autocomplete="username"></label><label class="field"><span>รหัสผ่าน</span><input name="password" type="password" minlength="12" maxlength="200" autocomplete="new-password"><small id="user-password-help">อย่างน้อย 12 ตัวอักษร</small></label><label class="field"><span>บทบาท</span><select name="role" required><option value="admin">ผู้ดูแล (Admin)</option><option value="owner">เจ้าของ (Owner)</option></select></label><label class="check-field"><input name="is_active" type="checkbox" value="1" checked><span>เปิดใช้งานบัญชี</span></label></div><p class="form-error" id="user-form-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-primary" type="submit">บันทึกผู้ดูแล</button></div></form>
+    <form class="modal-card" id="user-form" data-guard-draft><input type="hidden" name="id"><div class="modal-header"><div><p class="eyebrow">เฉพาะ Owner</p><h2 id="user-dialog-title">เพิ่มผู้ดูแล</h2></div><button class="text-control" type="button" data-close-dialog aria-label="ปิด">ปิด</button></div><div class="form-grid"><label class="field"><span>ชื่อผู้ใช้</span><input name="username" type="text" minlength="3" maxlength="64" required autocomplete="username"></label><label class="field"><span>รหัสผ่าน</span><input name="password" type="password" minlength="12" maxlength="200" autocomplete="new-password"><small id="user-password-help">อย่างน้อย 12 ตัวอักษร</small></label><label class="field"><span>บทบาท</span><select name="role" required><option value="admin">ผู้ดูแล (Admin)</option><option value="owner">เจ้าของ (Owner)</option></select></label><label class="check-field"><input name="is_active" type="checkbox" value="1" checked><span>เปิดใช้งานบัญชี</span></label></div><p class="form-error" id="user-form-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-primary" type="submit">บันทึกผู้ดูแล</button></div></form>
 </dialog>
 
 <dialog class="modal" id="preview-dialog" aria-labelledby="preview-title">
-    <div class="modal-card modal-card-wide"><div class="modal-header"><div><p class="eyebrow">ยังไม่สร้างบิล</p><h2 id="preview-title">ตรวจยอดก่อนออกบิล</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="ปิด">×</button></div><div class="preview-list" id="bill-preview-content"></div><div class="form-actions"><button class="button button-primary" type="button" data-close-dialog>ตรวจแล้ว</button></div></div>
+    <div class="modal-card modal-card-wide"><div class="modal-header"><div><p class="eyebrow">ยังไม่สร้างบิล</p><h2 id="preview-title">ตรวจยอดก่อนออกบิล</h2></div><button class="text-control" type="button" data-close-dialog aria-label="ปิด">ปิด</button></div><div class="preview-list" id="bill-preview-content"></div><div class="form-actions"><button class="button button-primary" type="button" data-close-dialog>ตรวจแล้ว</button></div></div>
 </dialog>
 
 <dialog class="modal confirm-modal" id="confirm-dialog" aria-labelledby="confirm-title">
-    <div class="modal-card"><div class="confirm-icon" aria-hidden="true">!</div><h2 id="confirm-title">ยืนยันการทำรายการ</h2><p id="confirm-message"></p><div class="form-actions"><button class="button button-ghost" type="button" data-confirm-cancel>ยกเลิก</button><button class="button button-danger" type="button" data-confirm-accept>ยืนยัน</button></div></div>
+    <div class="modal-card"><h2 id="confirm-title">ยืนยันการทำรายการ</h2><p id="confirm-message"></p><div class="form-actions"><button class="button button-ghost" type="button" data-confirm-cancel>ยกเลิก</button><button class="button button-danger" type="button" data-confirm-accept>ยืนยัน</button></div></div>
 </dialog>

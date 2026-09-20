@@ -10,14 +10,12 @@
       <h1 id="resident-welcome-title">ดูบิล ชำระเงิน และจัดการข้อมูลของคุณ</h1>
       <p>เข้าสู่ระบบด้วยเบอร์โทรศัพท์และรหัสผ่านของผู้พัก หรือใช้รหัสเปิดใช้งานครั้งเดียวเมื่อเข้าใช้ครั้งแรก</p>
     </div>
-    <div class="resident-login-art" aria-hidden="true">
-      <span>฿</span><span>⌂</span><span>✓</span>
-    </div>
+
   </section>
 
   <section class="auth-card" aria-labelledby="resident-login-title">
     <div class="auth-card-heading">
-      <a class="back-link" href="/">← กลับหน้าห้องว่าง</a>
+      <a class="back-link" href="/">กลับหน้าห้องว่าง</a>
       <span class="eyebrow">Resident access</span>
       <h2 id="resident-login-title">เข้าสู่ระบบผู้เช่า</h2>
       <p>กรอกเบอร์โทรศัพท์และข้อมูลลับของบัญชี ระบบจะไม่อนุญาตให้เข้าใช้ด้วยเบอร์โทรเพียงอย่างเดียว</p>

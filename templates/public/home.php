@@ -75,7 +75,7 @@
       <article class="room-card room-card-skeleton" aria-hidden="true"></article>
     </div>
     <div class="empty-state" id="public-rooms-empty" hidden>
-      <span class="empty-icon" aria-hidden="true">⌂</span>
+
       <h3 id="public-rooms-empty-title">ไม่พบห้องว่างที่ตรงกับตัวกรอง</h3>
       <p id="public-rooms-empty-copy">ลองเปลี่ยนประเภท ชั้น หรือคำค้นหา</p>
     </div>
@@ -116,7 +116,7 @@
         <span class="eyebrow">Booking request</span>
         <h2 id="booking-dialog-title">ส่งคำขอจองห้อง</h2>
       </div>
-      <button class="icon-button" type="button" data-close-dialog aria-label="ปิดหน้าต่าง">×</button>
+      <button class="text-control" type="button" data-close-dialog aria-label="ปิดหน้าต่าง">ปิด</button>
     </div>
 
     <form id="public-booking-form" class="stack-form" novalidate>
@@ -150,7 +150,7 @@
     </form>
 
     <div class="success-state" id="public-booking-success" hidden tabindex="-1">
-      <span class="success-mark" aria-hidden="true">✓</span>
+
       <h3>รับคำขอจองเรียบร้อยแล้ว</h3>
       <p>ห้องถูกกันไว้แล้ว ผู้ดูแลจะติดต่อกลับตามเบอร์ที่แจ้ง</p>
       <p id="booking-expiry">กรุณารอผู้ดูแลติดต่อกลับเพื่อยืนยันการจอง</p>

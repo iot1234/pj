@@ -406,7 +406,7 @@ $test('login controls and admin tables retain accessibility contracts',function(
     $same(7,preg_match_all('/class="table-scroll(?: meter-table)?" role="region" aria-label="[^"]+" tabindex="0"/',$admin));
     $same(true,str_contains($css,'.table-scroll:focus-visible'));
     $same(1,preg_match('/\.status-[^{]*\.status-danger\s*\{[^}]*var\(--red\)/s',$css));
-    foreach(['.button { display: inline-flex; min-height: 44px','.button-small { min-height: 44px','.icon-button { display: inline-grid; width: 44px; height: 44px','.password-toggle { position: absolute;']as$contract)$same(true,str_contains($css,$contract));
+    foreach(['.button { display: inline-flex; min-height: 44px','.button-small { min-height: 44px','.text-control { display: inline-flex; min-width: 54px; min-height: 44px','.password-toggle { position: absolute;']as$contract)$same(true,str_contains($css,$contract));
     $same(1,preg_match('/\.password-toggle\s*\{[^}]*min-width:\s*44px;[^}]*min-height:\s*44px;/s',$css));
 });
 $test('resident PIN surfaces and runtime compatibility paths are retired',function()use($same,$app):void{

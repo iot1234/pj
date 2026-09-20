@@ -15,7 +15,7 @@ h1, h2, h3 { line-height: 1.45; letter-spacing: normal; }
 .button { font-weight: 650; }
 .button-secondary { color: var(--ink); background: #fff; border-color: var(--line-strong); }
 .button-secondary:hover:not(:disabled), .button-ghost:hover:not(:disabled) { background: #f0f3f8; }
-.icon-button { border-radius: 7px; }
+.text-control { border-radius: 7px; }
 input, select, textarea { border-radius: 6px; }
 input[readonly] { cursor: text; background: #f5f7fa; }
 .admin-shell { background: var(--canvas); }

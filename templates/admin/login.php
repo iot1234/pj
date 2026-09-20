@@ -11,15 +11,15 @@
       <p>บัญชีผู้ดูแลได้รับการป้องกันด้วย session ฝั่งเซิร์ฟเวอร์ การจำกัดความถี่ และ CSRF token</p>
     </div>
     <ul class="auth-points">
-      <li><span aria-hidden="true">✓</span> ห้องและการจองอัปเดตจากฐานข้อมูลจริง</li>
-      <li><span aria-hidden="true">✓</span> ทุกการเปลี่ยนสถานะสำคัญถูกบันทึก</li>
-      <li><span aria-hidden="true">✓</span> ข้อมูลการชำระเงินจำกัดตามสิทธิ์</li>
+      <li> ห้องและการจองอัปเดตจากฐานข้อมูลจริง</li>
+      <li> ทุกการเปลี่ยนสถานะสำคัญถูกบันทึก</li>
+      <li> ข้อมูลการชำระเงินจำกัดตามสิทธิ์</li>
     </ul>
   </section>
 
   <section class="auth-card" aria-labelledby="admin-login-title">
     <div class="auth-card-heading">
-      <a class="back-link" href="/">← กลับหน้าห้องว่าง</a>
+      <a class="back-link" href="/">กลับหน้าห้องว่าง</a>
       <span class="eyebrow">Administrator</span>
       <h2 id="admin-login-title">เข้าสู่ระบบผู้ดูแล</h2>
       <p>ใช้ชื่อผู้ใช้และรหัสผ่านของบัญชีผู้ดูแลระบบ</p>
