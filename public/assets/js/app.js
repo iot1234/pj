@@ -152,7 +152,7 @@
     PROMPTPAY_TARGET_INVALID: 'เบอร์ PromptPay หรือเลขผู้เสียภาษีไม่ถูกต้อง',
     AMOUNT_INVALID: 'ยอดชำระไม่ถูกต้อง กรุณารีเฟรชรายละเอียดบิล',
     SLIP_NOT_CONFIGURED: 'ระบบตรวจสลิปยังตั้งค่าไม่ครบ กรุณาติดต่อผู้ดูแล',
-    LINE_NOT_CONFIGURED: 'ยังไม่ได้ตั้งค่า LINE Messaging',
+    LINE_NOT_CONFIGURED: 'กรอก Channel access token และ Channel secret ของ Messaging API บัญชีเดียวกันให้ครบ แล้วบันทึกการเชื่อมต่อ',
     LINE_NOT_VERIFIED: 'บัญชี LINE ยังไม่ผ่านรหัสยืนยัน',
     LINE_LINK_STALE: 'ข้อมูลบัญชีเปลี่ยนหลังขอรหัส LINE กรุณาขอรหัสใหม่',
     METER_HISTORY_LOCKED: 'แก้เลขมิเตอร์นี้ไม่ได้ เพราะมีรอบเดือนถัดไปอ้างอิงแล้ว',

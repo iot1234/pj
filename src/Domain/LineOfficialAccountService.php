@@ -20,9 +20,9 @@ final class LineOfficialAccountService
     private readonly SecretCipher $cipher;
     private int $registryDepth = 0;
 
-    public function __construct(private readonly Application $app, private readonly ?\Closure $identityTransport = null)
+    public function __construct(private readonly Application $app, private readonly ?\Closure $identityTransport = null, private readonly ?\Closure $webhookTransport = null)
     {
-        if ($identityTransport !== null && (PHP_SAPI !== 'cli' || $app->config->get('APP_ENV') !== 'testing')) {
+        if (($identityTransport !== null || $webhookTransport !== null) && (PHP_SAPI !== 'cli' || $app->config->get('APP_ENV') !== 'testing')) {
             throw new \InvalidArgumentException('LINE identity transport injection is restricted to CLI tests');
         }
         $this->cipher = new SecretCipher($app->config);
@@ -46,6 +46,25 @@ final class LineOfficialAccountService
             try { $release=$pdo->prepare('SELECT RELEASE_LOCK(?)'); $release->execute([$name]); }
             catch (\Throwable) { error_log('[line-registry] Unable to release registry lock'); }
         }
+    }
+
+    /** Keep setup writes bounded; do not let generic transaction retries multiply a network check. */
+    private function withSetupTransaction(callable $callback): array
+    {
+        $pdo = $this->app->database()->pdo();
+        $previous = (int)$pdo->query('SELECT @@SESSION.innodb_lock_wait_timeout')->fetchColumn();
+        $pdo->exec('SET SESSION innodb_lock_wait_timeout=3');
+        try {
+            return $this->withRegistryLock(fn():array=>$this->app->database()->transaction(function(PDO $pdo) use ($callback):array {
+                try { return $callback($pdo); }
+                catch (PDOException $error) {
+                    if (in_array((int)($error->errorInfo[1] ?? 0), [1205,1213], true)) {
+                        throw new HttpException(503, 'มีงาน LINE กำลังบันทึกข้อมูลอยู่ กรุณารอสักครู่แล้วลองใหม่', 'LINE_REGISTRY_BUSY');
+                    }
+                    throw $error;
+                }
+            }), 2);
+        } finally { $pdo->exec('SET SESSION innodb_lock_wait_timeout='.max(1,$previous)); }
     }
 
     public function all(): array
@@ -85,7 +104,7 @@ final class LineOfficialAccountService
     {
         $this->assertBotId($id);
         Validator::only($input,self::FIELDS); $this->adminId($adminId);
-        return $this->withRegistryLock(fn():array=>$this->app->database()->transaction(function(PDO $pdo)use($id,$input,$adminId):array{
+        return $this->withSetupTransaction(function(PDO $pdo)use($id,$input,$adminId):array{
             $old=$this->row($id,true); $oldSecrets=$this->secrets($old); $oldBasicId=$this->basicId($old); $row=$this->merge($old,$input);
             if ($id===0) {
                 $legacy=[];
@@ -111,7 +130,7 @@ final class LineOfficialAccountService
             try{$statement->execute([...array_map(static fn(string $key)=>$row[$key],$columns),$adminId,$id]);}catch(PDOException $error){$this->duplicate($error);}
             $this->audit($adminId,'line.oa_updated',$id,['changed_fields'=>array_keys($input),'enabled'=>(bool)$row['enabled']]);
             return $this->get($id);
-        }));
+        });
     }
 
     public function remove(int $id,int $adminId): array
@@ -150,14 +169,72 @@ final class LineOfficialAccountService
     {
         $this->assertBotId($id);
         $this->adminId($adminId);
-        return $this->withRegistryLock(fn():array=>$this->app->database()->transaction(function(PDO $pdo)use($id,$adminId):array{
+        return $this->withSetupTransaction(function(PDO $pdo)use($id,$adminId):array{
             $row=$this->verifyIdentity($this->row($id,true),$adminId);
             $statement=$pdo->prepare('UPDATE line_official_accounts SET name=?,slug=?,basic_id=?,provider_user_id=?,token_fingerprint=?,identity_verified_at=?,updated_by=?,updated_at=UTC_TIMESTAMP(6) WHERE id=?');
             try{$statement->execute([$row['name'],$row['slug'],$row['basic_id'],$row['provider_user_id'],$row['token_fingerprint'],$row['identity_verified_at'],$adminId,$id]);}catch(PDOException $error){$this->duplicate($error);}
             $account=$this->get($id);
             $this->audit($adminId,'line.oa_tested',$id,['identity_verified'=>true,'ready'=>$account['operational_ready']]);
             return ['id'=>$id,'identity_verified'=>true,'ready'=>$account['operational_ready'],'account'=>$account];
-        }));
+        });
+    }
+
+    /** Live check: remote configuration reads run AFTER the identity transaction releases its locks. */
+    public function checkConnection(int $id, int $adminId): array
+    {
+        $tested = $this->test($id, $adminId);
+        $row = $this->row($id);
+        $secrets = $this->secrets($row);
+        $stamp = $this->connectionStamp($row, $secrets);
+        $account = $this->get($id);
+        $remote = null; $failure = null;
+        if ($account['enabled']) {
+            try {
+                $remote = $this->webhookTransport !== null
+                    ? ($this->webhookTransport)($secrets['access_token'])
+                    : $this->requestLine('/v2/bot/channel/webhook/endpoint', $secrets['access_token']);
+                if (!is_array($remote) || !is_string($remote['endpoint'] ?? null) || !is_bool($remote['active'] ?? null)) {
+                    throw new HttpException(502, 'LINE ส่งสถานะ Webhook ที่อ่านไม่ได้ กรุณาตรวจอีกครั้ง', 'LINE_RESPONSE_INVALID');
+                }
+            } catch (HttpException $error) { $failure = $error; $remote = null; }
+        }
+        $latest = $this->row($id);
+        if (!hash_equals($stamp, $this->connectionStamp($latest, $this->secrets($latest)))) {
+            throw new HttpException(409, 'ค่าบอทถูกเปลี่ยนระหว่างตรวจสอบ กรุณาตรวจสถานะใหม่', 'LINE_CONFIGURATION_CHANGED');
+        }
+        $account = $this->get($id);
+        $connection = self::connectionState($account, $remote);
+        if ($failure !== null) $connection = array_replace($connection, ['ready'=>false, 'status'=>$failure->errorCode, 'message'=>$failure->getMessage()]);
+        $connection['checked_at'] = gmdate('c');
+        return ['id'=>$id, 'identity_verified'=>$account['identity_verified'], 'ready'=>$connection['ready'], 'account'=>$account, 'connection'=>$connection];
+    }
+
+    private function connectionStamp(array $row, array $secrets): string
+    {
+        return hash_hmac('sha256', json_encode([$row['enabled'], $row['deleted_at'], $row['route_token'], $row['legacy_route_enabled'], $row['provider_user_id'], $secrets], JSON_THROW_ON_ERROR), $this->app->config->appKey());
+    }
+
+    private static function connectionState(array $account, ?array $remote): array
+    {
+        $expected = (string)($account['webhook_url'] ?? '');
+        $legacy = preg_replace('~/oa/[a-f0-9]{48}$~D', '', $expected);
+        $matches = $remote !== null && ($remote['endpoint'] === $expected
+            || (($account['legacy_route_enabled'] ?? false) && $remote['endpoint'] === $legacy));
+        $result = ['ready'=>false, 'endpoint_matches'=>$remote === null ? null : $matches, 'webhook_active'=>$remote['active'] ?? null];
+        [$status, $message] = match (true) {
+            !($account['enabled'] ?? false) => ['disabled', 'บอทถูกปิดใช้งาน เปิดใช้งานก่อนรับส่งข้อความ'],
+            !($account['credentials_ready'] ?? false) => ['missing_credentials', 'กรอก Token และ Secret ของ Messaging API บัญชีเดียวกันให้ครบ'],
+            !($account['identity_verified'] ?? false) => ['identity_unverified', 'ยังไม่ยืนยัน Token ของค่าปัจจุบัน กรุณาตรวจการเชื่อมต่อใหม่'],
+            !str_starts_with($expected, 'https://') => ['public_url_invalid', 'Webhook ต้องเป็นเว็บไซต์ HTTPS ที่ LINE เข้าถึงได้ ตรวจ APP_URL บนโฮสต์ก่อน'],
+            $remote === null => ['unchecked', 'ยังอ่านการตั้งค่า Webhook จาก LINE ไม่สำเร็จ กรุณาตรวจอีกครั้ง'],
+            !$matches => ['endpoint_mismatch', 'Webhook URL ที่ LINE ไม่ตรงกับระบบ คัดลอก URL ด้านล่างไปวางใน LINE Developers แล้วกด Verify'],
+            $remote['active'] !== true => ['webhook_disabled', 'URL ถูกต้อง แต่ยังปิด Use webhook อยู่ เปิด Use webhook ใน LINE Developers'],
+            !empty($account['last_error']) => ['callback_error', 'Webhook ล่าสุดมีข้อผิดพลาด ตรวจ Channel secret ของบอทนี้แล้วกด Verify ใหม่'],
+            !($account['webhook_verified'] ?? false) => ['awaiting_callback', 'Token และ URL ถูกต้อง เปิด Use webhook แล้ว แต่ยังไม่เคยรับลายเซ็นที่ถูกต้อง กด Verify ใน LINE Developers'],
+            default => ['ready', 'Token ถูกต้อง URL ตรง เปิด Use webhook และเคยรับลายเซ็นถูกต้องแล้ว ทดลองพิมพ์ “เมนู” ในแชตเพื่อยืนยันการตอบจริง'],
+        };
+        $result['ready'] = $status === 'ready';
+        return $result + ['status'=>$status, 'message'=>$message];
     }
 
     public function byRouteToken(string $token): array
@@ -308,15 +385,48 @@ final class LineOfficialAccountService
 
     private function fetchIdentity(string $token): array
     {
-        $handle=curl_init('https://api.line.me/v2/bot/info');if($handle===false)throw new \RuntimeException('Cannot initialize LINE identity check');
-        $body='';$tooLarge=false;
-        curl_setopt_array($handle,[CURLOPT_HTTPGET=>true,CURLOPT_HTTPHEADER=>['Authorization: Bearer '.$token,'Accept: application/json'],CURLOPT_RETURNTRANSFER=>false,CURLOPT_FOLLOWLOCATION=>false,CURLOPT_PROTOCOLS=>CURLPROTO_HTTPS,CURLOPT_CONNECTTIMEOUT=>3,CURLOPT_TIMEOUT=>8,CURLOPT_MAXREDIRS=>0,CURLOPT_SSL_VERIFYPEER=>true,CURLOPT_SSL_VERIFYHOST=>2,CURLOPT_NOSIGNAL=>true,
-            CURLOPT_WRITEFUNCTION=>static function($handle,string $chunk)use(&$body,&$tooLarge):int{if(strlen($body)+strlen($chunk)>65536){$tooLarge=true;return 0;}$body.=$chunk;return strlen($chunk);}]);
-        $ok=curl_exec($handle);$status=(int)curl_getinfo($handle,CURLINFO_RESPONSE_CODE);curl_close($handle);
-        if($ok===false||$tooLarge)throw new HttpException(502,'ติดต่อ LINE ไม่สำเร็จ กรุณาลองใหม่','LINE_TEST_FAILED');
-        if($status!==200)throw new HttpException(422,'LINE ปฏิเสธ Channel access token (HTTP '.$status.')','LINE_TEST_FAILED');
-        try{$value=json_decode($body,true,16,JSON_THROW_ON_ERROR);}catch(\JsonException){throw new HttpException(502,'LINE ส่งข้อมูลที่อ่านไม่ได้','LINE_TEST_FAILED');}
-        if(!is_array($value))throw new HttpException(502,'LINE ส่งข้อมูลที่ไม่ถูกต้อง','LINE_TEST_FAILED');return $value;
+        return $this->requestLine('/v2/bot/info', $token);
+    }
+
+    private function requestLine(string $path, string $token): array
+    {
+        if (!in_array($path, ['/v2/bot/info', '/v2/bot/channel/webhook/endpoint'], true)) throw new \InvalidArgumentException('Unsupported LINE setup endpoint');
+        if (!function_exists('curl_init')) throw new HttpException(503, 'โฮสต์ยังไม่ได้เปิด PHP cURL กรุณาเปิดส่วนขยายก่อนเชื่อมต่อ LINE', 'LINE_CURL_MISSING');
+        $handle = curl_init('https://api.line.me'.$path);
+        if ($handle === false) throw new HttpException(503, 'เริ่มเชื่อมต่อ LINE ไม่สำเร็จ กรุณาลองใหม่', 'LINE_CONNECT_FAILED');
+        $body = ''; $tooLarge = false;
+        curl_setopt_array($handle, [CURLOPT_HTTPGET=>true, CURLOPT_HTTPHEADER=>['Authorization: Bearer '.$token, 'Accept: application/json', 'Content-Type: application/json'],
+            CURLOPT_RETURNTRANSFER=>false, CURLOPT_FOLLOWLOCATION=>false, CURLOPT_PROTOCOLS=>CURLPROTO_HTTPS,
+            CURLOPT_CONNECTTIMEOUT=>3, CURLOPT_TIMEOUT=>8, CURLOPT_MAXREDIRS=>0, CURLOPT_SSL_VERIFYPEER=>true, CURLOPT_SSL_VERIFYHOST=>2, CURLOPT_NOSIGNAL=>true,
+            CURLOPT_WRITEFUNCTION=>static function($handle, string $chunk) use (&$body, &$tooLarge): int {
+                if (strlen($body)+strlen($chunk)>65536) { $tooLarge=true; return 0; } $body.=$chunk; return strlen($chunk);
+            }]);
+        $ok = curl_exec($handle); $status = (int)curl_getinfo($handle, CURLINFO_RESPONSE_CODE); $errno = curl_errno($handle); curl_close($handle);
+        self::assertSetupResponse($status, $ok === false ? $errno : 0, $tooLarge, $path);
+        try { $value=json_decode($body,true,16,JSON_THROW_ON_ERROR); }
+        catch (\JsonException) { throw new HttpException(502, 'LINE ส่งข้อมูลที่อ่านไม่ได้ กรุณาตรวจใหม่', 'LINE_RESPONSE_INVALID'); }
+        if (!is_array($value)) throw new HttpException(502, 'LINE ส่งข้อมูลที่ไม่ถูกต้อง กรุณาตรวจใหม่', 'LINE_RESPONSE_INVALID');
+        return $value;
+    }
+
+    /** Translate only numeric status/errno; never expose provider bodies, headers or curl_error. */
+    private static function assertSetupResponse(int $status, int $errno, bool $tooLarge, string $path): void
+    {
+        if ($tooLarge) throw new HttpException(502, 'ข้อมูลตอบจาก LINE เกินขอบเขตที่รองรับ', 'LINE_RESPONSE_INVALID');
+        if ($errno !== 0) {
+            [$code,$message] = match ($errno) {
+                28 => ['LINE_CONNECT_TIMEOUT','ติดต่อ LINE เกิน 8 วินาที ตรวจเครือข่ายของโฮสต์แล้วลองใหม่'],
+                6 => ['LINE_DNS_ERROR','โฮสต์หา api.line.me ไม่พบ ตรวจ DNS ของโฮสต์'],
+                35, 51, 58, 60, 77, 83 => ['LINE_TLS_ERROR','โฮสต์ตรวจใบรับรอง HTTPS ของ LINE ไม่ผ่าน ตรวจ CA certificate และเวลาของเซิร์ฟเวอร์ ห้ามปิดการตรวจ SSL'],
+                default => ['LINE_CONNECT_FAILED','โฮสต์เชื่อมต่อ LINE ไม่สำเร็จ ตรวจเครือข่ายขาออกแล้วลองใหม่'],
+            };
+            throw new HttpException(502,$message,$code);
+        }
+        if ($status===200) return;
+        if ($status===401 || $status===403) throw new HttpException(422, 'LINE ปฏิเสธ Token ตรวจว่าเป็น Channel access token ของ Messaging API ไม่ใช่ Channel secret และยังไม่ถูกยกเลิก', 'LINE_TOKEN_REJECTED');
+        if ($status===404 && $path==='/v2/bot/channel/webhook/endpoint') throw new HttpException(409, 'ยังไม่ได้ตั้ง Webhook URL ที่ LINE คัดลอก URL ของระบบไปวางใน LINE Developers', 'LINE_WEBHOOK_NOT_SET');
+        if ($status===429) throw new HttpException(429, 'เรียกตรวจ LINE ถี่เกินไป กรุณารอสักครู่แล้วลองใหม่', 'LINE_API_RATE_LIMITED');
+        throw new HttpException(502, 'LINE ยังตอบไม่สำเร็จ (HTTP '.$status.') กรุณาลองใหม่ภายหลัง', 'LINE_API_UNAVAILABLE');
     }
 
     private function audit(int $adminId,string $action,int $id,array $details): void

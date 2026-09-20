@@ -65,3 +65,7 @@ input[readonly] { cursor: text; background: #f5f7fa; }
 @media (prefers-contrast: more) {
   :root { --line: #687587; --line-strong: #465367; }
 }
+
+.line-setup-feedback { padding: .75rem; border: 1px solid var(--line); border-radius: 6px; overflow-wrap: anywhere; background: var(--canvas); }
+.line-setup-feedback[data-state="error"] { color: var(--red); background: var(--red-soft); }
+.line-setup-feedback[data-state="attention"] { color: var(--amber); background: var(--amber-soft); }

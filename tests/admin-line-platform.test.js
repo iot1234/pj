@@ -37,7 +37,7 @@ class Node {
 }
 
 function harness() {
-  const nodes = new Map(), requests = [], timers = new Map(), events = new Map();
+  const nodes = new Map(), requests = [], timers = new Map(), timeouts = new Map(), events = new Map();
   const effects = { toasts: [], copied: [], qr: [], confirmations: [] };
   let allowConfirm = true, nextTimer = 1, now = Date.now();
   const make = (id, tag = 'div') => { const node = new Node(tag); nodes.set('#' + id, node); return node; };
@@ -70,8 +70,8 @@ function harness() {
   }
   const close = new Node('button'); close.setAttribute('data-close-dialog', ''); dialog.append(close);
   const document = { visibilityState: 'visible', execCommand: () => true, addEventListener: (name, fn) => events.set('document:' + name, fn) };
-  const window = { isSecureContext: true, setInterval: (fn, ms) => { const id = nextTimer++; timers.set(id, { fn, ms }); return id; }, clearInterval: (id) => timers.delete(id), addEventListener: (name, fn) => events.set('window:' + name, fn) };
-  const context = { window, document, Date: class extends Date { static now() { return now; } }, navigator: { clipboard: { writeText: async (value) => effects.copied.push(value) } }, $, $$ };
+  const window = { isSecureContext: true, setTimeout: (fn,ms) => { const id=nextTimer++; timeouts.set(id,{fn,ms}); return id; }, clearTimeout: id => timeouts.delete(id), setInterval: (fn, ms) => { const id = nextTimer++; timers.set(id, { fn, ms }); return id; }, clearInterval: (id) => timers.delete(id), addEventListener: (name, fn) => events.set('window:' + name, fn) };
+  const context = { window, document, AbortController, Date: class extends Date { static now() { return now; } }, navigator: { clipboard: { writeText: async (value) => effects.copied.push(value) } }, $, $$ };
   vm.createContext(context); vm.runInContext(source, context);
   const extract = (a, b) => appSource.slice(appSource.indexOf(a), appSource.indexOf(b, appSource.indexOf(a)));
   vm.runInContext(extract('function setBusy(', 'function showFormError(') + extract('function openDialog(', 'async function confirmAction('), context);
@@ -89,7 +89,7 @@ function harness() {
   const field = (id, name) => form(id).elements.namedItem(name);
   const button = (label, root = dialog) => root.all().find((node) => node.tagName === 'BUTTON' && node.textContent === label);
   const openBinding = async (row = detail()) => { const work = controller.openBinding(row.resident_id); requests.at(-2).resolve(row); requests.at(-1).resolve(readyOas); await work; await settle(); };
-  return { $, $$, window, document, controller, requests, effects, timers, helpers, dialog, form, field, button, openBinding, context, setConfirm: (value) => { allowConfirm = value; }, advance: (ms) => { now += ms; }, tick: (ms) => { for (const timer of [...timers.values()]) if (timer.ms === ms) timer.fn(); } };
+  return { $, $$, window, document, controller, requests, effects, timers, helpers, dialog, form, field, button, openBinding, context, setConfirm: (value) => { allowConfirm = value; }, advance: (ms) => { now += ms; }, tick: (ms) => { for (const [id,timer] of [...timeouts]) if(timer.ms === ms){timeouts.delete(id);timer.fn();} for (const timer of [...timers.values()]) if (timer.ms === ms) timer.fn(); } };
 }
 
 test('platform chat URL accepts exact BIND/OWNER/ADMIN codes only on official OA message URLs', () => {
@@ -276,4 +276,111 @@ test('explicit credential clear pauses the bot and cancellation submits nothing'
 test('a queued binding submit cannot act on a different dialog mode', async () => {
   const ui=harness();await ui.openBinding();const opening=ui.controller.openOa();ui.requests.at(-1).resolve({id:0,enabled:true});await opening;
   const count=ui.requests.length;await ui.form('line-binding-code-form').dispatch('submit');assert.equal(ui.requests.length,count);
+});
+
+test('unsettled LINE read reaches a hard deadline and offers a usable retry', async () => {
+ const ui=harness(),work=ui.controller.openOa();ui.tick(12000);await work;
+ assert.equal(ui.requests[0].options.signal.aborted,true);
+ assert.notEqual(ui.$('#line-platform-summary').textContent,'กำลังโหลด…');
+ assert.equal(ui.$('#line-platform-retry').hidden,false);assert.equal(ui.$('#line-platform-feedback').dataset.state,'error');
+ const retry=ui.$('#line-platform-retry').dispatch('click');ui.requests.at(-1).resolve({id:0,enabled:true});await retry;
+ assert.equal(ui.form('line-oa-form').hidden,false);assert.equal(ui.$('#line-platform-error').hidden,true);
+});
+test('save timeout restores controls, retains keys and ignores a late success', async () => {
+ const ui=harness(),open=ui.controller.openOa();ui.requests[0].resolve({id:0,enabled:true});await open;
+ ui.field('line-oa-form','channel_access_token').value='fixture-secret-token';ui.field('line-oa-form','channel_secret').value='fixture-secret';
+ const save=ui.form('line-oa-form').dispatch('submit');const request=ui.requests.at(-1);ui.tick(30000);await save;
+ assert.notEqual(ui.dialog.dataset.dialogBusy,'true');assert.equal(ui.field('line-oa-form','channel_access_token').disabled,false);
+ assert.equal(ui.field('line-oa-form','channel_access_token').value,'fixture-secret-token');assert.equal(ui.$('#line-platform-retry').textContent,'ตรวจค่าที่บันทึก');
+ const count=ui.requests.length;request.resolve({id:0});await settle();assert.equal(ui.requests.length,count);assert.equal(ui.form('line-oa-form').hidden,false);
+});
+test('successful save shows returned account even when the following status read fails', async () => {
+ const ui=harness(),open=ui.controller.openOa();ui.requests[0].resolve({id:0,enabled:true});await open;
+ const save=ui.form('line-oa-form').dispatch('submit');ui.requests.at(-1).resolve({id:0,name:'Saved bot',enabled:true,credentials_ready:true,identity_verified:true,webhook_verified:false});await save;
+ assert.equal(ui.$('#line-webhook-detail').hidden,false);assert.match(ui.$('#line-platform-summary').textContent,/Saved bot/);
+ const status=ui.requests.find(r=>r.url.endsWith('/webhook-status'));status.reject(new Error('Status offline'));await settle();
+ assert.equal(ui.$('#line-webhook-detail').hidden,false);assert.equal(ui.$('#line-platform-feedback').dataset.state,'error');
+ assert.notEqual(ui.$('#line-platform-summary').textContent,'กำลังโหลด…');
+});
+test('recipient load failure cannot prevent a successfully loaded bot from displaying', async () => {
+ const ui=harness(),load=ui.controller.loadOas();ui.requests[0].resolve(readyOas);await settle();
+ assert.match(ui.$('#line-oa-list').textContent,/เดิม/);ui.requests[1].reject(new Error('Recipients offline'));await load;
+ assert.match(ui.$('#line-oa-list').textContent,/เดิม/);assert.match(ui.$('#line-recipient-list').textContent,/ไม่สำเร็จ/);
+});
+test('poll failure is visible and the next successful read clears the stale failure', async () => {
+ const ui=harness();await ui.openBinding();let refresh=ui.controller.refreshDialog(true);ui.requests.at(-1).reject(new Error('poll offline'));await refresh;
+ assert.equal(ui.$('#line-platform-feedback').dataset.state,'error');assert.equal(ui.$('#line-platform-error').hidden,false);
+ refresh=ui.controller.refreshDialog(true);ui.requests.at(-1).resolve(detail());await refresh;assert.equal(ui.$('#line-platform-error').hidden,true);
+});
+test('live check reports disabled webhook as attention instead of claiming a connection success', async () => {
+ const ui=harness(),open=ui.controller.openOa();ui.requests[0].resolve({id:0,enabled:true});await open;
+ const save=ui.form('line-oa-form').dispatch('submit');ui.requests.at(-1).resolve({id:0,enabled:true});await save;
+ const row={id:0,enabled:true,credentials_ready:true,identity_verified:true,webhook_verified:true,updated_at:'test-revision'};
+ ui.requests.find(r=>r.url.endsWith('/webhook-status')).resolve(row);await settle();
+ const check=ui.$('#line-connection-test').dispatch('click'),request=ui.requests.at(-1);
+ assert.equal(request.url,'/api/admin/line/oas/0/test');assert.equal(request.options.method,'POST');
+ request.resolve({account:row,ready:false,connection:{ready:false,status:'webhook_disabled',message:'กรุณาเปิด Use webhook',checked_at:new Date().toISOString()}});await check;
+ assert.equal(ui.$('#line-platform-feedback').dataset.state,'attention');assert.match(ui.$('#line-platform-feedback').textContent,/Use webhook/);
+ assert.notEqual(ui.dialog.dataset.dialogBusy,'true');
+});
+test('a queued native close event cannot erase the newly opened LINE status view', async () => {
+ const ui=harness(),open=ui.controller.openOa();ui.requests[0].resolve({id:0,enabled:true});await open;
+ const save=ui.form('line-oa-form').dispatch('submit');ui.requests.at(-1).resolve({id:0,name:'Saved bot',enabled:true});await save;
+ await ui.dialog.dispatch('close');
+ assert.equal(ui.dialog.open,true);assert.equal(ui.$('#line-webhook-detail').hidden,false);
+ const request=ui.requests.find(r=>r.url.endsWith('/webhook-status'));request.resolve({id:0,name:'Latest bot',enabled:true,webhook_verified:false});await settle();
+ assert.match(ui.$('#line-platform-summary').textContent,/Latest bot/);assert.equal(ui.$('#line-connection-test').hidden,false);
+});
+test('saving LINE changes mode in the existing dialog without a close/reopen cycle', async () => {
+ const ui=harness(),open=ui.controller.openOa();ui.requests[0].resolve({id:0,enabled:true});await open;
+ let closeCount=0;const close=ui.dialog.close.bind(ui.dialog);ui.dialog.close=()=>{closeCount++;close();};
+ const save=ui.form('line-oa-form').dispatch('submit');ui.requests.at(-1).resolve({id:0,enabled:true});await save;
+ assert.equal(closeCount,0);assert.equal(ui.dialog.open,true);assert.equal(ui.form('line-oa-form').hidden,true);
+});
+
+async function openStatusFixture(ui, row) {
+ const opening=ui.controller.openOa();ui.requests.at(-1).resolve(row);await opening;
+ const save=ui.form('line-oa-form').dispatch('submit');ui.requests.at(-1).resolve(row);await save;
+ ui.requests.find(r=>r.url.endsWith('/webhook-status')).resolve(row);await settle();
+}
+test('a rejected current token is not labelled as a current verified token',async()=>{
+ const ui=harness(),row={id:0,enabled:true,credentials_ready:true,identity_verified:true,webhook_verified:true,updated_at:'revision-1'};
+ await openStatusFixture(ui,row);const work=ui.$('#line-connection-test').dispatch('click');
+ ui.requests.at(-1).reject(Object.assign(new Error('LINE ปฏิเสธ Token'),{details:{code:'LINE_TOKEN_REJECTED'}}));await work;
+ assert.match(ui.$('#line-webhook-detail').textContent,/Token: การตรวจล่าสุดถูก LINE ปฏิเสธ/);
+ const poll=ui.controller.refreshDialog(true);ui.requests.at(-1).resolve(row);await poll;
+ assert.match(ui.$('#line-platform-feedback').textContent,/ปฏิเสธ Token/);
+});
+test('callback failure after a successful live check removes the success status',async()=>{
+ const ui=harness(),row={id:0,enabled:true,credentials_ready:true,identity_verified:true,webhook_verified:true,updated_at:'revision-1'};
+ await openStatusFixture(ui,row);const work=ui.$('#line-connection-test').dispatch('click');
+ ui.requests.at(-1).resolve({account:row,ready:true,connection:{ready:true,status:'ready',message:'ตรวจการเชื่อมต่อผ่านแล้ว',checked_at:new Date().toISOString()}});await work;
+ assert.equal(ui.$('#line-platform-feedback').dataset.state,'ready');
+ const poll=ui.controller.refreshDialog(true);ui.requests.at(-1).resolve({...row,last_error:'LINE_DESTINATION_MISMATCH',webhook_verified:false});await poll;
+ assert.equal(ui.$('#line-platform-feedback').dataset.state,'attention');assert.match(ui.$('#line-platform-feedback').textContent,/Webhook ล่าสุดมีข้อผิดพลาด/);
+});
+test('expired live checks are not renewed merely by reading saved configuration',async()=>{
+ const ui=harness(),row={id:0,enabled:true,credentials_ready:true,identity_verified:true,webhook_verified:true,updated_at:'revision-1'};
+ await openStatusFixture(ui,row);const work=ui.$('#line-connection-test').dispatch('click');
+ ui.requests.at(-1).resolve({account:row,ready:true,connection:{ready:true,status:'ready',message:'ตรวจผ่าน',checked_at:new Date().toISOString()}});await work;
+ ui.advance(61000);const poll=ui.controller.refreshDialog(true);ui.requests.at(-1).resolve(row);await poll;
+ assert.equal(ui.$('#line-platform-feedback').dataset.state,'attention');assert.match(ui.$('#line-platform-feedback').textContent,/ยืนยันสถานะ LINE ล่าสุด/);
+});
+test('failed binding reload clears old people and cannot be revived through a filter',async()=>{
+ const ui=harness();let work=ui.controller.loadBindings();ui.requests.at(-1).resolve({rows:[{...detail(5),line_binding_status:'unbound'}],counts:{total:1,unbound:1}});await work;
+ assert.match(ui.$('#line-binding-rows').textContent,/ผู้พัก 5/);
+ work=ui.controller.loadBindings();assert.ok(!ui.$('#line-binding-rows').textContent.includes('ผู้พัก 5'));
+ ui.requests.at(-1).reject(new Error('connection lost'));await work;
+ await ui.$('#line-binding-search').dispatch('input');assert.match(ui.$('#line-binding-rows').textContent,/โหลดการผูก LINE ไม่สำเร็จ/);
+ assert.ok(!ui.$('#line-binding-rows').textContent.includes('ผู้พัก 5'));
+});
+test('late old binding data does not erase the latest request failure',async()=>{
+ const ui=harness(),first=ui.controller.loadBindings(),old=ui.requests.at(-1),second=ui.controller.loadBindings();
+ ui.requests.at(-1).reject(new Error('newest request failed'));await second;
+ old.resolve({rows:[{...detail(9),line_binding_status:'unbound'}],counts:{total:1}});await first;
+ assert.match(ui.$('#line-bindings-error').textContent,/newest request failed/);assert.ok(!ui.$('#line-binding-rows').textContent.includes('ผู้พัก 9'));
+});
+test('malformed binding responses never become a successful empty list',async()=>{
+ const ui=harness(),work=ui.controller.loadBindings();ui.requests.at(-1).resolve({unexpected:true});await work;
+ assert.equal(ui.$('#line-bindings-error').hidden,false);assert.match(ui.$('#line-binding-summary').textContent,/ไม่สำเร็จ/);
 });

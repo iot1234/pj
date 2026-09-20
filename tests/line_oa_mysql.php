@@ -107,4 +107,5 @@ $test('audits contain neither credentials nor encrypted payloads nor route token
   $assert(!str_contains($details,'fixture-token')&&!str_contains($details,'fixture-secret')&&!str_contains($details,$route)&&!str_contains($details,'v1:'));
  }
 });
+require __DIR__.'/line_connection_mysql.inc.php';
 fwrite(STDOUT,"{$passed} single-bot LINE OA MySQL tests passed; provider transport simulated\n");

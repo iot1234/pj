@@ -399,6 +399,8 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
     <div class="modal-card line-platform-modal">
         <div class="modal-header"><h2 id="line-platform-title">จัดการ LINE</h2><button class="text-control" type="button" data-close-dialog aria-label="ปิด">ปิด</button></div>
         <p id="line-platform-summary" class="muted"></p><p class="form-error" id="line-platform-error" role="alert" hidden></p>
+        <p id="line-platform-feedback" class="line-setup-feedback" role="status" aria-live="polite" hidden></p>
+        <div class="form-actions"><button id="line-platform-retry" type="button" class="button button-secondary" hidden>ลองโหลดอีกครั้ง</button><button id="line-connection-test" type="button" class="button button-primary" hidden>ตรวจการเชื่อมต่อจริง</button></div>
         <form id="line-oa-form" class="stack-form" hidden>
             <div class="security-note"><strong>กรอกเพียง 2 ค่า</strong><span>นำ Channel access token และ Channel secret จาก LINE Developers มากรอก ระบบจะตรวจบัญชีและดึงชื่อกับ Basic ID ให้เอง</span></div>
             <div class="form-grid form-grid-two">

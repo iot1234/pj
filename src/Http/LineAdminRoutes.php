@@ -24,7 +24,7 @@ final class LineAdminRoutes
         $router->get('/api/admin/line/oas/{id}',fn(Request $r)=>Response::json($app->lineOfficialAccounts()->get($oa($r))),$auth);
         $router->put('/api/admin/line/oas/{id}',function(Request $r)use($app,$admin,$limited,$oa):Response{$limited('oa');return Response::json($app->lineOfficialAccounts()->update($oa($r),$r->body,$admin()));},$auth);
         $router->delete('/api/admin/line/oas/{id}',function(Request $r)use($app,$admin,$limited,$oa,$empty):Response{$empty($r);$limited('oa');return Response::json($app->lineOfficialAccounts()->remove($oa($r),$admin()));},$auth);
-        foreach(['test'=>'test','rotate-route'=>'rotateRoute']as$path=>$method)$router->post('/api/admin/line/oas/{id}/'.$path,function(Request $r)use($app,$admin,$limited,$oa,$empty,$method):Response{$empty($r);$limited('oa');return Response::json($app->lineOfficialAccounts()->$method($oa($r),$admin()));},$auth);
+        foreach(['test'=>'checkConnection','rotate-route'=>'rotateRoute']as$path=>$method)$router->post('/api/admin/line/oas/{id}/'.$path,function(Request $r)use($app,$admin,$limited,$oa,$empty,$method):Response{$empty($r);$limited('oa');return Response::json($app->lineOfficialAccounts()->$method($oa($r),$admin()));},$auth);
         $router->get('/api/admin/line/oas/{id}/webhook-status',fn(Request $r)=>Response::json($app->lineOfficialAccounts()->get($oa($r))),$auth);
         $router->get('/api/admin/line/bindings',fn(Request $r)=>Response::json($app->lineRoomBindings()->overview()),$auth);
         $router->get('/api/admin/line/residents/{id}',fn(Request $r)=>Response::json($app->lineRoomBindings()->detail($id($r))),$auth);

@@ -2477,4 +2477,5 @@ $test('LINE binding lock rejects an unbounded wait before touching MySQL',functi
     }
 });
 
+require __DIR__.'/line_setup_unit.php';
 fwrite(STDOUT,"\n{$passed} passed, {$failed} failed".PHP_EOL);exit($failed===0?0:1);
