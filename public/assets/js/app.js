@@ -326,6 +326,20 @@
     else form.removeAttribute('aria-busy');
   }
 
+  function beginDialogSave(form) {
+    if (form.dataset.submitting === 'true') return false;
+    form.dataset.submitting = 'true';
+    setDialogBusy(form.closest('dialog'), true);
+    setFormFieldsBusy(form, true);
+    return true;
+  }
+
+  function finishDialogSave(form) {
+    delete form.dataset.submitting;
+    setFormFieldsBusy(form, false);
+    setDialogBusy(form.closest('dialog'), false);
+  }
+
   function showFormError(element, message = '') {
     if (!element) return;
     element.textContent = message;
@@ -527,14 +541,44 @@
     }
   }
 
+  // Baselines stay in memory: never store form values or passwords in DOM attributes/storage.
+  const dialogDraftBaselines = new WeakMap();
+  function dialogDraftSignature(form) {
+    return JSON.stringify(Array.from(form.elements).filter((control) => control.name && !['submit', 'button'].includes(control.type))
+      .map((control) => [control.name, ['checkbox', 'radio'].includes(control.type) ? control.checked : control.value]));
+  }
+  function rememberDialogDraft(form) {
+    dialogDraftBaselines.set(form, dialogDraftSignature(form));
+    delete form.dataset.draftDirty;
+  }
+  function hasDirtyDialogDrafts() {
+    return $$('form[data-guard-draft]').some((form) => Boolean(form.closest('dialog')?.open)
+      && (form.dataset.draftDirty === 'true' || form.dataset.submitting === 'true'));
+  }
+  function requestDialogClose(dialog, trigger = null) {
+    if (!dialog || dialogCloseBlocked(dialog, trigger)) return false;
+    const forms = $$('form[data-guard-draft]', dialog);
+    if (forms.some((form) => form.dataset.draftDirty === 'true')
+      && !window.confirm('มีข้อมูลที่ยังไม่บันทึก ต้องการทิ้งข้อมูลและปิดหน้าต่างหรือไม่?')) return false;
+    forms.forEach((form) => { form.reset(); rememberDialogDraft(form); });
+    return closeDialog(dialog, trigger);
+  }
+
   function setupCommonInteractions() {
-    $$('[data-close-dialog]').forEach((button) => button.addEventListener('click', () => closeDialog(button.closest('dialog'), button)));
+    $$('form[data-guard-draft]').forEach((form) => {
+      rememberDialogDraft(form);
+      const markDraft = () => { form.dataset.draftDirty = String(dialogDraftSignature(form) !== dialogDraftBaselines.get(form)); };
+      for (const event of ['input', 'change']) form.addEventListener(event, markDraft);
+      form.addEventListener('reset', () => { delete form.dataset.draftDirty; });
+    });
+    $$('[data-close-dialog]').forEach((button) => button.addEventListener('click', () => requestDialogClose(button.closest('dialog'), button)));
     $$('dialog').forEach((dialog) => {
       dialog.addEventListener('click', (event) => {
-        if (event.target === dialog && !dialog.querySelector('form')) closeDialog(dialog);
+        if (event.target === dialog && !dialog.querySelector('form')) requestDialogClose(dialog);
       });
       dialog.addEventListener('cancel', (event) => {
         if (dialogCloseBlocked(dialog)) event.preventDefault();
+        else if ($$('form[data-guard-draft]', dialog).length) { event.preventDefault(); requestDialogClose(dialog); }
       });
     });
     $$('[data-password-toggle]').forEach((button) => button.addEventListener('click', () => {
@@ -1864,6 +1908,7 @@
     }
 
     function renderRooms() {
+      if (state.roomListReady === false) return;
       const rows = $('#admin-room-rows');
       rows.replaceChildren();
       const visible = state.rooms.filter(roomMatches);
@@ -1889,20 +1934,36 @@
     }
 
     async function loadRooms() {
+      state.roomController?.abort(); const controller = new AbortController(); state.roomController = controller;
+      state.roomListReady = false; invalidateBillPreview(); const rows = $('#admin-room-rows'); rows.setAttribute('inert', '');
       setTableState($('#admin-room-state'), 'loading', 'กำลังโหลดห้องพัก…');
       try {
-        const data = await api('/api/admin/rooms');
-        state.rooms = listFrom(data, 'rooms'); state.loaded.add('rooms'); state.loaded.delete('meters'); renderRooms();
+        const data = await api('/api/admin/rooms', { signal: controller.signal });
+        if (state.roomController !== controller) return;
+        state.rooms = listFrom(data, 'rooms'); state.roomListReady = true;
+        state.loaded.add('rooms'); state.loaded.delete('meters'); renderRooms();
         if (state.loaded.has('bills')) fillBillRooms();
-      } catch (error) { setTableState($('#admin-room-state'), 'error', errorMessage(error)); }
+      } catch (error) {
+        if (state.roomController !== controller) return;
+        state.rooms = []; rows.replaceChildren();
+        for (const key of ['all', 'available', 'reserved', 'occupied']) {
+          const value = $(`[data-room-stat="${key}"]`); if (value) value.textContent = '—';
+        }
+        if (state.loaded.has('bills')) fillBillRooms();
+        setTableState($('#admin-room-state'), 'error', errorMessage(error));
+      } finally {
+        if (state.roomController === controller) { state.roomController = null; rows.removeAttribute('inert'); syncBillActionState(); }
+      }
     }
 
     function openRoomForm(room = null) {
-      const form = $('#room-form'); form.reset(); showFormError($('#room-form-error'));
+      const form = $('#room-form'); if (form.dataset.submitting === 'true') return; form.reset(); showFormError($('#room-form-error'));
       form.elements.id.value = room?.id || '';
       $('#room-dialog-title').textContent = room ? `แก้ไขห้อง ${text(room.room_code)}` : 'เพิ่มห้องพัก';
       if (room) ['room_code', 'floor', 'room_type', 'monthly_rent', 'description', 'image_key'].forEach((key) => { form.elements[key].value = room[key] ?? ''; });
       form.elements.amenities.value = Array.isArray(room?.amenities) ? room.amenities.join(', ') : '';
+      $$('details', form).forEach((section) => { section.open = false; });
+      rememberDialogDraft(form);
       openDialog($('#room-dialog'));
     }
 
@@ -1911,6 +1972,7 @@
     $('#admin-room-status').addEventListener('change', renderRooms);
     $('[data-open-room-dialog]').addEventListener('click', () => openRoomForm());
     $('#admin-room-rows').addEventListener('click', async (event) => {
+      if (state.roomListReady !== true || state.roomController) return;
       const button = event.target.closest('[data-action]'); if (!button) return;
       const room = state.rooms.find((item) => String(item.id) === button.dataset.id); if (!room) return;
       if (button.dataset.action === 'add-resident-to-room') { await openResidentCreateForm(room); return; }
@@ -1920,12 +1982,12 @@
       }
     });
     $('#room-form').addEventListener('submit', async (event) => {
-      event.preventDefault(); const form = event.currentTarget; const error = $('#room-form-error'); showFormError(error); if (!form.reportValidity()) return;
+      event.preventDefault(); const form = event.currentTarget; if (form.dataset.submitting === 'true') return; const error = $('#room-form-error'); showFormError(error); if (!form.reportValidity()) return;
       const values = Object.fromEntries(new FormData(form).entries()); const id = values.id; delete values.id;
       values.monthly_rent = number(values.monthly_rent); values.amenities = String(values.amenities || '').split(',').map((item) => item.trim()).filter(Boolean);
-      const button = form.querySelector('[type="submit"]'); setBusy(button, true, 'กำลังบันทึก…');
-      try { await api(id ? `/api/admin/rooms/${encodeURIComponent(id)}` : '/api/admin/rooms', { method: id ? 'PUT' : 'POST', body: values }); closeDialog($('#room-dialog')); toast('บันทึกห้องแล้ว'); loadRooms(); }
-      catch (requestError) { showFormError(error, errorMessage(requestError)); } finally { setBusy(button, false); }
+      const button = form.querySelector('[type="submit"]'); if (!beginDialogSave(form)) return; setBusy(button, true, 'กำลังบันทึก…');
+      try { await api(id ? `/api/admin/rooms/${encodeURIComponent(id)}` : '/api/admin/rooms', { method: id ? 'PUT' : 'POST', body: values }); finishDialogSave(form); form.reset(); closeDialog($('#room-dialog')); toast('บันทึกห้องแล้ว'); loadRooms(); }
+      catch (requestError) { showFormError(error, errorMessage(requestError)); } finally { finishDialogSave(form); setBusy(button, false); }
     });
 
     const setStat = (selector, value) => { const node = $(selector); if (node) node.textContent = String(value); };
@@ -2522,7 +2584,7 @@
       if (button.dataset.action === 'save-meter') await saveMeterRow(button);
     });
 
-    function billDataReady() { return state.billListAvailable === true && !state.billController && state.billPeriod === $('#bill-period').value; }
+    function billDataReady() { return state.roomListReady !== false && !state.roomController && state.billListAvailable === true && !state.billController && state.billPeriod === $('#bill-period').value; }
     function selectedBillRooms() { return $$('#bill-room-options input:checked').map((input) => Number(input.value)); }
     function billPayloadSignature(payload = billPayload()) { return JSON.stringify(payload); }
     function invalidateBillPreview() { state.billPreview = null; syncBillActionState(); }
@@ -3050,10 +3112,25 @@
     function renderUsers() { const rows = $('#user-rows'); rows.replaceChildren(); state.users.forEach((user) => { const tr = create('tr'); const status = user.is_active === false || user.is_active === 0 ? 'inactive' : 'active'; const actions = [actionButton('แก้ไข', 'edit-user', user.id, 'button-ghost', `แก้ไขผู้ดูแล ${text(user.username)}`)]; if (status === 'active') actions.push(actionButton('ปิดใช้งาน', 'delete-user', user.id, 'button-danger-text', `ปิดใช้งานผู้ดูแล ${text(user.username)}`)); tr.append(td(text(user.username)), td(text(user.role === 'owner' ? 'เจ้าของ' : 'ผู้ดูแล')), td(pill(status)), td(formatDate(user.updated_at)), td(rowActions(...actions), 'align-right')); rows.append(tr); }); setTableState($('#user-state'), state.users.length ? 'ready' : 'empty', 'ยังไม่มีบัญชีผู้ดูแล'); }
     async function loadUsers() { if (role !== 'owner') return; setTableState($('#user-state'), 'loading'); try { const data = await api('/api/admin/users'); state.users = listFrom(data, 'users'); state.loaded.add('users'); renderUsers(); } catch (error) { setTableState($('#user-state'), 'error', errorMessage(error)); } }
     loaders.users = loadUsers;
-    function openUserForm(user = null) { const form = $('#user-form'); form.reset(); showFormError($('#user-form-error')); form.elements.id.value = user?.id || ''; form.elements.username.value = user?.username || ''; form.elements.role.value = user?.role || 'admin'; form.elements.is_active.checked = user ? !(user.is_active === false || user.is_active === 0) : true; form.elements.password.required = !user; $('#user-dialog-title').textContent = user ? `แก้ไข ${text(user.username)}` : 'เพิ่มผู้ดูแล'; $('#user-password-help').textContent = user ? 'เว้นว่างหากไม่ต้องการเปลี่ยนรหัสผ่าน' : 'อย่างน้อย 12 ตัวอักษร'; openDialog($('#user-dialog')); }
+    function openUserForm(user = null) { const form = $('#user-form'); if (form.dataset.submitting === 'true') return; form.reset(); showFormError($('#user-form-error')); form.elements.id.value = user?.id || ''; form.elements.username.value = user?.username || ''; form.elements.role.value = user?.role || 'admin'; form.elements.is_active.checked = user ? !(user.is_active === false || user.is_active === 0) : true; form.elements.password.required = !user; $('#user-dialog-title').textContent = user ? `แก้ไข ${text(user.username)}` : 'เพิ่มผู้ดูแล'; $('#user-password-help').textContent = user ? 'เว้นว่างหากไม่ต้องการเปลี่ยนรหัสผ่าน' : 'อย่างน้อย 12 ตัวอักษร'; rememberDialogDraft(form); openDialog($('#user-dialog')); }
     $('[data-open-user-dialog]')?.addEventListener('click', () => openUserForm());
     $('#user-rows').addEventListener('click', async (event) => { const button = event.target.closest('[data-action]'); if (!button) return; const user = state.users.find((item) => String(item.id) === button.dataset.id); if (!user) return; if (button.dataset.action === 'edit-user') openUserForm(user); if (button.dataset.action === 'delete-user' && await confirmAction('ปิดใช้งานผู้ดูแล', `ปิดบัญชี ${text(user.username)} ไม่ให้เข้าสู่ระบบอีกหรือไม่?`)) { try { await api(`/api/admin/users/${encodeURIComponent(user.id)}`, { method: 'DELETE', body: {} }); toast('ปิดใช้งานผู้ดูแลแล้ว'); loadUsers(); } catch (error) { toast(errorMessage(error), 'error'); } } });
-    $('#user-form').addEventListener('submit', async (event) => { event.preventDefault(); const form = event.currentTarget; const error = $('#user-form-error'); showFormError(error); if (!form.reportValidity()) return; const values = Object.fromEntries(new FormData(form).entries()); const id = values.id; delete values.id; values.is_active = form.elements.is_active.checked; if (!values.password) delete values.password; const button = form.querySelector('[type="submit"]'); setBusy(button, true, 'กำลังบันทึก…'); try { await api(id ? `/api/admin/users/${encodeURIComponent(id)}` : '/api/admin/users', { method: id ? 'PUT' : 'POST', body: values }); closeDialog($('#user-dialog')); toast('บันทึกผู้ดูแลแล้ว'); loadUsers(); } catch (requestError) { showFormError(error, errorMessage(requestError)); } finally { setBusy(button, false); } });
+    $('#user-form').addEventListener('submit', async (event) => {
+      event.preventDefault(); const form = event.currentTarget;
+      if (form.dataset.submitting === 'true') return;
+      const error = $('#user-form-error'); showFormError(error);
+      if (!form.reportValidity()) return;
+      const values = Object.fromEntries(new FormData(form).entries()); const id = values.id; delete values.id;
+      values.is_active = form.elements.is_active.checked; if (!values.password) delete values.password;
+      const button = form.querySelector('[type="submit"]');
+      if (!beginDialogSave(form)) return; setBusy(button, true, 'กำลังบันทึก…');
+      try {
+        await api(id ? `/api/admin/users/${encodeURIComponent(id)}` : '/api/admin/users', { method: id ? 'PUT' : 'POST', body: values });
+        finishDialogSave(form); form.reset(); closeDialog($('#user-dialog'));
+        toast('บันทึกผู้ดูแลแล้ว'); loadUsers();
+      } catch (requestError) { showFormError(error, errorMessage(requestError)); }
+      finally { finishDialogSave(form); setBusy(button, false); }
+    });
 
     billingSettingsForm?.addEventListener('input', () => { billingSettingsForm.dataset.dirty = 'true'; });
     billingSettingsForm?.addEventListener('change', () => { billingSettingsForm.dataset.dirty = 'true'; });
@@ -3075,7 +3152,7 @@
       markIntegrationSettingsDirty();
     });
     window.addEventListener('beforeunload', (event) => {
-      if (adminLogoutInProgress || (!residentActivationSecret && !hasDirtySettings() && !hasDirtyMeterRows())) return;
+      if (adminLogoutInProgress || (!residentActivationSecret && !hasDirtySettings() && !hasDirtyMeterRows() && !hasDirtyDialogDrafts())) return;
       event.preventDefault(); event.returnValue = '';
     });
     integrationSettingsForm?.addEventListener('submit', async (event) => {
@@ -3331,7 +3408,7 @@
     adminLogoutButtons.forEach((button) => button.addEventListener('click', async () => {
       if (adminLogoutInProgress) return;
       adminLogoutInProgress = true;
-      const hasUnsavedChanges = hasDirtySettings() || hasDirtyMeterRows();
+      const hasUnsavedChanges = hasDirtySettings() || hasDirtyMeterRows() || hasDirtyDialogDrafts();
       const hasUncopiedAccess = Boolean(residentActivationSecret);
       if ((hasUnsavedChanges || hasUncopiedAccess)
         && !await confirmAction(

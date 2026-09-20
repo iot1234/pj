@@ -1,0 +1,67 @@
+/* Neutral surfaces and one primary action color. Status colors remain distinct. */
+:root {
+  --ink: #202733; --ink-soft: #566170; --navy: #27374c; --navy-2: #202d40;
+  --paper: #fff; --canvas: #f6f7f9; --line: #dfe3e9; --line-strong: #aab3c1;
+  --accent: #285bc4; --accent-dark: #20499c; --accent-soft: #edf2ff;
+  --shadow-sm: none; --shadow: 0 12px 36px rgba(24,32,48,.14);
+  --radius-sm: 6px; --radius: 10px; --radius-lg: 12px;
+  --focus: 0 0 0 3px rgba(40,91,196,.18);
+  --muted: var(--ink-soft); --border: var(--line); --surface: var(--paper);
+}
+body { line-height: 1.65; }
+h1, h2, h3 { line-height: 1.45; letter-spacing: normal; }
+.button, .brand-mark { box-shadow: none; border-radius: 7px; }
+.button:hover:not(:disabled), .room-card:hover, .stat-action:hover { transform: none; box-shadow: none; }
+.button { font-weight: 650; }
+.button-secondary { color: var(--ink); background: #fff; border-color: var(--line-strong); }
+.button-secondary:hover:not(:disabled), .button-ghost:hover:not(:disabled) { background: #f0f3f8; }
+.icon-button { border-radius: 7px; }
+input, select, textarea { border-radius: 6px; }
+input[readonly] { cursor: text; background: #f5f7fa; }
+.admin-shell { background: var(--canvas); }
+.admin-sidebar { color: var(--ink); background: #fff; border-right: 1px solid var(--line); }
+.admin-brand { color: var(--ink); }
+.admin-brand small, .admin-sidebar-profile small { color: var(--ink-soft); }
+.admin-nav-label { color: var(--ink-soft); letter-spacing: normal; }
+.admin-nav-item { color: #475569; }
+.admin-nav-item:hover { color: var(--ink); background: #f1f4f8; }
+.admin-nav-item.is-active { color: var(--accent-dark); background: var(--accent-soft); font-weight: 750; }
+.admin-sidebar-profile { border-color: var(--line); }
+.admin-sidebar-profile .avatar { color: var(--accent-dark); background: var(--accent-soft); }
+.admin-topbar, .public-header { background: #fff; backdrop-filter: none; }
+.public-hero::before, .auth-aside::after { display: none; }
+.public-hero, .hero-stat { box-shadow: none; backdrop-filter: none; }
+.room-card:hover .room-media img { transform: none; }
+.eyebrow { letter-spacing: .025em; }
+.stat-available, .stat-reserved, .stat-occupied { border-top: 1px solid var(--line); }
+.stat-card strong, .bill-row-amount, .auto-value { font-variant-numeric: tabular-nums; }
+.admin-content h2 { font-size: clamp(1.25rem, 2vw, 1.6rem); }
+.admin-view, .portal-view { animation: none; }
+.optional-fields { margin-top: 1rem; border-top: 1px solid var(--line); }
+.optional-fields > summary { min-height: 44px; padding: .75rem 0; color: var(--ink-soft); cursor: pointer; font-weight: 650; }
+.optional-fields[open] > summary { color: var(--ink); }
+.optional-fields .form-grid { padding-top: .5rem; }
+.auto-value { background: #f8fafc; padding: .6rem .75rem; border-radius: 6px; }
+.modal-card { scroll-padding-block: 1rem; }
+.form-error, .security-note, .preview-context { overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .toast-region { bottom: calc(5rem + env(safe-area-inset-bottom)); }
+  .modal, .app-dialog, .modal-card, .dialog-panel { max-height: 90dvh; }
+  input, select, textarea { font-size: 16px; }
+  .admin-topbar-actions .button { padding-inline: .65rem; }
+  .stats-grid-four { gap: .6rem; }
+  .stat-card { padding: .85rem; }
+  .stat-card strong { overflow-wrap: anywhere; }
+}
+@media (max-width: 860px) {
+  .auth-shell { grid-template-rows: auto 1fr; align-content: start; }
+  .auth-aside { min-height: 0; padding: 1rem 1.25rem; color: var(--ink); background: #fff; border-bottom: 1px solid var(--line); }
+  .auth-aside-copy, .auth-points, .resident-login-art { display: none; }
+  .auth-aside .brand { color: var(--ink); }
+  .auth-aside .brand small { color: var(--ink-soft); }
+  .auth-card { min-height: 0; width: min(100%, 480px); align-self: start; margin: 0 auto; padding: 1.5rem 1.25rem 2.5rem; }
+  .auth-card .back-link { margin-bottom: 1rem; }
+}
+@media (prefers-contrast: more) {
+  :root { --line: #687587; --line-strong: #465367; }
+}

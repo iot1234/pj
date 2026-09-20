@@ -2074,7 +2074,7 @@ $test('activation passwords survive retryable failure and unsent access secrets 
     $beforeEnd=$beforeStart===false?false:strpos($js,'integrationSettingsForm?.addEventListener',$beforeStart);
     if($beforeStart===false||$beforeEnd===false)throw new RuntimeException('cannot isolate admin beforeunload guard');
     $beforeUnload=substr($js,$beforeStart,$beforeEnd-$beforeStart);
-    $same(true,str_contains($beforeUnload,'if (adminLogoutInProgress || (!residentActivationSecret && !hasDirtySettings() && !hasDirtyMeterRows())) return;'));
+    $same(true,str_contains($beforeUnload,'if (adminLogoutInProgress || (!residentActivationSecret && !hasDirtySettings() && !hasDirtyMeterRows() && !hasDirtyDialogDrafts())) return;'));
     $same(true,str_contains($beforeUnload,"event.preventDefault(); event.returnValue = '';"));
 });
 

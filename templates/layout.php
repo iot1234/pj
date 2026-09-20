@@ -27,6 +27,7 @@ if (!isset($contentTemplate) || !is_string($contentTemplate) || !is_file($conten
   <meta name="app-timezone" content="<?= e($appTimezoneName) ?>">
   <title><?= e($documentTitle) ?></title>
   <link rel="stylesheet" href="<?= e($assetUrl('/assets/css/app.css')) ?>">
+  <link rel="stylesheet" href="<?= e($assetUrl('/assets/css/simple.css')) ?>">
 </head>
 <body data-page="<?= e($pageId) ?>" data-user-role="<?= e($userRole) ?>">
   <a class="skip-link" href="#main-content">ข้ามไปยังเนื้อหาหลัก</a>
