@@ -23,3 +23,12 @@ test('LINE fallback does not submit images, or mark the bill paid, and needs no 
  const source=fs.readFileSync('templates/resident/portal.php','utf8');const part=source.slice(source.indexOf('id="resident-line-slip-fallback"'),source.indexOf('<form class="slip-form"'));
  assert.ok(part.includes('ไม่ได้บันทึกเป็นสลิปในเว็บ'));assert.ok(!part.includes('<input'));assert.ok(part.includes('noopener noreferrer'));
 });
+
+test('runtime provisioning, bootstrap and CI all use the canonical fresh-schema table count',()=>{
+ const sql=fs.readFileSync('database/schema.sql','utf8');
+ const count=[...sql.matchAll(/CREATE TABLE IF NOT EXISTS [a-z_]+/g)].length;
+ assert.equal(count,22);
+ assert.ok(fs.readFileSync('scripts/provision_runtime_db_user.sh','utf8').includes("'"+count+"|1|1'"));
+ assert.ok(fs.readFileSync('scripts/bootstrap_database.sh','utf8').includes('"$object_count" == '+count+' && "$base_table_count" == '+count));
+ assert.ok(fs.readFileSync('.github/workflows/ci.yml','utf8').includes("'"+count+"|26|119'"));
+});

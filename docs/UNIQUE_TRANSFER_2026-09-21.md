@@ -38,7 +38,7 @@
 
 ## ผลทดสอบและขอบเขต
 
-PHP unit/contract 125 ผ่าน, JavaScript 152 ผ่าน, PHP syntax 89 ไฟล์ผ่าน และ JavaScript syntax 4 ไฟล์ผ่าน พร้อม LINE offline, billing CLI, worker contract, shell syntax และ generated SQL consistency
+PHP unit/contract 125 ผ่าน, JavaScript 153 ผ่าน, PHP syntax 89 ไฟล์ผ่าน และ JavaScript syntax 4 ไฟล์ผ่าน พร้อม LINE offline, billing CLI, worker contract, shell syntax และ generated SQL consistency
 
 MySQL แยก 15 ชุดผ่านและ schema audit ผ่าน ชุด transfer ใหม่ 10 กลุ่มครอบคลุมสร้าง QR โดยไม่มี slip provider, เปิดใหม่ได้ยอดเดิม, สิทธิ์ของบิล, LINE reference, เปลี่ยนบัญชี, ความไม่เปลี่ยนแปลงของ snapshot, 99 ยอดไม่ซ้ำและปฏิเสธยอดที่ 100, เงินต้นมีสตางค์, การจองจากหลาย process และยอดที่ส่งให้ตัวตรวจสลิปต้องเป็นยอดโอนที่จองไว้
 
@@ -47,3 +47,5 @@ Edge headless 89 กรณีผ่าน: 79 กรณีเดิมและ 
 ยังไม่ได้ทดสอบ migration 016 กับสำเนาฐาน production ของผู้ใช้ หรือยืนยันการรับสลิปยอดบวกสตางค์กับผู้ให้บริการจริงแบบครบเส้นทาง และยังไม่ได้ยืนยันการใช้งานบน Safari/iPhone จริง จึงไม่ควรถือผล unit/integration/browser ว่าเป็นหลักฐานว่ารับเงินจริงแล้ว
 
 ไม่ได้แก้ `.env`, APP_KEY, บัญชีรับเงินจริง หรือข้อมูล production ไม่รัน migration บนฐานจริง ไม่เพิ่มปุ่ม manual-paid และไม่ใช้ LINE message/image event เป็นคำสั่งเปลี่ยนบิลเป็น paid สำเนาก่อนแก้และหลักฐานตรวจอยู่ใน `storage/logs/unique-transfer-20260921/` ซึ่งไม่อยู่ใน commit
+
+แก้ gate ของบัญชี runtime ให้รับ schema 22 ตาราง และเพิ่ม regression เปรียบเทียบจำนวนตาราง canonical กับ provisioning/bootstrap/CI หลัง CI แรกล้มเหลวเพราะยังตรวจ 21 ตาราง ไม่ได้ผ่อนปรนสิทธิ์ฐานข้อมูลหรือข้ามการตรวจใด

@@ -1935,7 +1935,7 @@ $test('container runtime command dispatches by fail-closed role',function()use($
     $roleGuard=strpos($setup,'RUNTIME_ROLE:-');
     $bootstrapCall=strpos($setup,'bootstrap_database.sh');
     $same(true,$roleGuard!==false&&$bootstrapCall!==false&&$roleGuard<$bootstrapCall);
-    $same(true,str_contains($provision,"[[ \"\$readiness\" == '21|1|1' ]]"));
+    $same(true,str_contains($provision,"[[ \"\$readiness\" == '22|1|1' ]]"));
     $same(false,str_contains($provision,"[[ \"\$readiness\" == '15|1|1' ]]"));
     $same(true,str_contains($workflow,"[ \"\$install_shape\" = '22|26|119' ]"));
     $same(false,str_contains($workflow,"[ \"\$install_shape\" = '15|19|80' ]"));
