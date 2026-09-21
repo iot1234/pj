@@ -19,6 +19,26 @@ test('QR readiness no longer requires the slip provider but retains a separate u
  assert.ok(source.includes("state.slipReady = slipReady && !paymentInProgress && status !== 'paid'"));
  assert.ok(source.includes("showSlipLineFallback(state.lineFallback)"));
 });
+
+test('resident payment notices agree with QR availability when verification or reservations are unavailable',()=>{
+ const source=fs.readFileSync('public/assets/js/app.js','utf8');
+ const start=source.indexOf('const paymentConfigurationReady =');
+ const end=source.indexOf("const breakdown = $('#resident-bill-breakdown');",start);
+ function render({reservation=true,slip=false,payment=null}={}){
+  const nodes=new Map(),$=key=>{if(!nodes.has(key))nodes.set(key,{setAttribute(){}});return nodes.get(key);};
+  const state={};const paymentNotice={setAttribute(){}};
+  const ctx={promptPayReady:true,slipReady:slip,capabilities:{transfer_reservation_ready:reservation},payment,status:'pending',
+   state,paymentNotice,bill:{},renderTransferSummary(){},showSlipLineFallback(){},$,text:(value,fallback)=>value||fallback};
+  vm.runInNewContext(source.slice(start,end),ctx);
+  return {state,paymentNotice,qrHidden:$('#resident-load-qr').hidden,uploadHidden:$('#resident-slip-form').hidden};
+ }
+ const available=render();assert.equal(available.qrHidden,false);assert.equal(available.uploadHidden,true);
+ assert.match(available.paymentNotice.textContent,/ชำระด้วย QR ได้ตามยอดที่ระบุ/);assert.match(available.paymentNotice.textContent,/LINE Bot/);
+ const unavailable=render({reservation:false});assert.equal(unavailable.qrHidden,true);
+ assert.match(unavailable.paymentNotice.textContent,/ยังสร้าง QR ไม่ได้/);assert.doesNotMatch(unavailable.paymentNotice.textContent,/ชำระด้วย QR ได้|migration/);
+ const pending=render({payment:{status:'pending'}});assert.equal(pending.qrHidden,true);assert.match(pending.paymentNotice.textContent,/อย่าโอนซ้ำ/);
+ assert.equal(render({slip:true}).uploadHidden,false);
+});
 test('LINE fallback does not submit images, or mark the bill paid, and needs no extra identifier inputs',()=>{
  const source=fs.readFileSync('templates/resident/portal.php','utf8');const part=source.slice(source.indexOf('id="resident-line-slip-fallback"'),source.indexOf('<form class="slip-form"'));
  assert.ok(part.includes('ไม่ได้บันทึกเป็นสลิปในเว็บ'));assert.ok(!part.includes('<input'));assert.ok(part.includes('noopener noreferrer'));

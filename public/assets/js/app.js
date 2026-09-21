@@ -1205,11 +1205,11 @@
             : payment.status === 'verified' ? 'สลิปผ่านการตรวจสอบแล้ว ไม่ต้องชำระซ้ำ' : 'สลิปอยู่ระหว่างตรวจสอบ กรุณารอผลและอย่าโอนซ้ำ');
         }
         if (paymentBlocked) {
-          if (capabilities.transfer_reservation_ready !== true) notices.push('ระบบจองยอดยังไม่พร้อม ผู้ดูแลต้องติดตั้ง migration 016 ก่อนแสดง QR');
+          if (capabilities.transfer_reservation_ready !== true) notices.push('ยังสร้าง QR ไม่ได้ กรุณาติดต่อผู้ดูแลให้เปิดระบบจองยอด หากโอนแล้วให้ส่งสลิปทาง LINE ไม่ต้องโอนซ้ำ');
           else if (!promptPayReady) notices.push('ยังชำระผ่านระบบไม่ได้: ยังไม่ได้ตั้งค่า PromptPay กรุณาติดต่อผู้ดูแลก่อนโอน');
           else notices.push('กรุณาตรวจสถานะบิลก่อนชำระ');
         }
-        if(promptPayReady && !slipReady && !paymentInProgress)notices.push('สร้าง QR ได้ แต่ระบบตรวจสลิปยังไม่พร้อม หลังโอนให้ส่งสลิปใน LINE ให้ผู้ดูแลตรวจ อย่าโอนซ้ำ');
+        if(state.paymentReady && !slipReady && status !== 'paid')notices.push('ชำระด้วย QR ได้ตามยอดที่ระบุ หลังโอนให้ส่งสลิปทาง LINE Bot เพื่อให้ผู้ดูแลตรวจ ไม่ต้องแนบสลิปในเว็บหรือโอนซ้ำ');
         paymentNotice.hidden = notices.length === 0;
         paymentNotice.className = `payment-notice${payment ? ` payment-notice-${text(payment.status, 'pending')}` : ''}${paymentBlocked ? ' payment-notice-blocked' : ''}`;
         paymentNotice.setAttribute('role', paymentBlocked ? 'alert' : 'status');

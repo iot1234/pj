@@ -84,6 +84,12 @@ try {
         );
     }
 
+    // QR allocation is a payment prerequisite even when slip verification is
+    // disabled. Reject an incomplete deployment before it reaches residents.
+    if (!$app->transfers()->available()) {
+        throw new RuntimeException('schema transfer readiness check failed; migration 016 required');
+    }
+
     // A table-count-only probe can stay green while application code expects
     // columns or uniqueness guards from a newer migration. Keep this list to
     // deployment-critical fields that current write paths use immediately.

@@ -30,9 +30,16 @@ try{
         $billId=(int)$created['id'];$expectedTotal=$created['total_amount'];
         $bind=static function()use($app,$residentId,$oa,$owner):void{$code=$app->lineRoomBindings()->issue($residentId,['oa_id'=>$oa['id'],'ttl_days'=>7,'replace_pending'=>false],$owner);$app->lineRoomBindings()->consume($code['code'],'U'.bin2hex(random_bytes(16)),$oa['id']);};
         $bind();$bind();$bind();
+        $app->settings()->update(['slip_provider'=>'none'],$owner);
+        $check('Slip verification is disabled for this LINE delivery regression',!$app->settings()->publicSettings()['slip_verification_ready']);
         $app->notifications()->enqueueBill($billId);
         $ids=$pdo->query('SELECT id FROM notification_outbox WHERE bill_id='.$billId.' ORDER BY id')->fetchAll(PDO::FETCH_COLUMN);
         $check('Each of three authorized LINE accounts gets one delivery',count($ids)===3);
+        $payload=json_decode((string)$pdo->query('SELECT payload FROM notification_outbox WHERE id='.(int)$ids[0])->fetchColumn(),true,512,JSON_THROW_ON_ERROR);
+        $message=$payload['messages'][0]['text'];
+        $check('LINE separates invoice principal from the locked QR amount and offers chat slip fallback',
+            str_contains($message,'ยอดบิล '.$expectedTotal)&&str_contains($message,'โอนตามยอด QR ห้ามปัดเศษ')
+            &&str_contains($message,'/resident#bills')&&str_contains($message,'ส่งเลขบิลและรูปสลิปในแชต LINE นี้'));
         $pdo->exec("UPDATE notification_outbox SET status='sent',attempts=1,sent_at=UTC_TIMESTAMP(6),line_request_id='test-one' WHERE id=".(int)$ids[0]);
         $pdo->exec("UPDATE notification_outbox SET status='failed',attempts=2,last_error='Offline test failure' WHERE id=".(int)$ids[1]);
         $get=static function()use($app,$billId,$period):array{return array_values(array_filter($app->billing()->adminList($period),static fn(array $row):bool=>$row['id']===$billId));};

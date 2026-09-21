@@ -108,7 +108,23 @@ try {
         $pass('a real pre-014 sixteen-table schema fails HTTP readiness with the migration name');
     } else {
         $assert($initial['status'] === 200 && $initial['body'] === '{"status":"ok"}', 'The current fresh schema must pass real HTTP readiness');
-        $pass('the current twenty-one-table schema passes real HTTP readiness with the runtime account');
+        $pass('the current twenty-two-table schema passes real HTTP readiness with the runtime account');
+
+        $schema->exec('RENAME TABLE transfer_instructions TO healthz_missing_transfer_instructions');
+        try {
+            $unavailable($request(), 'migration 016 required');
+            $pass('missing amount reservations fail readiness before a broken QR deployment can go live');
+        } finally {
+            $schema->exec('RENAME TABLE healthz_missing_transfer_instructions TO transfer_instructions');
+        }
+
+        $schema->exec('ALTER TABLE transfer_instructions DROP INDEX uq_transfer_active_amount, ADD KEY uq_transfer_active_amount (active_amount)');
+        try {
+            $unavailable($request(), 'migration 016');
+            $pass('a nonunique transfer amount index cannot pass HTTP readiness');
+        } finally {
+            $schema->exec('ALTER TABLE transfer_instructions DROP INDEX uq_transfer_active_amount, ADD UNIQUE KEY uq_transfer_active_amount (active_amount)');
+        }
 
         $lineTables = ['line_official_accounts', 'line_room_bindings', 'line_room_policies', 'line_admin_recipients', 'line_notice_outbox'];
         $rename = static function (bool $restore) use ($schema, $lineTables): void {

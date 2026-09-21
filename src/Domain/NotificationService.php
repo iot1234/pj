@@ -428,7 +428,10 @@ final class NotificationService
     /** @param array<string,mixed> $bill @return array<string,mixed> */
     private function billPayload(array $bill): array
     {
-        $text="ใบแจ้งหนี้ {$bill['bill_no']}\nห้อง {$bill['room_code']}\nรอบบิล ".substr((string)$bill['period'],0,7)."\nยอดชำระ {$bill['total_amount']} บาท\nครบกำหนด {$bill['due_date']}";
+        $text="ใบแจ้งหนี้ {$bill['bill_no']}\nห้อง {$bill['room_code']}\nรอบบิล ".substr((string)$bill['period'],0,7)."\nยอดบิล {$bill['total_amount']} บาท\nครบกำหนด {$bill['due_date']}";
+        $text.="\nเปิดบิลเพื่อดู QR และยอดโอนที่ล็อกไว้ (ยอดบิล + 0.01–0.99 บาท) โอนตามยอด QR ห้ามปัดเศษ\n"
+            .(new LineBotService($this->app))->portalUrl('bills')
+            ."\nหากแนบสลิปในเว็บไม่ได้ ให้ส่งเลขบิลและรูปสลิปในแชต LINE นี้ให้ผู้ดูแลตรวจ หากโอนแล้วไม่ต้องโอนซ้ำ";
         return ['to'=>(string)$bill['line_user_id'],'messages'=>[['type'=>'text','text'=>$text]]];
     }
 

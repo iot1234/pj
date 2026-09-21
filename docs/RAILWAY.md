@@ -134,6 +134,8 @@ monthly-billing schedule และลบ migration job/`DB_DBA_*`
 
 ### ถ้า `/healthz.php` ตอบ 503 หลัง deploy
 
+- `migration 016 required` หรือข้อความ `migration 016` ใน log หมายถึงระบบล็อกยอด QR ยังไม่พร้อม ให้สำรองฐานและติดตั้ง `database/migrations/016_unique_transfer_instructions.sql` ด้วยบัญชี migration หลัง 015 ก่อน deploy รุ่นนี้ การตรวจสลิปอัตโนมัติไม่จำเป็นต่อการสร้าง QR แต่ตารางจองยอดและ unique index ต้องพร้อมเสมอ
+
 ดูข้อความ `readiness check failed` ใน deployment log ของ web รุ่นใหม่จะระบุชื่อ
 ตารางที่ขาดเฉพาะใน server log ส่วนผลตอบกลับสาธารณะยังเป็น `{"status":"unavailable"}`
 
