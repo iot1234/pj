@@ -54,7 +54,8 @@ final class PaymentService
         // Concurrent uploads now stop at the unique/active-payment guards and
         // never race two provider decisions into the same bill.
         try{
-            $verification=$this->verifier->verify($absolute,$mime,(string)$bill['total_amount'],(string)$bill['created_at']);
+            $expected=$this->app->transfers()->expectedAmount((int)$bill['id'],(string)$bill['total_amount']);
+            $verification=$this->verifier->verify($absolute,$mime,$expected,(string)$bill['created_at']);
             return $this->finalizeReserved((int)$payment['id'],(int)$bill['id'],$token,$verification,$afterFinalize);
         }catch(\Throwable $error){
             try{$this->releaseClaim((int)$payment['id'],$token);}catch(\Throwable){error_log('Unable to release payment verification claim for payment '.$payment['id']);}
@@ -69,7 +70,7 @@ final class PaymentService
         $params=[];$where='';if($status!==null&&$status!==''){$map=$status==='failed'?'rejected':$status;if(!in_array($map,['pending','verified','rejected'],true))throw new HttpException(422,'Invalid payment status','VALIDATION_ERROR');$where=' WHERE p.status=?';$params[]=$map;}
         $pageSize=$limit+1;
         $statement=$this->app->database()->pdo()->prepare("SELECT p.id,p.bill_id,p.resident_id,p.amount,p.status,p.provider,p.transaction_ref,p.receiver_ref,p.rejection_reason,p.verification_lease_until,p.verification_attempts,(p.status='pending' AND p.verification_lease_until IS NOT NULL AND p.verification_lease_until>UTC_TIMESTAMP()) AS verifying,p.created_at,p.updated_at,p.verified_at,b.bill_no,b.room_code_snapshot AS room_code,b.resident_name_snapshot AS full_name FROM payments p JOIN bills b ON b.id=p.bill_id".$where." ORDER BY (p.status='pending') DESC,p.created_at DESC,p.id DESC LIMIT {$pageSize} OFFSET {$offset}");
-        $statement->execute($params);$rows=$statement->fetchAll();$hasMore=count($rows)>$limit;if($hasMore)array_pop($rows);foreach($rows as &$row){foreach(['id','bill_id','resident_id','verification_attempts']as$key)$row[$key]=(int)$row[$key];$row['resident_name']=$row['full_name'];$row['verifying']=(bool)$row['verifying'];}
+        $statement->execute($params);$rows=$statement->fetchAll();$hasMore=count($rows)>$limit;if($hasMore)array_pop($rows);foreach($rows as &$row){foreach(['id','bill_id','resident_id','verification_attempts']as$key)$row[$key]=(int)$row[$key];$row['resident_name']=$row['full_name'];$row['verifying']=(bool)$row['verifying'];$transfer=$this->app->transfers()->find((int)$row['bill_id']);$row['transfer_amount']=$transfer['transfer_amount']??$row['amount'];$row['transfer_adjustment']=$transfer['adjustment_amount']??'0.00';}
         $pendingCount=(int)$this->app->database()->pdo()->query("SELECT COUNT(*) FROM payments WHERE status='pending'")->fetchColumn();
         return ['items'=>$rows,'has_more'=>$hasMore,'next_offset'=>$offset+count($rows),'pending_count'=>$pendingCount];
     }
@@ -88,7 +89,8 @@ final class PaymentService
         $claim=$this->claimRetry($paymentId,$token);
         try{
             $absolute=$this->storedSlipAbsolute((string)$claim['slip_path'],(string)$claim['slip_mime'],(string)$claim['slip_hmac']);
-            $verification=$this->verifier->verify($absolute,(string)$claim['slip_mime'],(string)$claim['amount'],(string)$claim['bill_created_at']);
+            $expected=$this->app->transfers()->expectedAmount((int)$claim['bill_id'],(string)$claim['amount']);
+            $verification=$this->verifier->verify($absolute,(string)$claim['slip_mime'],$expected,(string)$claim['bill_created_at']);
             return $this->finalizeReserved($paymentId,(int)$claim['bill_id'],$token,$verification,$afterFinalize);
         }catch(\Throwable $error){
             try{$this->releaseClaim($paymentId,$token);}catch(\Throwable){error_log('Unable to release payment verification claim for payment '.$paymentId);}
@@ -240,13 +242,29 @@ final class PaymentService
     private function finalizeReserved(int $paymentId,int $billId,string $token,array $v,?callable $afterFinalize=null): array
     {
         return $this->app->database()->transaction(function(PDO $pdo)use($paymentId,$billId,$token,$v,$afterFinalize):array{
-            $billLock=$pdo->prepare('SELECT id,status FROM bills WHERE id=? FOR UPDATE');$billLock->execute([$billId]);$bill=$billLock->fetch();if(!$bill)throw new HttpException(404,'ไม่พบบิล','BILL_NOT_FOUND');
+            $billLock=$pdo->prepare('SELECT id,status,total_amount FROM bills WHERE id=? FOR UPDATE');$billLock->execute([$billId]);$bill=$billLock->fetch();if(!$bill)throw new HttpException(404,'ไม่พบบิล','BILL_NOT_FOUND');
             $paymentLock=$pdo->prepare('SELECT id,bill_id,status,verification_token FROM payments WHERE id=? FOR UPDATE');$paymentLock->execute([$paymentId]);$row=$paymentLock->fetch();
             if(!$row||(int)$row['bill_id']!==$billId)throw new HttpException(409,'รายการชำระเปลี่ยนแปลงแล้ว','PAYMENT_CHANGED');
             if($row['status']!=='pending'||!is_string($row['verification_token'])||!hash_equals($row['verification_token'],$token)){
                 return $this->get($pdo,$paymentId);
             }
             if($bill['status']!=='pending')throw new HttpException(409,'บิลนี้ชำระแล้ว','BILL_ALREADY_PAID');
+            if(($v['decision']??null)==='verified'){
+                $pdo->query('SELECT id FROM integration_settings WHERE id=1 FOR SHARE')->fetchColumn();
+                $instruction=$this->app->transfers()->find($billId);
+                try {
+                    $expected=$this->app->transfers()->expectedAmount($billId,(string)$bill['total_amount']);
+                    $settings=$this->app->settings()->slipVerificationSettings();
+                    if(isset($v['settings_fingerprint'])&&!hash_equals($settings['fingerprint'],$v['settings_fingerprint']))throw new \RuntimeException('Verification settings changed');
+                    if($instruction){
+                        $actual=Validator::scaledDecimal($v['payload']['amount']??null,'transfer_amount',2,12);
+                        if($actual!==Validator::scaledDecimal($expected,'expected_amount',2,12)||!isset($v['settings_fingerprint']))throw new \RuntimeException('Transfer amount not verified');
+                        $v['payload']['bill_amount']=$instruction['bill_amount'];
+                        $v['payload']['adjustment_amount']=$instruction['adjustment_amount'];
+                        $v['payload']['expected_transfer_amount']=$expected;
+                    }
+                }catch(\Throwable){$v=['decision'=>'pending','provider'=>$v['provider']??null,'transaction_ref'=>null,'receiver_ref'=>null,'payload'=>[],'reason'=>'ยอดหรือบัญชีรับเงินเปลี่ยน/ยังยืนยันไม่ได้ เก็บสลิปไว้ตรวจใหม่ ไม่ต้องโอนซ้ำ'];}
+            }
             $this->applyVerification($pdo,$paymentId,$billId,$v);
             $data=$this->get($pdo,$paymentId);
             LineAdminEvents::enqueue($this->app,'payment.'.($data['status']==='pending'?'review':$data['status']),$paymentId);
@@ -277,6 +295,7 @@ final class PaymentService
             $bill=$pdo->prepare("UPDATE bills SET status='paid',paid_at=UTC_TIMESTAMP() WHERE id=? AND status='pending'");
             $bill->execute([$billId]);
             if($bill->rowCount()!==1)throw new HttpException(409,'สถานะบิลเปลี่ยนแปลงแล้ว','BILL_CHANGED');
+            $this->app->transfers()->settle($pdo,$billId);
         }
     }
 

@@ -39,6 +39,7 @@ if (!isset($contentTemplate) || !is_string($contentTemplate) || !is_file($conten
   </noscript>
   <script src="<?= e($assetUrl('/assets/js/vendor/qrcode.min.js')) ?>" defer></script>
   <?php if ($pageId === 'admin-console'): ?><script src="<?= e($assetUrl('/assets/js/billing-guidance.js')) ?>" defer></script><?php endif; ?>
+  <?php if ($pageId === 'resident-portal'): ?><script src="<?= e($assetUrl('/assets/js/transfer-payment.js')) ?>" defer></script><?php endif; ?>
   <script src="<?= e($assetUrl('/assets/js/app.js')) ?>" defer></script>
 </body>
 </html>

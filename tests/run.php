@@ -305,7 +305,7 @@ $test('FR-16 payment recovery has no manual paid endpoint',function()use($same,$
 $test('all SQL bootstraps include the expected integrity triggers',function()use($same):void{
     $root=dirname(__DIR__);
     foreach([
-        'database/schema.sql'=>23,
+        'database/schema.sql'=>26,
         'database/migrations/002_operational_hardening.sql'=>15,
     ]as$file=>$expected){
         $sql=file_get_contents($root.'/'.$file);if(!is_string($sql))throw new RuntimeException("cannot read {$file}");
@@ -315,7 +315,7 @@ $test('all SQL bootstraps include the expected integrity triggers',function()use
     $repair=file_get_contents($root.'/database/migrations/003_append_only_guards.sql');if(!is_string($repair))throw new RuntimeException('cannot read migration 003');
     preg_match_all('/^CREATE TRIGGER\s+([a-z0-9_]+)/mi',$repair,$matches);$same(4,count(array_unique($matches[1])));
     $installer=file_get_contents($root.'/database/install.sql');if(!is_string($installer))throw new RuntimeException('cannot read fresh installer');
-    preg_match_all('/^CREATE TRIGGER\s+([a-z0-9_]+)/mi',$installer,$matches);$same(23,count(array_unique($matches[1])));
+    preg_match_all('/^CREATE TRIGGER\s+([a-z0-9_]+)/mi',$installer,$matches);$same(26,count(array_unique($matches[1])));
     $schema=file_get_contents($root.'/database/schema.sql');if(!is_string($schema))throw new RuntimeException('cannot read fresh schema');
     foreach([
         'trg_bookings_insert_guard',
@@ -331,30 +331,25 @@ $test('all SQL bootstraps include the expected integrity triggers',function()use
     $same(1,preg_match('/information_schema\.tables\s+WHERE table_schema = DATABASE\(\)/is',$installer));
     $same(1,preg_match('/INSERT IGNORE INTO billing_settings/i',$installer));
 });
-$test('PromptPay QR is blocked until the full payment path is ready',function()use($same,$throwsHttp,$app):void{
+$test('PromptPay availability is independent of slip provider but still blocks paid or pending evidence',function()use($same,$throwsHttp,$app):void{
     $base=['status'=>'pending','payment_capabilities'=>['promptpay_ready'=>true,'slip_verification_ready'=>true],'payment'=>null];
     $throwsHttp(fn()=>$app->billing()->assertPromptPayAvailable([...$base,'status'=>'paid']),'BILL_ALREADY_PAID',409);
     $throwsHttp(fn()=>$app->billing()->assertPromptPayAvailable([...$base,'payment_capabilities'=>['promptpay_ready'=>false,'slip_verification_ready'=>true]]),'PROMPTPAY_NOT_CONFIGURED',503);
-    $throwsHttp(fn()=>$app->billing()->assertPromptPayAvailable([...$base,'payment_capabilities'=>['promptpay_ready'=>true,'slip_verification_ready'=>false]]),'SLIP_NOT_CONFIGURED',503);
+    $app->billing()->assertPromptPayAvailable([...$base,'payment_capabilities'=>['promptpay_ready'=>true,'slip_verification_ready'=>false]]);
     $throwsHttp(fn()=>$app->billing()->assertPromptPayAvailable([...$base,'payment'=>['status'=>'pending']]),'PAYMENT_ALREADY_PENDING',409);
     $throwsHttp(fn()=>$app->billing()->assertPromptPayAvailable([...$base,'payment'=>['status'=>'verified']]),'PAYMENT_ALREADY_PENDING',409);
     $app->billing()->assertPromptPayAvailable([...$base,'payment'=>['status'=>'rejected']]);
     $routes=file_get_contents(dirname(__DIR__).'/src/Http/Routes.php');if(!is_string($routes))throw new RuntimeException('cannot read routes');
-    $same(1,preg_match("#/api/resident/bills/\{id\}/promptpay'.*?residentDetail.*?assertPromptPayAvailable.*?PromptPayService::payload#s",$routes));
-    $promptPayRouteStart=strpos($routes,"/api/resident/bills/{id}/promptpay");
-    $promptPayRouteEnd=strpos($routes,"/api/resident/bills/{id}/slip",$promptPayRouteStart===false?0:$promptPayRouteStart);
-    $promptPayRoute=$promptPayRouteStart!==false&&$promptPayRouteEnd!==false?substr($routes,$promptPayRouteStart,$promptPayRouteEnd-$promptPayRouteStart):'';
-    $billLock=strpos($promptPayRoute,'SELECT id FROM bills WHERE id=? AND resident_id=? FOR SHARE');
-    $settingsLock=strpos($promptPayRoute,'SELECT id FROM integration_settings WHERE id=1 FOR SHARE');
-    $missingSettingsGuard=strpos($promptPayRoute,"if(\$settingsId===false)throw new HttpException(503");
-    $detailRead=strpos($promptPayRoute,'residentDetail');
-    $same(true,$billLock!==false&&$settingsLock!==false&&$missingSettingsGuard!==false&&$detailRead!==false
-        &&$billLock<$settingsLock&&$settingsLock<$missingSettingsGuard&&$missingSettingsGuard<$detailRead);
+    $same(true,str_contains($routes,"\$router->post('/api/resident/bills/{id}/promptpay'"));
+    $same(true,str_contains($routes,'transfers()->reserve($billId,$resident)'));
+    $service=file_get_contents(dirname(__DIR__).'/src/Domain/TransferInstructionService.php');
+    foreach(['FOR UPDATE','FOR SHARE',"lockBucket('transfer-allocation','global')",'TRANSFER_SLOTS_FULL']as$guard)$same(true,str_contains($service,$guard));
+
 });
 $test('critical usability guards remain in the web UI',function()use($same):void{
     $root=dirname(__DIR__);$js=file_get_contents($root.'/public/assets/js/app.js');$admin=file_get_contents($root.'/templates/admin/console.php');$layout=file_get_contents($root.'/templates/layout.php');$resident=file_get_contents($root.'/src/Domain/ResidentService.php');$meters=file_get_contents($root.'/src/Domain/MeterService.php');$portal=file_get_contents($root.'/templates/resident/portal.php');
     if(!is_string($js)||!is_string($admin)||!is_string($layout)||!is_string($resident)||!is_string($meters)||!is_string($portal))throw new RuntimeException('cannot read UI sources');
-    $same(1,preg_match('/paymentConfigurationReady\s*=\s*promptPayReady\s*&&\s*slipReady/',$js));
+    $same(1,preg_match('/paymentConfigurationReady\s*=\s*promptPayReady\s*&&\s*capabilities.transfer_reservation_ready/',$js));
     $same(1,preg_match('/function applySavedMeterResult\s*\(/',$js));
     $same(0,preg_match('/name="confirm_pin"[^>]*required/',$admin));
     $same(1,preg_match('/จำนวนเงินอื่น \/ ห้อง/',$admin));
@@ -1556,7 +1551,9 @@ $test('signed LINE webhook binds the exact raw body and strict direct-user IDs',
     $copy=$event;$copy['source']['userId']='U0123456789abcdef0123456789abcde';$invalid[]=$copy;
     $copy=$event;$copy['source']['type']='group';$invalid[]=$copy;
     $copy=$event;$copy['mode']='standby';$invalid[]=$copy;
-    $copy=$event;$copy['message']['type']='image';$invalid[]=$copy;
+    $copy=$event;$copy['message']['type']='image';
+    $same('SLIP_IMAGE_REVIEW_ONLY',$candidateMethod->invoke($service,$copy)['message_text']);
+    $copy['message']['id']='invalid';$invalid[]=$copy;
     $copy=$event;$copy['webhookEventId']=strtolower($copy['webhookEventId']);$invalid[]=$copy;
     $copy=$event;$copy['replyToken']='short';$invalid[]=$copy;
     foreach($invalid as$item)$same(null,$candidateMethod->invoke($service,$item));
@@ -1838,9 +1835,9 @@ $test('runtime readiness rejects legacy PIN schemas and incomplete unique guards
         'normalizeTriggerAction',
         'expectedTriggerActions',
         'event/timing/body',
-        'triggers 23 รายการ',
+        'triggers 26 รายการ',
     ]as$bodyAuditGuard)$same(true,str_contains($requirements,$bodyAuditGuard));
-    $same(true,str_contains($bootstrap,'actual_trigger_count" == 23'));
+    $same(true,str_contains($bootstrap,'actual_trigger_count" == 26'));
     $same(true,str_contains($bootstrap,'trg_bookings_insert_guard|BEFORE|INSERT|bookings'));
     $same(true,str_contains($bootstrap,'trg_occupancies_relationship_guard|BEFORE|INSERT|occupancies'));
 });
@@ -1940,7 +1937,7 @@ $test('container runtime command dispatches by fail-closed role',function()use($
     $same(true,$roleGuard!==false&&$bootstrapCall!==false&&$roleGuard<$bootstrapCall);
     $same(true,str_contains($provision,"[[ \"\$readiness\" == '21|1|1' ]]"));
     $same(false,str_contains($provision,"[[ \"\$readiness\" == '15|1|1' ]]"));
-    $same(true,str_contains($workflow,"[ \"\$install_shape\" = '21|23|116' ]"));
+    $same(true,str_contains($workflow,"[ \"\$install_shape\" = '22|26|119' ]"));
     $same(false,str_contains($workflow,"[ \"\$install_shape\" = '15|19|80' ]"));
     $checker=file_get_contents(dirname(__DIR__).'/scripts/check_requirements.php');if(!is_string($checker))throw new RuntimeException('cannot read requirement checker');
     $same(true,str_contains($checker,"\$runtimeRole=(string)envValue(\$env,'RUNTIME_ROLE','all')"));
@@ -2279,7 +2276,7 @@ $test('admin bill status and LINE queues honor the deterministic latest payment'
 $test('pending or verified slips suppress irrelevant payment configuration warnings',function()use($same):void{
     $js=file_get_contents(dirname(__DIR__).'/public/assets/js/app.js');
     if(!is_string($js))throw new RuntimeException('cannot read resident payment notice source');
-    $noticeStart=strpos($js,'const paymentConfigurationReady = promptPayReady && slipReady;');
+    $noticeStart=strpos($js,'const paymentConfigurationReady = promptPayReady && capabilities.transfer_reservation_ready === true;');
     $noticeEnd=$noticeStart===false?false:strpos($js,"const breakdown = \$('#resident-bill-breakdown');",$noticeStart);
     if($noticeStart===false||$noticeEnd===false)throw new RuntimeException('cannot isolate resident payment notice');
     $notice=substr($js,$noticeStart,$noticeEnd-$noticeStart);
@@ -2370,7 +2367,7 @@ $test('trigger local variables pin their collation instead of inheriting the dat
     foreach(['database/schema.sql','database/install.sql']as$file){
         $sql=file_get_contents($root.'/'.$file);
         if(!is_string($sql))throw new RuntimeException("cannot read {$file}");
-        $same(23,preg_match_all($bodyPattern,$sql,$bodies,PREG_SET_ORDER));
+        $same(26,preg_match_all($bodyPattern,$sql,$bodies,PREG_SET_ORDER));
         foreach($bodies as $trigger)$same(false,str_contains($trigger[2],'--'));
     }
 

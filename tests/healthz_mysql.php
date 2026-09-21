@@ -17,7 +17,7 @@ $assert = static function (bool $condition, string $message): void {
     if (!$condition) throw new RuntimeException($message);
 };
 $tables = $pdo->query("SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_type='BASE TABLE'")->fetchAll(PDO::FETCH_COLUMN);
-$assert(count($tables) === ($legacy ? 16 : 21), 'The regression requires the expected fresh table set');
+$assert(count($tables) === ($legacy ? 16 : 22), 'The regression requires the expected fresh table set');
 foreach ($tables as $table) {
     $assert(preg_match('/^[a-z_]+$/D', $table) === 1, 'Unexpected testing table name');
     if (in_array($table, ['billing_settings', 'integration_settings', 'line_official_accounts'], true)) continue;

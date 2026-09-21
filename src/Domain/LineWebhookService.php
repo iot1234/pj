@@ -270,6 +270,9 @@ final class LineWebhookService
         $messageText = null;
         if ($type === 'message') {
             $message = $event['message'] ?? null;
+            if(is_array($message)&&($message['type']??null)==='image'&&is_string($message['id']??null)&&preg_match('/^[0-9]{1,30}$/D',$message['id'])){
+                $message=['type'=>'text','text'=>'SLIP_IMAGE_REVIEW_ONLY'];
+            }
             if (!is_array($message) || ($message['type'] ?? null) !== 'text'
                 || !is_string($message['text'] ?? null) || strlen($message['text']) > 512) {
                 return null;
@@ -451,6 +454,9 @@ final class LineWebhookService
                 'text' => $bot->instructions(),
                 'outcome' => 'instructions',
             ];
+        }
+        if($message==='SLIP_IMAGE_REVIEW_ONLY'||str_starts_with($message,'แจ้งชำระ ')){
+            return ['text'=>"ส่งเลขบิล ห้อง ยอดโอน และรูปสลิปในแชตนี้ให้ผู้ดูแลตรวจยอดรับเงินจริง\nยังไม่ยืนยันว่าชำระแล้ว และเว็บยังไม่ได้รับไฟล์จากแชตนี้\nไม่ต้องโอนซ้ำ หากเร่งด่วนให้ติดต่อสำนักงานหอพัก",'outcome'=>'slip_manual_guidance'];
         }
         $intent = LineBotService::intent($message);
         if($intent==='admin_claim'){

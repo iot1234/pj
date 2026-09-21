@@ -25,6 +25,16 @@ if ($base === false) {
     $base = preg_replace('/CREATE TRIGGER trg_notification_relationship_guard(?:_update)?\s+BEFORE\s+(?:INSERT|UPDATE)\s+ON\s+notification_outbox\s+FOR\s+EACH\s+ROW\s+BEGIN.*?\bEND\$\$\s*/s', '', $schema);
     if (!is_string($base)) { fwrite(STDERR, "Cannot prepare LINE schema extension\n"); exit(1); }
 }
+// The additive transfer migration and fresh schema share one canonical source.
+$transfer=file_get_contents($root.'/database/transfer_instructions.sql');
+if(!is_string($transfer)){fwrite(STDERR,"Cannot read transfer schema source\n");exit(1);}
+$transfer=rtrim(str_replace(["\r\n","\r"],"\n",$transfer))."\n";
+$start=strpos($base,'-- BEGIN TRANSFER INSTRUCTIONS');$end=strpos($base,'-- END TRANSFER INSTRUCTIONS');
+if($start===false||$end===false){fwrite(STDERR,"Transfer schema markers missing\n");exit(1);}
+$base=substr($base,0,$start).'-- BEGIN TRANSFER INSTRUCTIONS'."\n".$transfer.'-- END TRANSFER INSTRUCTIONS'.substr($base,$end+strlen('-- END TRANSFER INSTRUCTIONS'));
+$migration=$root.'/database/migrations/016_unique_transfer_instructions.sql';
+if($checkOnly){if(str_replace(["\r\n","\r"],"\n",(string)file_get_contents($migration))!==$transfer){fwrite(STDERR,"Migration 016 out of date\n");exit(1);}}
+else file_put_contents($migration,$transfer,LOCK_EX);
 $generatedSchema = rtrim($base) . "\n\n{$marker}\n{$platform}-- END GENERATED LINE PLATFORM\n";
 $generatedMigration = "-- AUTO-GENERATED FROM database/line_platform.sql. DO NOT EDIT.\n"
     . "-- Apply after migrations 001-013 with web and worker stopped.\n"

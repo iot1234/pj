@@ -327,6 +327,8 @@ final class BillingService
         foreach($this->app->lineOfficialAccounts()->all() as $oa)$oaReady[(int)$oa['id']]=($oa['line_binding_ready']??false)===true;
         $recipients=[];
         foreach($rows as &$row){
+            $transfer=$this->app->transfers()->find((int)$row['id']);
+            $row['transfer_amount']=$transfer['transfer_amount']??null;$row['transfer_adjustment']=$transfer['adjustment_amount']??null;
             $residentId=(int)$row['line_resident_id'];
             $recipients[$residentId]??=$this->app->notifications()->recipients($residentId);
             $targets=$recipients[$residentId];
@@ -403,7 +405,11 @@ final class BillingService
         $payment->execute([$billId]);
         $bill['payment'] = $payment->fetch() ?: null;
         $integrations=$this->app->settings()->publicSettings();
+        $instruction=$this->app->transfers()->find($billId);
+        $bill['transfer_instruction']=$instruction ? array_intersect_key($instruction,array_flip(['bill_amount','adjustment_amount','transfer_amount','status'])) : null;
+        $bill['line_fallback']=$this->app->transfers()->lineFallback($bill,$instruction['transfer_amount']??null);
         $bill['payment_capabilities']=[
+            'transfer_reservation_ready'=>$this->app->transfers()->available(),
             'promptpay_ready'=>($integrations['promptpay_ready']??false)===true,
             'slip_verification_ready'=>($integrations['slip_verification_ready']??false)===true,
             'slip_max_bytes'=>(int)($integrations['slip_max_bytes']??4_194_304),
@@ -424,10 +430,6 @@ final class BillingService
         if (($capabilities['promptpay_ready'] ?? false) !== true) {
             throw new HttpException(503, 'ยังไม่ได้ตั้งค่า PromptPay กรุณาติดต่อผู้ดูแลก่อนโอน', 'PROMPTPAY_NOT_CONFIGURED');
         }
-        if (($capabilities['slip_verification_ready'] ?? false) !== true) {
-            throw new HttpException(503, 'ระบบตรวจสลิปยังไม่พร้อม จึงยังไม่สามารถสร้าง QR ได้', 'SLIP_NOT_CONFIGURED');
-        }
-
         $payment = is_array($bill['payment'] ?? null) ? $bill['payment'] : [];
         if (in_array($payment['status'] ?? null, ['pending', 'verified'], true)) {
             throw new HttpException(409, 'บิลนี้มีรายการชำระที่กำลังดำเนินการอยู่แล้ว', 'PAYMENT_ALREADY_PENDING');

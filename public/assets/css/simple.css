@@ -117,3 +117,7 @@ input[readonly] { cursor: text; background: #f5f7fa; }
   .billing-recovery-context .form-actions { flex-wrap: wrap; }
   .billing-recovery-context .form-actions .button { width: 100%; }
 }
+
+/* Transfer instructions remain readable without changing invoice principal. */
+#resident-transfer-summary { margin-bottom: 16px; }
+#resident-line-slip-message { white-space: pre-line; overflow-wrap: anywhere; }

@@ -49,6 +49,7 @@ final class Application
     private LineAdminRecipientService $lineAdminRecipients;
     private LineNoticeService $lineNotices;
     private PaymentService $payments;
+    private ?\Dormitory\Domain\TransferInstructionService $transferInstructions = null;
     /** @var array<string,mixed>|null|false */
     private array|null|false $actorCache = false;
 
@@ -100,6 +101,7 @@ final class Application
     public function lineAdminRecipients(): LineAdminRecipientService { return $this->lineAdminRecipients; }
     public function lineNotices(): LineNoticeService { return $this->lineNotices; }
     public function payments(): PaymentService { return $this->payments; }
+    public function transfers(): \Dormitory\Domain\TransferInstructionService { return $this->transferInstructions ??= new \Dormitory\Domain\TransferInstructionService($this); }
 
     /** @return array<string,mixed>|null */
     public function actor(bool $refresh = false): ?array

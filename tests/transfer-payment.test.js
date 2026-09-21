@@ -1,0 +1,25 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const context={window:{}};vm.createContext(context);vm.runInContext(fs.readFileSync('public/assets/js/transfer-payment.js','utf8'),context);
+const helper=context.window.DormTransferPayment;
+const instruction={bill_id:4,bill_amount:'100.00',adjustment_amount:'0.25',amount:'100.25',amount_locked:true,payload:'000201TEST6304ABCD'};
+test('exact transfer amount includes the declared cents and is scoped to the requested bill',()=>{assert.equal(helper.validInstruction(instruction,4),true);assert.equal(helper.validInstruction(instruction,5),false);});
+test('zero, out-of-range, ambiguous and inconsistent cents never render as a valid instruction',()=>{
+ for(const adjustment of ['0.00','1.00','-0.25','0.001',0.25,null])assert.equal(helper.validInstruction({...instruction,adjustment_amount:adjustment},4),false);
+ assert.equal(helper.validInstruction({...instruction,amount:'100.00'},4),false);assert.equal(helper.validInstruction({...instruction,amount_locked:false},4),false);
+});
+test('line fallback requires the fixed official OA domain and matching encoded message',()=>{
+ const message='แจ้งชำระ B123';const good={available:true,message,url:'https://line.me/R/oaMessage/%40test/?'+encodeURIComponent(message)};
+ assert.ok(helper.safeLineFallback(good));
+ for(const url of ['javascript:alert(1)','https://evil.test/','https://line.me.evil.test/R/oaMessage/%40test/?x',good.url+'#x'])assert.equal(helper.safeLineFallback({...good,url}),null);
+ assert.equal(helper.safeLineFallback({...good,message:'changed'}),null);assert.equal(helper.safeLineFallback({...good,available:false}),null);
+});
+test('QR readiness no longer requires the slip provider but retains a separate upload guard',()=>{
+ const source=fs.readFileSync('public/assets/js/app.js','utf8');assert.ok(source.includes('promptPayReady && capabilities.transfer_reservation_ready === true'));
+ assert.ok(source.includes("state.slipReady = slipReady && !paymentInProgress && status !== 'paid'"));
+ assert.ok(source.includes("showSlipLineFallback(state.lineFallback)"));
+});
+test('LINE fallback does not submit images, or mark the bill paid, and needs no extra identifier inputs',()=>{
+ const source=fs.readFileSync('templates/resident/portal.php','utf8');const part=source.slice(source.indexOf('id="resident-line-slip-fallback"'),source.indexOf('<form class="slip-form"'));
+ assert.ok(part.includes('ไม่ได้บันทึกเป็นสลิปในเว็บ'));assert.ok(!part.includes('<input'));assert.ok(part.includes('noopener noreferrer'));
+});

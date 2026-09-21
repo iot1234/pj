@@ -164,9 +164,9 @@ foreach (['010_line_self_service_binding.sql','011_line_add_friend_identity.sql'
 $migrate('015_pending_occupancy_opening_readings.sql');
 $assert(Dormitory\Support\PendingOpeningSchema::errors($pdo) === [], 'Migrated marker/check rejected');
 $assert((int) $pdo->query("SELECT COUNT(*) FROM information_schema.table_constraints
-    WHERE constraint_schema=DATABASE() AND constraint_type='CHECK'")->fetchColumn() === 116, 'Unexpected CHECK count');
+    WHERE constraint_schema=DATABASE() AND constraint_type='CHECK'")->fetchColumn() === 119, 'Unexpected CHECK count');
 $assert((int) $pdo->query('SELECT COUNT(*) FROM information_schema.triggers
-    WHERE trigger_schema=DATABASE()')->fetchColumn() === 23, 'Unexpected trigger count');
+    WHERE trigger_schema=DATABASE()')->fetchColumn() === 26, 'Unexpected trigger count');
 foreach (['trg_occupancies_identity_immutable','trg_meter_readings_occupancy_guard',
           'trg_meter_readings_occupancy_guard_update','trg_bills_relationship_guard'] as $name) {
     preg_match('/CREATE TRIGGER ' . $name . '\s.*?FOR EACH ROW\s+(BEGIN.*?END)\$\$/s', $schema, $match);
@@ -175,7 +175,7 @@ foreach (['trg_occupancies_identity_immutable','trg_meter_readings_occupancy_gua
     $normalize = static fn(string $body): string => preg_replace('/\s+/', ' ', trim($body));
     $assert($normalize((string) $query->fetchColumn()) === $normalize($match[1]), 'Migration/canonical trigger differs: ' . $name);
 }
-fwrite(STDOUT, "PASS missing-009-columns upgrade through 015 and repeat 015: three unknown pairs preserved, 23 canonical triggers, 116 CHECKs\n");
+fwrite(STDOUT, "PASS missing-009-columns upgrade through 015 and repeat 015: three unknown pairs preserved, 26 canonical triggers, 119 CHECKs\n");
 
 // Fault injection proves both migrations refuse partial legacy data. No
 // global foreign-key/CHECK bypass is used; only this isolated fixture changes.

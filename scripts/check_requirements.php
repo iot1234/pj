@@ -538,7 +538,7 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
         $expectedTables = [
             'admin_users', 'residents', 'line_link_codes', 'rooms', 'bookings', 'occupancies',
             'meter_readings', 'billing_settings', 'integration_settings', 'bills', 'bill_items', 'payments',
-            'notification_outbox', 'notification_worker_heartbeats', 'audit_logs', 'rate_limits',
+            'notification_outbox', 'notification_worker_heartbeats', 'audit_logs', 'rate_limits', 'transfer_instructions',
             'line_official_accounts','line_room_bindings','line_room_policies','line_admin_recipients','line_notice_outbox',
         ];
         $statement = $pdo->prepare(
@@ -590,6 +590,9 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
         }
 
         $expectedTriggers = [
+            'trg_transfer_insert_guard'=>['INSERT','BEFORE','transfer_instructions'],
+            'trg_transfer_update_guard'=>['UPDATE','BEFORE','transfer_instructions'],
+            'trg_transfer_no_delete'=>['DELETE','BEFORE','transfer_instructions'],
             'trg_bookings_insert_guard' => ['INSERT', 'BEFORE', 'bookings'],
             'trg_bookings_identity_immutable' => ['UPDATE', 'BEFORE', 'bookings'],
             'trg_occupancies_relationship_guard' => ['INSERT', 'BEFORE', 'occupancies'],
@@ -644,12 +647,12 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
         if(count($expectedTriggerBodies)!==count($expectedTriggers)){
             addResult($errors,'อ่าน canonical trigger bodies จาก database/schema.sql ไม่ครบ');
         }elseif ($invalidTriggers === []&&$invalidTriggerBodies===[]) {
-            addResult($successes, 'พบ integrity triggers พร้อม event/timing/body ตรง canonical ครบ 23 รายการ');
+            addResult($successes, 'พบ integrity triggers พร้อม event/timing/body ตรง canonical ครบ 26 รายการ');
         } elseif ($schemaAudit || $grantInspection['can_read_all_triggers']) {
             $invalid=array_values(array_unique(array_merge($invalidTriggers,$invalidTriggerBodies)));
             addResult($errors, 'schema ขาด trigger หรือ event/timing/body ไม่ตรง canonical: ' . implode(', ', $invalid));
         } else {
-            addResult($skips, 'MySQL ซ่อน trigger metadata/body จากบัญชี runtime-only; รัน --schema-audit ด้วยบัญชี DBA เพื่อรับรอง triggers 23 รายการ');
+            addResult($skips, 'MySQL ซ่อน trigger metadata/body จากบัญชี runtime-only; รัน --schema-audit ด้วยบัญชี DBA เพื่อรับรอง triggers 26 รายการ');
         }
 
         $indexStatement = $pdo->prepare(
@@ -744,8 +747,8 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
         $checkStatement=$pdo->prepare("SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema=? AND constraint_type='CHECK'");
         $checkStatement->execute([$database]);
         $checkCount=(int)$checkStatement->fetchColumn();
-        if($checkCount>=116)addResult($successes,'พบ CHECK constraints ครบอย่างน้อย 116 รายการ');
-        else addResult($errors,'schema มี CHECK constraints ไม่ครบ; พบ '.$checkCount.' จากอย่างน้อย 116');
+        if($checkCount>=119)addResult($successes,'พบ CHECK constraints ครบอย่างน้อย 119 รายการ');
+        else addResult($errors,'schema มี CHECK constraints ไม่ครบ; พบ '.$checkCount.' จากอย่างน้อย 119');
 
         // A generated UNIQUE guard is ineffective when its expression has been
         // changed to always return NULL. Verify the complete definition of all

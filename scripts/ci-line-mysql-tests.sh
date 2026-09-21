@@ -51,7 +51,7 @@ docker run --rm \
 
 # Each LINE suite requires its own fresh schema and runtime account.
 # The provisioner escapes schema underscores and verifies exact grants.
-for line_suite in binding bot room_binding oa platform billing_delivery billing_defaults meter guide phone; do
+for line_suite in binding bot room_binding oa platform billing_delivery billing_defaults meter guide phone transfer; do
   line_database="appj_line_test_${line_suite}"
   line_username="line_test_${line_suite}"
   docker exec \
@@ -87,6 +87,7 @@ for line_suite in binding bot room_binding oa platform billing_delivery billing_
     billing_defaults) line_scripts=(tests/billing_defaults_mysql.php) ;;
     guide) line_scripts=(tests/billing_guidance_mysql.php) ;;
     phone) line_scripts=(tests/resident_phone_mysql.php) ;;
+    transfer) line_scripts=(tests/transfer_instruction_mysql.php) ;;
     meter) line_scripts=(tests/meter_recovery_mysql.php) ;;
   esac
   for line_script in "${line_scripts[@]}"; do

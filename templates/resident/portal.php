@@ -166,6 +166,7 @@ $residentInitial = preg_match('/^./us', $residentName, $initialMatch) === 1 ? $i
         <div><span id="resident-bill-number">—</span><small id="resident-bill-due">—</small></div>
         <div><span>ยอดสุทธิ</span><strong id="resident-bill-total">—</strong><span class="status-badge" id="resident-bill-status">—</span></div>
       </div>
+      <div class="payment-notice" id="resident-transfer-summary" role="status" hidden></div>
       <div class="bill-detail-grid">
         <section aria-labelledby="bill-breakdown-title">
           <h3 id="bill-breakdown-title">รายการค่าใช้จ่าย</h3>
@@ -174,10 +175,17 @@ $residentInitial = preg_match('/^./us', $residentName, $initialMatch) === 1 ? $i
         <section class="payment-panel" id="resident-payment-panel" aria-labelledby="payment-panel-title">
           <h3 id="payment-panel-title">ชำระผ่าน PromptPay</h3>
           <div class="qr-stage" id="resident-qr-stage" aria-live="polite">
-            <div class="qr-placeholder">เลือก “แสดง QR” เพื่อสร้าง QR ตามยอดบิล</div>
+            <div class="qr-placeholder">แสดง QR เพื่อจองยอดบิล + 0.01–0.99 บาทสำหรับแยกรายการ ห้ามปัดเศษ</div>
           </div>
           <button class="button button-primary button-full" id="resident-load-qr" type="button">แสดง QR พร้อมเพย์</button>
           <div class="payment-notice" id="resident-payment-notice" role="status" hidden></div>
+          <aside class="payment-notice" id="resident-line-slip-fallback" hidden>
+            <strong>แนบสลิปไม่ได้ ส่งทาง LINE ได้</strong>
+            <p>เปิดแชต กดส่งข้อความเลขบิล แล้วแนบรูปสลิปในแชตเดียวกันให้ผู้ดูแลตรวจ ไม่ต้องโอนซ้ำ</p>
+            <a class="button button-secondary button-full" id="resident-send-slip-line" target="_blank" rel="noopener noreferrer" hidden>เปิด LINE พร้อมเลขบิล</a>
+            <p id="resident-line-slip-message"></p>
+            <small>ปุ่มนี้ยังไม่ส่งข้อความหรือแนบภาพให้เอง รูปอยู่ในแชต LINE OA ไม่ได้บันทึกเป็นสลิปในเว็บ และยังไม่ยืนยันว่าชำระแล้ว</small>
+          </aside>
           <form class="slip-form" id="resident-slip-form" enctype="multipart/form-data" novalidate>
             <label class="file-picker">
               <span>แนบสลิปชำระเงิน</span>

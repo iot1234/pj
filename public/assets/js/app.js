@@ -1135,9 +1135,25 @@
       list.append(wrapper);
     }
 
+    function renderTransferSummary(instruction) {
+      const box=$('#resident-transfer-summary');box.replaceChildren();box.hidden=!instruction;
+      if(instruction)box.append(create('strong','',`${['settled','released'].includes(instruction.status)?'ยอดโอนที่บันทึก':'ยอดที่ต้องโอน'} ${money(instruction.transfer_amount)}`),
+        create('p','',`ยอดบิล ${money(instruction.bill_amount)} + สตางค์ระบุรายการ ${money(instruction.adjustment_amount)}`),
+        create('small','','โอนครบตามยอดนี้ ห้ามปัดเศษ รีเฟรชแล้วได้ยอดเดิม ส่วนต่างบันทึกแยกจากยอดบิล'));
+    }
+    function showSlipLineFallback(value) {
+      const box=$('#resident-line-slip-fallback'),link=$('#resident-send-slip-line');
+      const fallback=window.DormTransferPayment?.safeLineFallback(value);box.hidden=false;
+      link.hidden=!fallback;
+      if(fallback){link.href=fallback.url;$('#resident-line-slip-message').textContent=fallback.message;}
+      else{link.removeAttribute('href');$('#resident-line-slip-message').textContent='ยังไม่ได้ตั้ง LINE ของหอพัก กรุณาติดต่อสำนักงานพร้อมเลขบิล ไม่ต้องโอนซ้ำ';}
+    }
     async function openBill(id) {
       state.currentBillId = id;
       state.slipReady = false;
+      state.lineFallback = null;
+      $('#resident-line-slip-fallback').hidden=true;renderTransferSummary(null);
+      setBusy($('#resident-load-qr'),false);
       state.paymentReady = false;
       state.qrRequest += 1;
       const request = ++state.billDetailRequest;
@@ -1168,12 +1184,15 @@
         const capabilities = objectFrom(bill.payment_capabilities);
         const promptPayReady = capabilities.promptpay_ready === true;
         const slipReady = capabilities.slip_verification_ready === true;
-        const paymentConfigurationReady = promptPayReady && slipReady;
+        const paymentConfigurationReady = promptPayReady && capabilities.transfer_reservation_ready === true;
         const paymentInProgress = payment?.status === 'pending' || payment?.status === 'verified';
         const paymentBlocked = !paymentConfigurationReady && !paymentInProgress;
         state.slipMaxBytes = Math.max(1024, Math.min(4 * 1024 * 1024, Number(capabilities.slip_max_bytes) || 4 * 1024 * 1024));
         state.paymentReady = paymentConfigurationReady && !paymentInProgress;
-        state.slipReady = state.paymentReady;
+        state.slipReady = slipReady && !paymentInProgress && status !== 'paid';
+        state.lineFallback = bill.line_fallback;
+        renderTransferSummary(bill.transfer_instruction);
+        if(status !== 'paid')showSlipLineFallback(state.lineFallback);
         $('#resident-load-qr').hidden = !state.paymentReady;
         $('#resident-qr-stage').hidden = !state.paymentReady;
         $('#resident-slip-form').hidden = !state.slipReady;
@@ -1186,10 +1205,11 @@
             : payment.status === 'verified' ? 'สลิปผ่านการตรวจสอบแล้ว ไม่ต้องชำระซ้ำ' : 'สลิปอยู่ระหว่างตรวจสอบ กรุณารอผลและอย่าโอนซ้ำ');
         }
         if (paymentBlocked) {
-          if (!promptPayReady && !slipReady) notices.push('ยังชำระผ่านระบบไม่ได้: ผู้ดูแลต้องตั้งค่า PromptPay และระบบตรวจสลิปให้พร้อมก่อน ห้ามโอนจนกว่าจะตั้งค่าเสร็จ');
+          if (capabilities.transfer_reservation_ready !== true) notices.push('ระบบจองยอดยังไม่พร้อม ผู้ดูแลต้องติดตั้ง migration 016 ก่อนแสดง QR');
           else if (!promptPayReady) notices.push('ยังชำระผ่านระบบไม่ได้: ยังไม่ได้ตั้งค่า PromptPay กรุณาติดต่อผู้ดูแลก่อนโอน');
-          else notices.push('ยังชำระผ่านระบบไม่ได้: ระบบตรวจสลิปยังไม่พร้อม จึงซ่อน QR ไว้เพื่อป้องกันการโอนที่ตรวจสอบไม่ได้');
+          else notices.push('กรุณาตรวจสถานะบิลก่อนชำระ');
         }
+        if(promptPayReady && !slipReady && !paymentInProgress)notices.push('สร้าง QR ได้ แต่ระบบตรวจสลิปยังไม่พร้อม หลังโอนให้ส่งสลิปใน LINE ให้ผู้ดูแลตรวจ อย่าโอนซ้ำ');
         paymentNotice.hidden = notices.length === 0;
         paymentNotice.className = `payment-notice${payment ? ` payment-notice-${text(payment.status, 'pending')}` : ''}${paymentBlocked ? ' payment-notice-blocked' : ''}`;
         paymentNotice.setAttribute('role', paymentBlocked ? 'alert' : 'status');
@@ -1217,7 +1237,7 @@
         breakdown.append(totalRow);
         $('#resident-payment-panel').hidden = status === 'paid';
         $('#resident-payment-complete').hidden = status !== 'paid';
-        $('#resident-qr-stage').replaceChildren(create('div', 'qr-placeholder', 'เลือก “แสดง QR” เพื่อสร้าง QR ตามยอดบิล'));
+        $('#resident-qr-stage').replaceChildren(create('div', 'qr-placeholder', 'แสดง QR เพื่อจองยอดบิล + 0.01–0.99 บาทสำหรับแยกรายการ ห้ามปัดเศษ'));
         billDetailLoading.hidden = true;
         $('#resident-bill-detail').hidden = false;
       } catch (error) {
@@ -1380,16 +1400,20 @@
     });
     $('#resident-load-qr').addEventListener('click', async (event) => {
       const button = event.currentTarget;
-      if (!state.paymentReady) { toast('ยังสร้าง QR ไม่ได้ ต้องตั้งค่า PromptPay และระบบตรวจสลิปให้พร้อมทั้งคู่ก่อน', 'error'); return; }
+      if (button.getAttribute('aria-busy') === 'true') return;
+      if (!state.paymentReady) { toast('ยังสร้าง QR ไม่ได้ กรุณาตรวจการตั้งค่าบัญชีและสถานะบิล', 'error'); return; }
       const billId = state.currentBillId;
       const request = ++state.qrRequest;
       const qrStage = $('#resident-qr-stage');
       qrStage.replaceChildren(create('div', 'qr-placeholder', 'กำลังสร้าง QR พร้อมเพย์…'));
       setBusy(button, true, 'กำลังสร้าง QR…');
       try {
-        const data = await api(`/api/resident/bills/${encodeURIComponent(billId)}/promptpay`);
+        const data = await api(`/api/resident/bills/${encodeURIComponent(billId)}/promptpay`, { method: 'POST', body: {} });
         if (request !== state.qrRequest || String(state.currentBillId) !== String(billId)) return;
         const qr = objectFrom(data, 'promptpay');
+        if(!window.DormTransferPayment?.validInstruction(qr,billId))throw new ApiError('ยอดโอนตอบกลับไม่ครบ กรุณาลองใหม่เพื่ออ่านยอดเดิม');
+        state.lineFallback=qr.line_fallback;showSlipLineFallback(state.lineFallback);
+        renderTransferSummary({...qr,transfer_amount:qr.amount});
         const payload = qr.payload || qr.qr_payload || data?.payload;
         const qrLibrary = await getQrLibrary();
         if (!payload || !qrLibrary?.toCanvas) throw new ApiError('ไม่สามารถสร้าง QR ได้');
@@ -1410,7 +1434,7 @@
         message.setAttribute('role', 'alert');
         qrStage.replaceChildren(message);
       }
-      finally { setBusy(button, false); }
+      finally { if(request === state.qrRequest && String(state.currentBillId) === String(billId))setBusy(button, false); }
     });
     const slipInput = $('#resident-slip-form input[name="slip"]');
     slipInput.addEventListener('change', () => {
@@ -1423,7 +1447,8 @@
       const form = event.currentTarget;
       const error = $('#resident-slip-error');
       showFormError(error);
-      if (!state.slipReady) { showFormError(error, 'ระบบตรวจสลิปยังไม่พร้อม กรุณาติดต่อผู้ดูแล'); return; }
+      if (billDialog.dataset.dialogBusy === 'true') return;
+      if (!state.slipReady) { showFormError(error, 'แนบสลิปในเว็บไม่ได้ กรุณาส่งภาพใน LINE ตามคำแนะนำด้านบน');showSlipLineFallback(state.lineFallback); return; }
       const file = slipInput.files?.[0];
       if (!file) { showFormError(error, 'กรุณาเลือกไฟล์สลิป'); return; }
       if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > state.slipMaxBytes) { showFormError(error, `รองรับเฉพาะไฟล์ JPG, PNG หรือ WebP ตามขนาดสูงสุดที่ผู้ดูแลตั้งไว้`); return; }
@@ -1437,7 +1462,7 @@
         toast('ส่งสลิปแล้ว ระบบกำลังตรวจสอบ');
         if (String(state.currentBillId) === String(billId)) await Promise.all([openBill(billId), loadAll()]);
         else await loadAll();
-      } catch (errorValue) { showFormError(error, errorMessage(errorValue)); }
+      } catch (errorValue) { showFormError(error, errorMessage(errorValue));showSlipLineFallback(state.lineFallback); }
       finally { setBusy(button, false); setDialogBusy(billDialog, false); }
     });
     const initialHash = location.hash.replace('#', '');
@@ -2748,6 +2773,7 @@
       state.bills.forEach((bill) => {
         const tr = create('tr');
         const line = create('div', 'line-delivery');
+        if(bill.transfer_amount)line.append(create('small','muted',`ยอดโอนที่จอง ${money(bill.transfer_amount)} · ส่วนต่าง ${money(bill.transfer_adjustment)}`));
         const paymentStatus = String(bill.payment_status || '').toLowerCase();
         const paymentLocksLine = paymentStatus === 'pending' || paymentStatus === 'verified';
         const billLineReady = typeof bill.line_ready === 'boolean' ? bill.line_ready : lineReady;
@@ -3117,6 +3143,7 @@
         const tr = create('tr');
         const result = create('div', 'payment-result');
         result.append(pill(payment.status, payment.verifying ? 'กำลังตรวจ' : ''));
+        if(payment.transfer_amount)result.append(create('small','muted',`ยอดโอน ${money(payment.transfer_amount)} · ตัดบิล ${money(payment.amount)} · ส่วนต่าง ${money(payment.transfer_adjustment)}`));
         if (payment.rejection_reason) {
           const reason = create('small', 'payment-reason', text(payment.rejection_reason));
           reason.title = text(payment.rejection_reason);

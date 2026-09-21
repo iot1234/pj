@@ -60,24 +60,30 @@ final class Routes
         $router->post('/api/resident/profile/line/unlink',function(Request $r)use($app):Response{Validator::only($r->body,[]);$actor=$app->actor();$residentId=(int)$actor['id'];$app->limiter()->hit('resident-line-unlink',(string)$residentId,5,3600,3600);$data=$app->notifications()->withLineBindingLock($residentId,function()use($app,$r,$actor,$residentId):array{return $app->database()->transaction(function()use($app,$r,$actor,$residentId):array{$data=$app->residents()->unlinkLine($residentId,$r->body);$app->lineBindings()->revokePending($residentId);$app->audit()->writeStrict($r,$actor,'resident.line_unlinked','resident',$residentId);return $data;});});$app->session()->clearLineLinkChallenge();return Response::json($data,200,'LINE account unlinked');},['auth'=>'resident']);
         $router->get('/api/resident/bills',fn(Request $r)=>Response::json($app->billing()->residentList((int)$app->actor()['id'])),['auth'=>'resident']);
         $router->get('/api/resident/bills/{id}',fn(Request $r)=>Response::json($app->billing()->residentDetail((int)$app->actor()['id'],$id($r))),['auth'=>'resident']);
-        $router->get('/api/resident/bills/{id}/promptpay',function(Request $r)use($app,$id):Response{
-            $residentId=(int)$app->actor()['id'];$billId=$id($r);
-            $envelope=$app->database()->transaction(function(\PDO $pdo)use($app,$residentId,$billId):array{
-                // Serialize this short snapshot against payment reservation,
-                // bill finalization, and integration-setting rotation. The QR
-                // must never combine values observed at different revisions.
-                $billLock=$pdo->prepare('SELECT id FROM bills WHERE id=? AND resident_id=? FOR SHARE');
-                $billLock->execute([$billId,$residentId]);
-                if($billLock->fetchColumn()===false)throw new HttpException(404,'Bill not found','BILL_NOT_FOUND');
-                $settingsId=$pdo->query('SELECT id FROM integration_settings WHERE id=1 FOR SHARE')->fetchColumn();
-                if($settingsId===false)throw new HttpException(503,'ยังไม่พบการตั้งค่าระบบ กรุณาติดต่อผู้ดูแล','INTEGRATION_SETTINGS_MISSING');
-                $bill=$app->billing()->residentDetail($residentId,$billId);
-                $app->billing()->assertPromptPayAvailable($bill);
-                $target=trim((string)$app->settings()->value('promptpay_target',''));
-                if($target==='')throw new HttpException(503,'ยังไม่ได้ตั้งค่า PromptPay กรุณาติดต่อผู้ดูแลก่อนโอน','PROMPTPAY_NOT_CONFIGURED');
-                return ['bill_id'=>$bill['id'],'amount'=>$bill['total_amount'],'target'=>$target,'name'=>$app->settings()->value('promptpay_name'),'payload'=>PromptPayService::payload($target,(string)$bill['total_amount'])];
+        $router->post('/api/resident/bills/{id}/promptpay',function(Request $r)use($app,$id):Response{
+            Validator::only($r->body,[]);$resident=(int)$app->actor()['id'];$billId=$id($r);
+            $app->limiter()->hit('resident-qr-reserve',(string)$resident,60,900,60);
+            $data=$app->database()->transaction(function()use($app,$r,$billId,$resident):array{
+                $instruction=$app->transfers()->reserve($billId,$resident);
+                $bill=$app->billing()->residentDetail($resident,$billId);$app->billing()->assertPromptPayAvailable($bill);
+                $app->audit()->writeStrict($r,$app->actor(),'payment.qr_reserved','bill',$billId,['bill_amount'=>$instruction['bill_amount'],'adjustment_amount'=>$instruction['adjustment_amount'],'transfer_amount'=>$instruction['transfer_amount']]);
+                return $app->transfers()->envelope($instruction,$bill);
             });
-            return Response::json($envelope);
+            return Response::json($data);
+        },['auth'=>'resident']);
+        $router->get('/api/resident/bills/{id}/promptpay',function(Request $r)use($app,$id):Response{
+            $data=$app->database()->transaction(function()use($app,$r,$id):array{
+                $resident=(int)$app->actor()['id'];$billId=$id($r);$pdo=$app->database()->pdo();
+                $q=$pdo->prepare('SELECT id FROM bills WHERE id=? AND resident_id=? FOR SHARE');$q->execute([$billId,$resident]);
+                if($q->fetchColumn()===false)throw new HttpException(404,'ไม่พบบิล','BILL_NOT_FOUND');
+                $pdo->query('SELECT id FROM integration_settings WHERE id=1 FOR SHARE')->fetchColumn();
+                $bill=$app->billing()->residentDetail($resident,$billId);$app->billing()->assertPromptPayAvailable($bill);
+                $instruction=$app->transfers()->find($billId);
+                if(!$instruction)throw new HttpException(409,'กรุณาเปิดบิลใหม่และกดแสดง QR เพื่อจองยอด','TRANSFER_NOT_RESERVED');
+                $app->transfers()->expectedAmount($billId,(string)$bill['total_amount']);
+                return $app->transfers()->envelope($instruction,$bill);
+            });
+            return Response::json($data);
         },['auth'=>'resident']);
         $router->post('/api/resident/bills/{id}/slip',function(Request $r)use($app,$id):Response{Validator::only($r->body,[]);$resident=(int)$app->actor()['id'];$app->limiter()->hit('slip-resident',(string)$resident,8,3600,3600);$data=$app->payments()->upload($id($r),$resident,is_array($r->files['slip']??null)?$r->files['slip']:[],function(array $payment)use($app,$r):void{$replay=($payment['idempotent_replay']??false)===true;$app->audit()->writeStrict($r,$app->actor(),$replay?'payment.slip_upload_replayed':'payment.slip_upload','payment',$payment['id'],['bill_id'=>$payment['bill_id'],'status'=>$payment['status']]);});$replay=($data['idempotent_replay']??false)===true;return Response::json($data,$replay?200:201,$replay?'Existing slip result returned':'Slip received');},['auth'=>'resident']);
 

@@ -254,7 +254,7 @@ jobs:
                   WHERE constraint_schema='dormitory'
                     AND constraint_type='CHECK')
               )")"
-          [ "$install_shape" = '21|23|116' ]
+          [ "$install_shape" = '22|26|119' ]
           set +e
           docker exec --interactive \
             --env MYSQL_PWD="$CI_DBA_PASSWORD" \
