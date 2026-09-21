@@ -147,8 +147,10 @@ final class LineBotService
     public static function billsText(string $name, array $bills, string $today, string $url): string
     {
         $lines = ['บิลล่าสุดของ ' . self::label($name)];
+        $mayPay = false;
         foreach (array_slice($bills, 0, 3) as $bill) {
             $payment = $bill['payment_status'] ?? null;
+            if (($bill['status'] ?? null) === 'pending' && $payment === null) $mayPay = true;
             $status = ($bill['status'] ?? null) === 'paid' ? 'ชำระแล้ว — ไม่ต้องโอนซ้ำ'
                 : (in_array($payment, ['pending', 'verified'], true) ? 'กำลังตรวจสอบการชำระ — อย่าโอนซ้ำ'
                     : (($bill['due_date'] ?? '') < $today ? 'เกินกำหนดชำระ' : 'รอชำระ'));
@@ -159,7 +161,9 @@ final class LineBotService
                 $lines[] = 'สลิปไม่ผ่าน หากโอนแล้วให้ติดต่อผู้ดูแลเพื่อตรวจยอดก่อนโอนซ้ำ';
             }
         }
-        $lines[] = "\nเปิดบิลเพื่อดู QR และยอดโอนที่ล็อกไว้ (ยอดบิล + 0.01–0.99 บาท) โอนตามยอด QR ห้ามปัดเศษ (ต้องเข้าสู่ระบบ):\n" . $url;
+        $lines[] = ($mayPay
+            ? "\nสำหรับบิลรอชำระที่ยังไม่ได้โอน เปิดบิลเพื่อดู QR และยอดโอนที่ล็อกไว้ (ยอดบิล + 0.01–0.99 บาท) โอนตามยอด QR ห้ามปัดเศษ (ต้องเข้าสู่ระบบ):\n"
+            : "\nดูรายละเอียดและสถานะบิล (ต้องเข้าสู่ระบบ):\n") . $url;
         $lines[] = 'หากแนบสลิปในเว็บไม่ได้ ส่งเลขบิลและรูปสลิปในแชตนี้ให้ผู้ดูแลตรวจ การส่งรูปยังไม่ยืนยันว่าชำระแล้ว หากโอนแล้วไม่ต้องโอนซ้ำ';
         return implode("\n", $lines);
     }

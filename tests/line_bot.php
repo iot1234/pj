@@ -31,19 +31,22 @@ $bill = ['bill_no'=>'B-TEST','period'=>'2026-09-01','due_date'=>'2026-09-20',
     'room_code_snapshot'=>'A-101','total_amount'=>'4848.50','status'=>'pending','payment_status'=>null];
 $check('bill output keeps the stored decimal amount and period', static function() use ($assert,$bill): void {
     $text=LineBotService::billsText('ผู้พัก',[$bill],'2026-09-15','https://example.test/resident#bills');
-    foreach (['4,848.50 บาท','รอบ 2026-09','ครบกำหนด 2026-09-20','รอชำระ','ต้องเข้าสู่ระบบ'] as $part) $assert(str_contains($text,$part));
+    foreach (['4,848.50 บาท','รอบ 2026-09','ครบกำหนด 2026-09-20','รอชำระ','ต้องเข้าสู่ระบบ','โอนตามยอด QR ห้ามปัดเศษ','ส่งเลขบิลและรูปสลิปในแชตนี้'] as $part) $assert(str_contains($text,$part));
 });
 $check('pending or verified slips prevent a repeated payment instruction', static function() use ($assert,$bill): void {
     foreach (['pending','verified'] as $payment) {
         $text=LineBotService::billsText('ผู้พัก',[array_replace($bill,['payment_status'=>$payment])],'2026-09-30','https://example.test/resident#bills');
         $assert(str_contains($text,'อย่าโอนซ้ำ')); $assert(!str_contains($text,'เกินกำหนดชำระ'));
+        $assert(!str_contains($text,'โอนตามยอด QR'));
     }
 });
 $check('paid and rejected payments have distinct recovery messages', static function() use ($assert,$bill): void {
     $paid=LineBotService::billsText('ผู้พัก',[array_replace($bill,['status'=>'paid','payment_status'=>'verified'])],'2026-09-30','https://example.test');
     $assert(str_contains($paid,'ชำระแล้ว — ไม่ต้องโอนซ้ำ'));
+    $assert(!str_contains($paid,'โอนตามยอด QR'));
     $rejected=LineBotService::billsText('ผู้พัก',[array_replace($bill,['payment_status'=>'rejected'])],'2026-09-30','https://example.test');
     $assert(str_contains($rejected,'เกินกำหนดชำระ')); $assert(str_contains($rejected,'ตรวจยอดก่อนโอนซ้ำ'));
+    $assert(!str_contains($rejected,'โอนตามยอด QR'));
 });
 $check('reply limits history to three bills and sanitizes record labels', static function() use ($assert,$bill): void {
     $bills=[]; for($i=1;$i<=4;$i++) $bills[]=array_replace($bill,['bill_no'=>'BILL-'.$i]);
