@@ -132,7 +132,7 @@
     INVALID_JSON: 'รูปแบบข้อมูลที่ส่งไม่ถูกต้อง กรุณารีเฟรชแล้วลองใหม่',
     INVALID_JSON_SHAPE: 'รูปแบบข้อมูลที่ส่งไม่ถูกต้อง กรุณารีเฟรชแล้วลองใหม่',
     UNKNOWN_FIELDS: 'มีข้อมูลที่ระบบไม่รองรับ กรุณารีเฟรชแล้วลองใหม่',
-    INVALID_CREDENTIALS: 'เบอร์โทรหรือรหัสลับไม่ถูกต้อง หรือบัญชียังไม่มีห้องที่ใช้งานอยู่',
+    INVALID_CREDENTIALS: 'ไม่สามารถเข้าใช้งานด้วยเบอร์นี้ได้ กรุณาตรวจเบอร์ที่ผูกห้องหรือติดต่อผู้ดูแล',
     IDEMPOTENCY_KEY_REUSED: 'คำขอนี้ถูกใช้กับการจองอื่นแล้ว กรุณาเริ่มรายการใหม่',
     ADMIN_CHECK_IN_RETRY: 'มีการรับเข้าพักพร้อมกัน กรุณากดส่งอีกครั้งโดยไม่เปลี่ยนข้อมูล',
     ADMIN_CHECK_IN_INACTIVE: 'รายการรับเข้าพักนี้สิ้นสุดแล้ว กรุณาปิดฟอร์มและเริ่มรายการใหม่',
@@ -824,73 +824,28 @@
   function initResidentLogin() {
     const form = $('#resident-login-form');
     if (!form) return;
-    const firstActivation = $('#resident-first-activation');
-    const newPasswordFields = $('#resident-new-password-fields');
-    const credentialLabel = $('#resident-credential-label');
-    const credentialHelp = $('#resident-credential-help');
     const error = $('#resident-login-error');
-
-    const resetSecretVisibility = () => {
-      $$('[data-password-toggle]', form).forEach((button) => {
-        const input = button.closest('.password-field')?.querySelector('input');
-        if (input) input.type = 'password';
-        button.textContent = 'แสดง';
-        button.setAttribute('aria-pressed', 'false');
-      });
-    };
-    const syncMode = () => {
-      const activating = firstActivation.checked;
-      newPasswordFields.hidden = !activating;
-      ['new_password', 'new_password_confirm'].forEach((name) => {
-        form.elements[name].disabled = !activating;
-        form.elements[name].required = activating;
-        if (!activating) form.elements[name].value = '';
-      });
-      form.elements.credential.autocomplete = activating ? 'one-time-code' : 'current-password';
-      credentialLabel.textContent = activating ? 'รหัสเปิดใช้งานครั้งเดียว' : 'รหัสผ่าน';
-      credentialHelp.textContent = activating
-        ? 'กรอกรหัสรูปแบบ XXXXX-XXXXX-XXXXX-XXXXX ที่ผู้ดูแลส่งมอบให้'
-        : 'ใช้รหัสผ่านที่ตั้งไว้ตอนเปิดใช้งานครั้งแรก';
-      form.elements.credential.value = '';
-      resetSecretVisibility();
-      showFormError(error);
-    };
-    firstActivation.addEventListener('change', syncMode);
-    syncMode();
-
+    let pending = false;
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
+      if (pending) return;
       showFormError(error);
       if (!form.reportValidity()) return;
-      const activating = firstActivation.checked;
-      if (activating && form.elements.new_password.value !== form.elements.new_password_confirm.value) {
-        showFormError(error, 'รหัสผ่านใหม่และช่องยืนยันไม่ตรงกัน');
-        form.elements.new_password_confirm.focus();
-        return;
-      }
-      const payload = {
-        phone: form.elements.phone.value,
-        credential: form.elements.credential.value,
-      };
-      if (activating) payload.new_password = form.elements.new_password.value;
+      const payload = { phone: form.elements.phone.value.trim() };
       const button = form.querySelector('[type="submit"]');
-      setBusy(button, true, activating ? 'กำลังเปิดใช้งาน…' : 'กำลังตรวจสอบ…');
-      let loginSucceeded = false;
+      pending = true;
+      setFormFieldsBusy(form, true); setBusy(button, true, 'กำลังเข้าหน้าลูกบ้าน…');
+      let succeeded = false;
       try {
-        await api('/api/auth/resident/login', { method: 'POST', body: payload });
-        loginSucceeded = true;
-        location.assign('/resident');
-      } catch (requestError) {
-        showFormError(error, errorMessage(requestError, 'เบอร์โทรหรือรหัสลับไม่ถูกต้อง'));
-        form.elements.credential.focus();
-      } finally {
-        form.elements.credential.value = '';
-        if (!activating || loginSucceeded) {
-          form.elements.new_password.value = '';
-          form.elements.new_password_confirm.value = '';
+        const result = await api('/api/auth/resident/login', { method: 'POST', body: payload });
+        if (result?.user?.type !== 'resident' || result?.user?.auth_method !== 'phone') {
+          throw new ApiError('ข้อมูลตอบกลับไม่ครบ กรุณาลองเข้าใช้งานใหม่');
         }
-        resetSecretVisibility();
-        setBusy(button, false);
+        succeeded = true; location.assign('/resident');
+      } catch (requestError) {
+        showFormError(error, errorMessage(requestError, 'กรุณาตรวจเบอร์ที่ผูกกับห้อง หรือติดต่อผู้ดูแลหอพัก'));
+      } finally {
+        if (!succeeded) { pending = false; setFormFieldsBusy(form, false); setBusy(button, false); form.elements.phone.focus(); }
       }
     });
   }
@@ -1785,33 +1740,8 @@
     }
 
     function showResidentAccess(data, summary) {
-      const access = data?.resident_access && typeof data.resident_access === 'object'
-        ? data.resident_access
-        : null;
-      if (!access || access.activation_required !== true) {
-        clearResidentAccess();
-        toast('บัญชีนี้เปิดใช้งานแล้ว จึงไม่มี activation code ที่แสดงซ้ำ');
-        return false;
-      }
-      const code = String(access.activation_code || '').toUpperCase();
-      if (!/^[0-9A-HJKMNP-TV-Z]{5}(?:-[0-9A-HJKMNP-TV-Z]{5}){3}$/.test(code)) {
-        clearResidentAccess();
-        toast('เซิร์ฟเวอร์ไม่ส่ง activation code ในรูปแบบที่ปลอดภัย กรุณาออกคีย์ใหม่', 'error');
-        return false;
-      }
-      residentActivationSecret = code;
-      $('#resident-access-code').textContent = code;
-      $('#resident-access-summary').textContent = summary || 'ส่งมอบรหัสให้ผู้พักที่ยืนยันตัวตนแล้ว';
-      const rawExpiry = String(access.expires_at || '');
-      const normalizedExpiry = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,6})?$/.test(rawExpiry)
-        ? `${rawExpiry.replace(' ', 'T')}Z`
-        : rawExpiry;
-      $('#resident-access-expiry').textContent = rawExpiry
-        ? `หมดอายุ ${formatDateTime(normalizedExpiry)} น. หรือทันทีหลังใช้สำเร็จ`
-        : 'ใช้ได้ครั้งเดียว และจะหมดอายุตามนโยบายระบบ';
-      showFormError($('#resident-access-error'));
-      openDialog(residentAccessDialog);
-      window.setTimeout(() => $('#resident-access-copy')?.focus(), 40);
+      clearResidentAccess();
+      toast('ลูกบ้านใช้เบอร์ที่ผูกกับห้องเข้าใช้งานได้ทันที ไม่ต้องใช้รหัสผ่านหรือรหัสเปิดใช้งาน');
       return true;
     }
 
@@ -2235,7 +2165,6 @@
             : null,
           actionButton(resident.line_verified || resident.line_user_id_hint || resident.line_blocked ? 'สถานะ LINE' : 'ผูก LINE', 'resident-line', resident.id, 'button-secondary', `จัดการ LINE ของ ${text(resident.full_name)}`),
           actionButton('แก้ข้อมูล', 'edit-resident', resident.id, 'button-ghost', `แก้ข้อมูลผู้พัก ${text(resident.full_name)}`),
-          actionButton('ออกคีย์ใหม่', 'reissue-resident-access', resident.id, 'button-secondary', `ออกคีย์ใหม่ให้ ${text(resident.full_name)}`),
           actionButton('ย้ายออก', 'move-out-resident', resident.id, 'button-danger-text', `ย้าย ${text(resident.full_name)} ออกจากห้อง`),
         ) : rowActions();
         tr.append(td(person), td(text(resident.room_code || resident.room?.room_code)), td(text(resident.phone)), td(line), td(formatDate(resident.move_in_date)), td(status), td(actions, 'align-right'));
@@ -2380,7 +2309,7 @@
       const values = Object.fromEntries(new FormData(form).entries()); const id = values.resident_id; delete values.resident_id;
       const original = state.residents.find((item) => String(item.id) === String(id));
       if (original && String(values.phone).replace(/[^0-9+]/g, '') !== String(original.phone).replace(/[^0-9+]/g, '')) {
-        if (!await confirmAction('เปลี่ยนเบอร์เข้าสู่ระบบ', 'ยืนยันว่าได้ตรวจสอบตัวตนผู้พักแล้วหรือไม่? เซสชันและรหัสผ่านเดิมจะถูกยกเลิกทันที แล้วระบบจะออก activation code ใหม่', 'ยืนยันและบันทึก', false)) return;
+        if (!await confirmAction('เปลี่ยนเบอร์เข้าสู่ระบบ', 'ยืนยันว่าได้ตรวจสอบตัวตนผู้พักแล้วหรือไม่? เซสชันเดิมจะถูกยกเลิกทันที และลูกบ้านต้องใช้เบอร์ใหม่ที่บันทึกเพื่อเข้าใช้งาน', 'ยืนยันและบันทึก', false)) return;
       }
       const dialog = $('#resident-edit-dialog');
       const button = form.querySelector('[type="submit"]'); setBusy(button, true, 'กำลังบันทึก…');
@@ -2397,7 +2326,7 @@
         releaseBusy();
         closeDialog(dialog); form.reset();
         if (updated?.resident_access) showResidentAccess(updated, summary);
-        toast(updated?.sessions_revoked ? 'บันทึกแล้ว ยกเลิกสิทธิ์เดิม และออก activation code ใหม่' : 'บันทึกข้อมูลผู้พักแล้ว');
+        toast(updated?.sessions_revoked ? 'บันทึกแล้ว ยกเลิกเซสชันเดิม ลูกบ้านเข้าใช้งานด้วยเบอร์ใหม่' : 'บันทึกข้อมูลผู้พักแล้ว');
         await loadResidents();
       } catch (requestError) { showFormError(error, errorMessage(requestError)); } finally { releaseBusy(); }
     });

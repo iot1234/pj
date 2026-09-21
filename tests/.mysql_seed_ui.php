@@ -90,8 +90,6 @@ $createResident = static function (
     }
     $app->auth()->residentLogin($request('activate-' . $phone), [
         'phone' => $phone,
-        'credential' => $activation,
-        'new_password' => $password,
     ]);
     $app->auth()->logout($request('logout-' . $phone));
     return $checkIn;

@@ -170,21 +170,12 @@ try{
 }
 $assert($hashMutationRejected,'Committed move-in request digest remained mutable');
 
-$residentPassword='Resident-Lifecycle-Password-2026!';
-$firstLogin=$app->auth()->residentLogin($request('activation'),[
-    'phone'=>'0812345678',
-    'credential'=>$activation,
-    'new_password'=>$residentPassword,
-]);
-$activation='';
-$assert(($firstLogin['auth_method']??null)==='activation_code','First login did not consume activation');
+$firstLogin=$app->auth()->residentLogin($request('phone-first'),['phone'=>'0812345678']);
+$assert($firstLogin['auth_method']==='phone'&&$firstLogin['assurance']==='low'&&!$firstLogin['phone_verified'],'Phone access must not claim verified ownership');
 $app->auth()->logout($request('logout-first'));
-$passwordLogin=$app->auth()->residentLogin($request('password'),[
-    'phone'=>'0812345678',
-    'credential'=>$residentPassword,
-]);
-$assert(($passwordLogin['auth_method']??null)==='password','Password login failed');
-$residentAuthVersion=(int)($passwordLogin['auth_version']??0);
+$phoneLogin=$app->auth()->residentLogin($request('phone-repeat'),['phone'=>'+66812345678']);
+$assert($phoneLogin['auth_method']==='phone','Phone-only repeat login failed');
+$residentAuthVersion=(int)$phoneLogin['auth_version'];
 $assert($residentAuthVersion>0,'Resident auth version is missing');
 
 // Configure non-production credentials locally. No provider request is made:
@@ -514,4 +505,4 @@ $assert($residentRow
     &&$residentRow['access_password_hash']===null
     &&$residentRow['activation_code_hash']===null,'Move-out did not retire resident credentials');
 
-fwrite(STDOUT,"PASS MySQL lifecycle: check-in, activation, meter, billing, payment and move-out\n");
+fwrite(STDOUT,"PASS MySQL lifecycle: check-in, phone-only access, meter, billing, payment and move-out\n");

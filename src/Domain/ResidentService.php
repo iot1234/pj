@@ -19,10 +19,7 @@ final class ResidentService
     public function list(): array
     {
         $rows=$this->app->database()->pdo()->query("SELECT r.id,r.full_name,r.phone_norm AS phone,r.email,r.line_user_id,r.active,
-                    r.access_password_hash IS NOT NULL AS access_active,
-                    (r.activation_code_hash IS NOT NULL
-                        AND r.activation_consumed_at IS NULL
-                        AND r.activation_expires_at>UTC_TIMESTAMP(6)) AS activation_pending,
+                    1 AS access_active, 0 AS activation_pending,
                     o.id AS occupancy_id,o.move_in_date,o.opening_water_reading,o.opening_electric_reading,
                     (o.opening_water_reading IS NULL OR o.opening_electric_reading IS NULL) AS opening_readings_pending,
                     rm.id AS room_id,rm.room_code

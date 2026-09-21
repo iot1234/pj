@@ -12,16 +12,16 @@
 ## Authentication และ authorization
 
 - Admin/Owner ใช้ username/password ความยาว 12-200 ตัวตามเดิมและ password เก็บด้วย `password_hash()` โดยเลือก Argon2id เมื่อ runtime รองรับและ fallback เป็น bcrypt ไม่มี default password หรือ plaintext credential ใน SQL
-- Resident ใช้เบอร์โทรไทยที่ normalize แล้วซึ่งต้องตรงกับ resident/occupancy active ร่วมกับ password ไม่มี PIN และไม่มี resident trusted-device bypass; ครั้งแรก API รับ activation code ที่ยังไม่หมดอายุพร้อม `new_password`, consume code แบบ transaction เดียว แล้วเก็บ password hash/เพิ่ม `auth_version`
-- activation code ยาว 20 ตัวแบบสุ่มเชิงกำหนดจาก HMAC context เก็บในฐานเฉพาะ HMAC และใช้ได้ครั้งเดียว อายุเริ่มต้น 7 วันและจำกัด 15 นาที–30 วัน การ reissue ล้าง password/เพิกถอน session เดิม ผู้ดูแลต้องส่ง code ผ่านช่องทางส่วนตัวและออกใหม่เมื่อสงสัยว่ารั่ว
-- login error เป็นข้อความรวมพร้อม delay เพื่อลด phone/username enumeration; ทั้ง Admin และ Resident ใช้ fixed dummy hash และจำนวนงาน KDF ที่ใกล้เคียงกันเมื่อ principal/credential ไม่ถูกต้อง
-- rate limit เก็บใน MySQL และ lock ด้วย transactionทั้งต่อ IP และคู่บัญชี+source โดย bucket key เป็น HMAC จึงไม่เก็บ phone/username ตรง ๆ ค่า malformed/ไม่พบถูกจัดการแบบ fail-closed และไม่บอกว่าบัญชีใดมีจริง Signed HttpOnly trusted-device cookie ใช้ได้เฉพาะ Admin ที่เคยยืนยัน password สำเร็จ ไม่ใช้กับ Resident
+- Resident ใช้เฉพาะเบอร์ที่ normalize แล้วตรงกับ resident/occupancy active หนึ่งรายการ ไม่มีรหัสผ่าน OTP หรือลิงก์ยืนยันจากทุกเครื่อง บันทึก assurance เป็น low และ phone_verified=false เบอร์เป็นเพียงตัวระบุ ไม่ใช่ตัวพิสูจน์ตัวตน
+- โครงสร้าง activation/password เดิมและขั้นตอนการเก็บข้อมูลสำหรับ compatibility ยังคงอยู่ แต่ไม่ใช้ตัดสิน residentLogin และไม่มีหน้าขอคีย์หรือตั้งรหัสผ่านลูกบ้าน เซสชันแบบรหัสผ่านเดิมจะให้เข้าใหม่ด้วยเบอร์หลังเปลี่ยนรุ่น
+- Admin ยังตรวจ password hash และ dummy KDF ตามเดิม Resident ตอบข้อผิดพลาดทั่วไปและมี delay/rate limit แต่ข้อจำกัดเหล่านี้ไม่ป้องกันผู้ที่รู้เบอร์แล้วเข้าแทนในโหมด phone-only
+- rate limit เก็บใน MySQL และ lock ด้วย transactionทั้งต่อ IP และคู่บัญชี+source โดย bucket key เป็น HMAC จึงไม่เก็บ phone/username ตรง ๆ ค่า malformed/ไม่พบไม่สร้างเซสชัน ข้อผิดพลาดทั่วไปไม่บอกเหตุผลละเอียด แต่ผลเข้าสำเร็จอาจใช้ตรวจว่าเบอร์ใดมีบัญชีได้ Signed HttpOnly trusted-device cookie ใช้ได้เฉพาะ Admin ที่เคยยืนยัน password สำเร็จ ไม่ใช้กับ Resident
 - session ID ถูก rotate เมื่อ login และล้างเมื่อ logout ใช้ strict mode, cookie only, HttpOnly, SameSite=Lax และ Secure เมื่อเปิด HTTPS; Resident session หมดอายุเมื่อ idle 15 นาทีหรืออายุรวม 1 ชั่วโมง ส่วน Admin ใช้นโยบาย session ที่ตั้งไว้ ระบบเริ่ม file session แบบ lazy เฉพาะเมื่อมี session ที่บันทึกอยู่หรือ login สำเร็จ Anonymous GET จึงไม่สร้างไฟล์ใหม่
 - ทุก request ที่มี session จะตรวจ `active` และ `auth_version` กับฐานข้อมูล การปิดบัญชี, เปลี่ยน password Admin, เปลี่ยนเบอร์ Resident หรือเพิ่ม auth version จึง revoke session เก่าได้
 - Route guard แยก Guest, Resident, Admin และ owner; เฉพาะ owner จัดการบัญชี admin และเปลี่ยนค่า PromptPay/LINE/slip integrations ส่วน service ต้องกันการปิด/ลบ owner คนสุดท้าย
 - Query ของผู้เช่าต้อง bind `resident_id` จาก session เสมอ ห้ามเชื่อ bill/resident/room ID จาก URL เพียงอย่างเดียว
 
-ข้อจำกัดสำคัญ: ความปลอดภัยครั้งแรกขึ้นกับช่องทางที่ผู้ดูแลใช้ส่ง activation code หากส่ง code พร้อมเบอร์ผ่านช่องทางเดียวที่ผู้โจมตีควบคุมได้ ผู้โจมตีอาจตั้ง password ก่อนผู้พักจริง จึงต้องยืนยันตัวผู้รับนอกระบบและไม่บันทึก code ใน ticket/log สาธารณะ ระบบยังไม่มี MFA สำหรับ Resident; หากข้อมูลหรือธุรกรรมต้องการ assurance สูงกว่ารหัสผ่าน ให้เพิ่ม OTP/MFA ก่อนเปิด production
+ข้อจำกัดสำคัญ: โหมด phone-only ไม่พิสูจน์การครอบครองเบอร์ คนที่รู้เบอร์สามารถเข้าแทนและใช้สิทธิ์ลูกบ้านรายนั้นได้ การจำกัด IP, CSRF และแยกสิทธิ์ห้องไม่ทดแทนรหัสลับ การยกเลิกเซสชันไม่กันการเข้าใหม่ด้วยเบอร์เดิม นโยบายนี้ทำตามคำขอให้ใช้เบอร์อย่างเดียว ไม่ใช่การยืนยันตัวตนระดับสูง
 
 ## CSRF, origin และ input
 
@@ -139,3 +139,5 @@ Fresh schema ไม่มี `residents.pin_hash` และ source ปัจจ�
 - [ ] ทดสอบ LINE retry ด้วย payload/key เดิม: 409 พร้อม `x-line-accepted-request-id` ที่ valid ต้อง finalize เป็น sent ส่วน bare/invalid 409 ต้อง retry หรือ fail-closed และห้ามถูกนับว่าส่งสำเร็จ
 - [ ] ทดสอบ SlipOK/EasySlip ด้วย amount mismatch, receiver mismatch, duplicate และ timeout รวมเปิดดูหลักฐาน, แก้ค่า receiver แล้ว retry รายการ pending และปิดรายการหลัง verification lease หมด
 - [ ] backup + restore drill ผ่าน และมีผู้รับผิดชอบ alert/incident ชัดเจน
+
+**หมายเหตุรุ่น phone-only 21 กันยายน 2026:** ข้อความเกี่ยวกับ reissue activation ในขั้นตอนย้ายฐานด้านบนเป็นโครงสร้างเดิม ไม่ใช่ขั้นตอนที่ลูกบ้านต้องทำก่อนเข้าใช้รุ่นนี้ ไม่มี migration ใหม่และห้ามลบตาราง/คอลัมน์เดิมตามเดา

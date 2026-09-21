@@ -395,10 +395,10 @@ $test('login controls and admin tables retain accessibility contracts',function(
 
     foreach([
         'for="resident-phone"','id="resident-phone"','aria-describedby="resident-phone-help"',
-        'for="resident-credential"','id="resident-credential"','aria-controls="resident-credential"',
-        'for="resident-new-password"','id="resident-new-password"','aria-controls="resident-new-password"',
-        'for="resident-new-password-confirm"','id="resident-new-password-confirm"','aria-controls="resident-new-password-confirm"',
     ]as$contract)$same(true,str_contains($residentLogin,$contract));
+    $same(1,preg_match_all('/<input\b/',$residentLogin));
+    $same(false,str_contains($residentLogin,'type="password"'));
+    $same(false,str_contains($residentLogin,'name="credential"'));
     foreach([
         'for="admin-username"','id="admin-username"','for="admin-password"','id="admin-password"','aria-controls="admin-password"',
     ]as$contract)$same(true,str_contains($adminLogin,$contract));
@@ -836,7 +836,7 @@ $test('production APP_KEY requires random 32-byte key material',function()use($s
     try{Config::validatedAppKey(str_repeat('Ab3!',300),true);throw new RuntimeException('oversized APP_KEY was accepted');}
     catch(RuntimeException $error){if($error->getMessage()==='oversized APP_KEY was accepted')throw $error;}
 });
-$test('admin rehash and credential-backed resident login use layered throttling',function()use($same,$app):void{
+$test('admin rehash and phone-only resident access retain throttling and honest assurance',function()use($same,$app):void{
     $source=file_get_contents(dirname(__DIR__).'/src/Domain/AuthService.php');if(!is_string($source))throw new RuntimeException('cannot read AuthService');
     $same(1,preg_match('/UPDATE admin_users SET password_hash=\?,updated_at=UTC_TIMESTAMP\(\) WHERE id=\? AND password_hash=\? AND auth_version=\?/',$source));
     $same(true,str_contains($source,'(!$accountAllowed&&!$trustedDevice)'));
@@ -851,10 +851,10 @@ $test('admin rehash and credential-backed resident login use layered throttling'
     $residentStart=strpos($source,'public function residentLogin');$residentEnd=strpos($source,'public function logout',$residentStart===false?0:$residentStart);
     if($residentStart===false||$residentEnd===false)throw new RuntimeException('cannot isolate resident login');
     $residentBlock=substr($source,$residentStart,$residentEnd-$residentStart);
-    $same(true,str_contains($residentBlock,"Validator::only(\$input, ['phone','credential','new_password'])"));
+    $same(true,str_contains($residentBlock,"Validator::only(\$input, ['phone'])"));
     $same(true,str_contains($residentBlock,"'resident-login-ip-daily'"));
-    $same(true,str_contains($residentBlock,"'auth_method' => \$authMethod"));
-    $same(true,str_contains($residentBlock,"'assurance' => 'high'"));
+    $same(true,str_contains($residentBlock,"'auth_method'=>'phone'"));
+    $same(true,str_contains($residentBlock,"'assurance'=>'low'"));
     $same(true,str_contains($residentBlock,'writeStrict'));
     $same(true,str_contains($residentBlock,"JOIN occupancies o ON o.resident_id=r.id AND o.status='active'"));
     $same(true,str_contains($residentBlock,'JOIN rooms rm ON rm.id=o.room_id AND rm.deleted_at IS NULL'));
@@ -862,9 +862,10 @@ $test('admin rehash and credential-backed resident login use layered throttling'
     $same(false,str_contains($residentBlock,'trustedDevice'));
     $same(true,str_contains($residentBlock,"limiter()->clear('resident-login"));
     $same(false,str_contains($residentBlock,"rememberLoginDevice('resident'"));
-    $same(true,str_contains($residentBlock,'access_password_hash'));
-    $same(true,str_contains($residentBlock,'activation_code_hash=NULL'));
-    $same(true,str_contains($residentBlock,'auth_version=auth_version+1'));
+    $same(false,str_contains($residentBlock,'access_password_hash'));
+    $same(true,str_contains($residentBlock,"'phone_verified'=>false"));
+    $same(false,str_contains($residentBlock,'activation_code_hash'));
+    $same(true,str_contains($residentBlock,"' FOR SHARE'"));
     $auth=new Dormitory\Domain\AuthService($app);$create=new ReflectionMethod($auth,'createLoginDeviceToken');$valid=new ReflectionMethod($auth,'validLoginDeviceToken');$now=time();
     $verifyCredential=new ReflectionMethod($auth,'verifyCredential');$credential='Timing-safe-test-password-48!';$credentialHash=Password::hash($credential);
     $same(true,$verifyCredential->invoke($auth,$credential,$credentialHash));
@@ -2052,35 +2053,14 @@ $test('resident payment UI locks slip mutation and rejects stale verifying refre
     $same(true,str_contains($js,"if (doc.visibilityState === 'visible') refreshVerifyingBills(true);"));
 });
 
-$test('activation passwords survive retryable failure and unsent access secrets block navigation',function()use($same):void{
+$test('phone-only login preserves its phone after failure and never requests a secret',function()use($same):void{
     $js=file_get_contents(dirname(__DIR__).'/public/assets/js/app.js');
-    if(!is_string($js))throw new RuntimeException('cannot read activation UX source');
-
-    $loginStart=strpos($js,'function initResidentLogin()');
-    $loginEnd=$loginStart===false?false:strpos($js,'function initResidentPortal()',$loginStart);
-    if($loginStart===false||$loginEnd===false)throw new RuntimeException('cannot isolate resident login');
-    $login=substr($js,$loginStart,$loginEnd-$loginStart);
-    $successFlag=strpos($login,'let loginSucceeded = false;');
-    $loginRequest=strpos($login,"api('/api/auth/resident/login'");
-    $successSet=strpos($login,'loginSucceeded = true;');
-    $finally=strpos($login,'} finally {');
-    $same(true,$successFlag!==false&&$loginRequest!==false&&$successSet!==false&&$finally!==false&&$successFlag<$loginRequest&&$loginRequest<$successSet&&$successSet<$finally);
-    $finallyEnd=$finally===false?false:strpos($login,'resetSecretVisibility();',$finally);
-    if($finally===false||$finallyEnd===false)throw new RuntimeException('cannot isolate resident login cleanup');
-    $cleanup=substr($login,$finally,$finallyEnd-$finally);
-    $retainGuard=strpos($cleanup,'if (!activating || loginSucceeded)');
-    $newPasswordClear=strpos($cleanup,"form.elements.new_password.value = '';");
-    $confirmationClear=strpos($cleanup,"form.elements.new_password_confirm.value = '';");
-    $same(true,$retainGuard!==false&&$newPasswordClear!==false&&$confirmationClear!==false&&$retainGuard<$newPasswordClear&&$newPasswordClear<$confirmationClear);
-
-    $same(true,str_contains($js,"let residentActivationSecret = '';"));
-    $same(true,str_contains($js,'residentActivationSecret = code;'));
-    $beforeStart=strpos($js,"window.addEventListener('beforeunload'");
-    $beforeEnd=$beforeStart===false?false:strpos($js,'integrationSettingsForm?.addEventListener',$beforeStart);
-    if($beforeStart===false||$beforeEnd===false)throw new RuntimeException('cannot isolate admin beforeunload guard');
-    $beforeUnload=substr($js,$beforeStart,$beforeEnd-$beforeStart);
-    $same(true,str_contains($beforeUnload,'if (adminLogoutInProgress || (!residentActivationSecret && !hasDirtySettings() && !hasDirtyMeterRows() && !hasDirtyDialogDrafts())) return;'));
-    $same(true,str_contains($beforeUnload,"event.preventDefault(); event.returnValue = '';"));
+    $a=strpos($js,'function initResidentLogin()');$b=strpos($js,'function initResidentPortal()',$a);
+    $login=substr($js,$a,$b-$a);
+    foreach(['if (pending) return;','setFormFieldsBusy(form, true)','if (!succeeded)','form.elements.phone.focus()']as$guard)$same(true,str_contains($login,$guard));
+    foreach(['credential','new_password','firstActivation','one-time-code']as$retired)$same(false,str_contains($login,$retired));
+    $same(true,str_contains($login,"const payload = { phone: form.elements.phone.value.trim() }"));
+    $same(true,str_contains($js,"event.preventDefault(); event.returnValue = '';"));
 });
 
 $test('resident LINE polling merges only LINE state without overwriting profile edits',function()use($same):void{
