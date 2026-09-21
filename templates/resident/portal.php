@@ -179,10 +179,11 @@ $residentInitial = preg_match('/^./us', $residentName, $initialMatch) === 1 ? $i
           </div>
           <button class="button button-primary button-full" id="resident-load-qr" type="button">แสดง QR พร้อมเพย์</button>
           <div class="payment-notice" id="resident-payment-notice" role="status" hidden></div>
+          <button class="button button-secondary button-full" id="resident-payment-refresh" type="button" hidden>ตรวจสถานะการชำระอีกครั้ง</button>
           <aside class="payment-notice" id="resident-line-slip-fallback" hidden>
-            <strong>แนบสลิปไม่ได้ ส่งทาง LINE ได้</strong>
+            <strong>แนบสลิปไม่ได้หรือตรวจยังไม่สำเร็จ ส่งทาง LINE Bot ได้</strong>
             <p>เปิดแชต กดส่งข้อความเลขบิล แล้วแนบรูปสลิปในแชตเดียวกันให้ผู้ดูแลตรวจ ไม่ต้องโอนซ้ำ</p>
-            <a class="button button-secondary button-full" id="resident-send-slip-line" target="_blank" rel="noopener noreferrer" hidden>เปิด LINE พร้อมเลขบิล</a>
+            <a class="button button-secondary button-full" id="resident-send-slip-line" target="_blank" rel="noopener noreferrer" hidden>ส่งสลิปทาง LINE Bot พร้อมเลขบิล</a>
             <p id="resident-line-slip-message"></p>
             <small>ปุ่มนี้ยังไม่ส่งข้อความหรือแนบภาพให้เอง รูปอยู่ในแชต LINE OA ไม่ได้บันทึกเป็นสลิปในเว็บ และยังไม่ยืนยันว่าชำระแล้ว</small>
           </aside>

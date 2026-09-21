@@ -13,7 +13,7 @@ function between(startMarker, endMarker) {
   assert.ok(start >= 0 && end > start, `production source boundary: ${startMarker}`);
   return source.slice(start, end);
 }
-const helpers = between('function setBusy(', 'function setFormFieldsBusy(')
+const helpers = between('function setBusy(', 'function showFormError(')
   + between('function dialogCloseBlocked(', 'async function confirmAction(');
 const flows = [
   { form: 'move-in-form', dialog: 'move-in-dialog', end: 'function resetResidentCreateReuse(' },
@@ -47,7 +47,11 @@ function harness(flow, { deferReload = false } = {}) {
   const closeButton = node();
   const dialog = { ...node(), open: true, close() { this.open = false; } };
   const summary = { textContent: 'Alice · ห้อง A101' };
+  const reuseInput = { ...node(), disabled: true, required: false, value: '', focus() {} };
   const form = {
+    ...node(),
+    closest: () => dialog,
+    elements: { reuse_resident_id: reuseInput },
     reportValidity: () => true,
     querySelector: () => submitButton,
     reset: () => { effects.resets += 1; },
@@ -67,7 +71,7 @@ function harness(flow, { deferReload = false } = {}) {
       if (!otherNodes.has(selector)) otherNodes.set(selector, node());
       return otherNodes.get(selector);
     },
-    $$: (selector) => selector === '[data-close-dialog]' ? [closeButton] : [],
+    $$: (selector, root) => selector === '[data-close-dialog]' ? [closeButton] : root === form ? [reuseInput] : [],
     state: {
       rooms: [{ id: 1, room_code: 'A101', status: 'available' }],
       residents: [{ id: 21, full_name: 'Alice', phone: '0811111111', room_code: 'A101' }],
@@ -76,7 +80,7 @@ function harness(flow, { deferReload = false } = {}) {
     api: () => { const request = deferred(); requests.push(request); return request.promise; },
     text: (value, fallback = '—') => value == null || value === '' ? fallback : String(value),
     errorMessage: (error) => error.message,
-    showFormError: (_node, message) => { if (message) effects.errors.push(message); },
+    showFormError: (_node, message) => { if (message) effects.errors.push(message.message || message); },
     showResidentAccess: (data, label) => effects.access.push({ data, label }),
     toast: () => {},
     loadResidents: () => deferReload ? reload.promise : Promise.resolve(),
@@ -87,7 +91,7 @@ function harness(flow, { deferReload = false } = {}) {
   const listener = between(`$('#${flow.form}').addEventListener('submit'`, flow.end);
   vm.runInContext(`${helpers}\n${listener}`, context);
   return {
-    effects, dialog, closeButton, submitButton, summary,
+    effects, dialog, closeButton, submitButton, summary, reuseInput,
     submit: () => form.submit({ preventDefault() {}, currentTarget: form }),
     close: () => context.closeDialog(dialog, closeButton),
     resolve: (value, request = 0) => requests[request].resolve(value),
@@ -168,4 +172,15 @@ test('move-in activation label uses the submitted booking snapshot', async () =>
   ui.resolve({ resident_access: { activation_required: true } });
   await work;
   assert.equal(ui.effects.access[0].label, 'Alice · ห้อง A101');
+});
+
+test('move-in reuse confirmation remains enabled after the failed save unlocks fields', async () => {
+  const ui = harness(flows[0]);
+  const work = ui.submit();
+  ui.reject(Object.assign(new Error('Confirm previous resident'), { details: { code: 'RESIDENT_REUSE_CONFIRMATION_REQUIRED', resident_id: 21, resident_name: 'Alice' } }));
+  await work;
+  assert.equal(ui.reuseInput.disabled, false);
+  assert.equal(ui.reuseInput.required, true);
+  assert.equal(ui.reuseInput.value, '21');
+  assert.equal(ui.dialog.open, true);
 });

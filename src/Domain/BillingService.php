@@ -404,12 +404,22 @@ final class BillingService
         $payment = $this->app->database()->pdo()->prepare('SELECT id,status,rejection_reason,created_at,verified_at FROM payments WHERE bill_id=? ORDER BY id DESC LIMIT 1');
         $payment->execute([$billId]);
         $bill['payment'] = $payment->fetch() ?: null;
-        $integrations=$this->app->settings()->publicSettings();
+        $integrations=$this->app->settings()->paymentCapabilities();
         $instruction=$this->app->transfers()->find($billId);
+        $instructionError=null;
+        if($instruction && $bill['status']==='pending'){
+            try { $this->app->transfers()->expectedAmount($billId,(string)$bill['total_amount']); }
+            catch(HttpException $error){
+                if(!in_array($error->errorCode,['TRANSFER_TARGET_CHANGED','TRANSFER_BILL_CHANGED'],true))throw $error;
+                $instructionError=$error->getMessage();
+            }
+        }
         $bill['transfer_instruction']=$instruction ? array_intersect_key($instruction,array_flip(['bill_amount','adjustment_amount','transfer_amount','status'])) : null;
         $bill['line_fallback']=$this->app->transfers()->lineFallback($bill,$instruction['transfer_amount']??null);
         $bill['payment_capabilities']=[
             'transfer_reservation_ready'=>$this->app->transfers()->available(),
+            'transfer_instruction_ready'=>$instructionError===null,
+            'transfer_instruction_error'=>$instructionError,
             'promptpay_ready'=>($integrations['promptpay_ready']??false)===true,
             'slip_verification_ready'=>($integrations['slip_verification_ready']??false)===true,
             'slip_max_bytes'=>(int)($integrations['slip_max_bytes']??4_194_304),

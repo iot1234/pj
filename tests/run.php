@@ -1717,7 +1717,7 @@ $test('canonical slip HMAC provides safe upload idempotency',function()use($same
     $source=file_get_contents(dirname(__DIR__).'/src/Domain/PaymentService.php');$schema=file_get_contents(dirname(__DIR__).'/database/schema.sql');
     if(!is_string($source)||!is_string($schema))throw new RuntimeException('cannot read payment idempotency sources');
     $uploadStart=strpos($source,'public function upload(');$uploadEnd=strpos($source,'public function list(',$uploadStart?:0);$upload=substr($source,(int)$uploadStart,(int)$uploadEnd-(int)$uploadStart);
-    $replay=strpos($upload,"if((\$payment['idempotent_replay']??false)===true)");$provider=strpos($upload,'$this->verifier->verify(');
+    $replay=strpos($upload,"if((\$payment['idempotent_replay']??false)===true)");$provider=strpos($upload,'$this->verifyEvidence(');
     if($replay===false||$provider===false||$replay>$provider)throw new RuntimeException('idempotent replay reaches the slip provider');
     $same(false,str_contains($upload,"\$bill['status']!=='pending'"));
     $same(true,str_contains($upload,'if(is_file($absolute))@unlink($absolute)'));
@@ -2030,7 +2030,7 @@ $test('resident payment UI locks slip mutation and rejects stale verifying refre
     $slip=substr($js,$slipStart,$slipEnd-$slipStart);
     $slipLock=strpos($slip,'setDialogBusy(billDialog, true)');
     $slipRequest=strpos($slip,'/slip`');
-    $slipUnlock=strpos($slip,'finally { setBusy(button, false); setDialogBusy(billDialog, false); }');
+    $slipUnlock=strpos($slip,'finally { slipInput.disabled = false; setBusy(button, false); setDialogBusy(billDialog, false); }');
     $same(true,$slipLock!==false&&$slipRequest!==false&&$slipUnlock!==false&&$slipLock<$slipRequest&&$slipRequest<$slipUnlock);
 
     $pollStart=strpos($js,'async function refreshVerifyingBills(force = false)');
@@ -2039,7 +2039,7 @@ $test('resident payment UI locks slip mutation and rejects stale verifying refre
     $poll=substr($js,$pollStart,$pollEnd-$pollStart);
     $generationCapture=strpos($poll,'const loadGeneration = state.loadRequest');
     $pollRequest=strpos($poll,"api('/api/resident/bills')");
-    $generationGuard=strpos($poll,'if (loadGeneration !== state.loadRequest) return;');
+    $generationGuard=strpos($poll,"if (loadGeneration !== state.loadRequest || billDialog.dataset.dialogBusy === 'true') return;");
     $unchangedGuard=strpos($poll,'if (JSON.stringify(nextBills) === JSON.stringify(state.bills)) return;');
     $billAssignment=strpos($poll,'state.bills = nextBills;');
     $billRender=strpos($poll,'renderBills();');
@@ -2282,7 +2282,7 @@ $test('pending or verified slips suppress irrelevant payment configuration warni
     $notice=substr($js,$noticeStart,$noticeEnd-$noticeStart);
     foreach([
         "const paymentInProgress = payment?.status === 'pending' || payment?.status === 'verified';",
-        'const paymentBlocked = !paymentConfigurationReady && !paymentInProgress;',
+        'const paymentBlocked = (!paymentConfigurationReady || transferConflict) && !paymentInProgress;',
         "if (paymentBlocked) {",
         'สลิปอยู่ระหว่างตรวจสอบ กรุณารอผลและอย่าโอนซ้ำ',
         'สลิปผ่านการตรวจสอบแล้ว ไม่ต้องชำระซ้ำ',

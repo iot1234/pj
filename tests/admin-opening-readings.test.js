@@ -105,7 +105,7 @@ function formHarness({ deferReload = false } = {}) {
     $: (selector) => ({ '#opening-readings-form': form, '#opening-readings-dialog': dialog, '#opening-readings-error': node() })[selector],
     $$: (_selector, root) => root === form ? fields : [close],
     FormData: class { entries() { return fields.map((field) => [field.name, field.value]); } },
-    showFormError: (_node, message) => { if (message) errors.push(message); },
+    showFormError: (_node, message) => { if (message) errors.push(message.message || message); },
     errorMessage: (error) => error.message,
     toast() {},
     api: (url, options) => { const request = { ...deferred(), url, options }; requests.push(request); return request.promise; },

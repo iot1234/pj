@@ -21,5 +21,21 @@
     catch (_) { return null; }
     return { url: value.url, message: value.message };
   }
-  window.DormTransferPayment = Object.freeze({ cents, validInstruction, safeLineFallback });
+  function recoveryStore() {
+    const key = 'dormitory:uncertain-payment-uploads';
+    const pending = new Set();
+    let storage;
+    try {
+      storage = window.sessionStorage;
+      const saved = JSON.parse(storage?.getItem(key) || '[]');
+      if (Array.isArray(saved)) saved.filter(id => typeof id === 'string' && /^[1-9]\d{0,18}$/.test(id)).forEach(id => pending.add(id));
+    } catch (_) { /* Private browsing may disallow storage; retain in-memory protection. */ }
+    const persist = () => { try { storage?.setItem(key, JSON.stringify([...pending])); } catch (_) {} };
+    return Object.freeze({
+      has: id => pending.has(String(id)),
+      add(id) { pending.add(String(id)); persist(); },
+      delete(id) { pending.delete(String(id)); persist(); },
+    });
+  }
+  window.DormTransferPayment = Object.freeze({ cents, validInstruction, safeLineFallback, recoveryStore });
 })();

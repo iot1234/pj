@@ -24,6 +24,33 @@ $make=function(string $rent='100.00')use($app,$owner,$period,&$n):array{
 $one=$make();$instruction=$app->transfers()->reserve($one['id'],$one['resident_id']);
 $test('QR allocates while no slip provider is configured',function()use($instruction,$app,$assert):void{$assert(!$app->settings()->publicSettings()['slip_verification_ready']);$assert($instruction['bill_amount']==='100.00'&&(float)$instruction['transfer_amount']>100&&(float)$instruction['transfer_amount']<101);});
 $test('refresh and a new application instance reuse the exact stored amount',function()use($app,$one,$instruction,$assert):void{$other=new Dormitory\Application($app->config);$assert($other->transfers()->reserve($one['id'],$one['resident_id'])===$instruction);});
+$test('enabling or disabling verification never changes QR readiness or locked amount',function()use($app,$owner,$one,$instruction,$assert):void{
+ foreach(['slipok','easyslip','none']as$provider){
+  $app->settings()->update(['slip_provider'=>$provider,'payment_receiver_account_tail'=>'567890','slipok_branch_id'=>'fixture','slipok_api_key'=>'fixture-slipok-key','easyslip_api_key'=>'fixture-easyslip-key'],$owner);
+  $bill=$app->billing()->residentDetail($one['resident_id'],$one['id']);$app->billing()->assertPromptPayAvailable($bill);
+  $assert($bill['payment_capabilities']['promptpay_ready']&&$bill['payment_capabilities']['slip_verification_ready']===($provider!=='none'));
+  $assert($app->transfers()->reserve($one['id'],$one['resident_id'])['transfer_amount']===$instruction['transfer_amount']);
+ }
+});
+$test('invalid selected or unused slip credentials disable upload but cannot break QR or LINE fallback',function()use($app,$owner,$pdo,$one,$instruction,$assert,$expect):void{
+ $app->settings()->update(['slip_provider'=>'slipok','slipok_branch_id'=>'fixture','payment_receiver_account_tail'=>'567890'],$owner);
+ $pdo->exec("UPDATE integration_settings SET slipok_api_key_enc='v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' WHERE id=1");
+ try{
+  foreach(['slipok','none']as$provider){
+   $pdo->prepare('UPDATE integration_settings SET slip_provider=? WHERE id=1')->execute([$provider]);
+   $bill=$app->billing()->residentDetail($one['resident_id'],$one['id']);$app->billing()->assertPromptPayAvailable($bill);
+   $assert($bill['payment_capabilities']['slip_verification_ready']===false&&$bill['payment_capabilities']['promptpay_ready']===true);
+   $reserved=$app->transfers()->reserve($one['id'],$one['resident_id']);$envelope=$app->transfers()->envelope($reserved,$bill);
+   $assert($envelope['amount']===$instruction['transfer_amount']&&$envelope['line_fallback']['available']);
+   $expect(fn()=>$app->payments()->upload($one['id'],$one['resident_id'],[]),'SLIP_NOT_CONFIGURED');
+  }
+ }finally{$pdo->exec("UPDATE integration_settings SET slipok_api_key_enc=NULL,slip_provider='none' WHERE id=1");}
+});
+$test('missing LINE contact does not disable QR or invent another recipient',function()use($app,$owner,$one,$instruction,$assert):void{
+ $app->settings()->update(['line_basic_id'=>null],$owner);
+ try{$bill=$app->billing()->residentDetail($one['resident_id'],$one['id']);$e=$app->transfers()->envelope($instruction,$bill);$assert($e['line_fallback']['available']===false&&$e['line_fallback']['url']===null&&$e['amount']===$instruction['transfer_amount']);}
+ finally{$app->settings()->update(['line_basic_id'=>'@fixture'],$owner);}
+});
 $test('another resident cannot allocate or read this bill',fn()=>$expect(fn()=>$app->transfers()->reserve($one['id'],$one['resident_id']+1000),'BILL_NOT_FOUND'));
 $test('LINE fallback is scoped to the bill and only opens the official chat',function()use($app,$one,$instruction,$assert):void{
  $bill=$app->billing()->residentDetail($one['resident_id'],$one['id']);$e=$app->transfers()->envelope($instruction,$bill);
@@ -43,6 +70,16 @@ $test('same-base reservations exhaust 99 slots without collision or overflow',fu
  $assert(count(array_unique($amounts))===99);$b=$make();$expect(fn()=>$app->transfers()->reserve($b['id'],$b['resident_id']),'TRANSFER_SLOTS_FULL');
 });
 $test('fractional principals also get +0.01 to +0.99 without losing their original cents',function()use($make,$app,$assert):void{$b=$make('500.75');$r=$app->transfers()->reserve($b['id'],$b['resident_id']);$assert($r['bill_amount']==='500.75'&&Dormitory\Support\Validator::scaledDecimal($r['transfer_amount'],'amount',2,12)-50075===Dormitory\Support\Validator::scaledDecimal($r['adjustment_amount'],'adjustment',2,12));});
+$test('overlapping fractional bill ranges share one global amount registry',function()use($make,$app,$assert):void{
+ $amounts=[];foreach(['600.00','600.01','600.25','600.50','600.75','600.99']as$base){$b=$make($base);$amounts[]=$app->transfers()->reserve($b['id'],$b['resident_id'])['transfer_amount'];}
+ $assert(count(array_unique($amounts))===count($amounts));
+});
+$test('database unique index blocks colliding transfer instructions even outside allocator',function()use($make,$app,$pdo,$assert):void{
+ $a=$make('800.00');$b=$make('800.00');$r=$app->transfers()->reserve($a['id'],$a['resident_id']);$blocked=false;
+ try{$q=$pdo->prepare('INSERT INTO transfer_instructions(bill_id,resident_id,bill_amount,adjustment_amount,transfer_amount,promptpay_target) VALUES(?,?,?,?,?,?)');$q->execute([$b['id'],$b['resident_id'],$r['bill_amount'],$r['adjustment_amount'],$r['transfer_amount'],$r['promptpay_target']]);}
+ catch(PDOException $e){$blocked=Dormitory\Support\MySqlError::isDuplicateKey($e,'uq_transfer_active_amount');}
+ $assert($blocked,'Unique transfer amount guard did not reject collision');
+});
 $test('parallel processes allocate once for the same bill and unique amounts for other bills',function()use($make,$app,$assert):void{
  $a=$make('700.00');$b=$make('700.00');$c=$make('700.00');$processes=[];
  foreach([$a,$a,$b,$c]as$item){$p=proc_open([PHP_BINARY,__FILE__,'reserve',(string)$item['id'],(string)$item['resident_id']],[0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes,dirname(__DIR__));fclose($pipes[0]);$processes[]=[$p,$pipes];}

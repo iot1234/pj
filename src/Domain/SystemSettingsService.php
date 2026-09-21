@@ -192,6 +192,32 @@ final class SystemSettingsService
         ];
     }
 
+    /** Resident payment readiness must not depend on unrelated or broken secrets. */
+    public function paymentCapabilities(): array
+    {
+        $row = $this->row() ?? $this->defaults();
+        $slipReady = false;
+        try {
+            if ($this->nullableString($row['payment_receiver_account_tail'] ?? null) !== null) {
+                $slipReady = match ($row['slip_provider'] ?? 'none') {
+                    'slipok' => $this->nullableString($row['slipok_branch_id'] ?? null) !== null
+                        && $this->secretMetadata($row, 'SLIPOK_API_KEY')['configured'],
+                    'easyslip' => $this->secretMetadata($row, 'EASYSLIP_API_KEY')['configured'],
+                    default => false,
+                };
+            }
+        } catch (RuntimeException) {
+            // Invalid encrypted credentials disable verification only. Never
+            // weaken decryption or substitute an unverified payment decision.
+            $slipReady = false;
+        }
+        return [
+            'promptpay_ready' => $this->nullableString($row['promptpay_target'] ?? null) !== null,
+            'slip_verification_ready' => $slipReady,
+            'slip_max_bytes' => $this->databaseInteger($row, 'slip_max_bytes'),
+        ];
+    }
+
     /**
      * Partially update the singleton settings row. Empty secret inputs keep
      * the existing value; only an explicit matching *_clear=true removes it.

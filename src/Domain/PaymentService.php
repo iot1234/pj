@@ -17,7 +17,7 @@ final class PaymentService
     private const MAX_IMAGE_PIXELS = 8_000_000;
 
     private readonly SlipVerifier $verifier;
-    public function __construct(private readonly Application $app){$this->verifier=new SlipVerifier($app);}
+    public function __construct(private readonly Application $app, ?\Closure $transport=null){$this->verifier=new SlipVerifier($app,$transport);}
 
     /**
      * @param array<string,mixed> $file
@@ -26,7 +26,7 @@ final class PaymentService
      */
     public function upload(int $billId,int $residentId,array $file,?callable $afterFinalize=null): array
     {
-        $settings=$this->app->settings()->publicSettings();
+        $settings=$this->app->settings()->paymentCapabilities();
         if(($settings['slip_verification_ready']??false)!==true){
             throw new HttpException(503,'ระบบตรวจสลิปยังตั้งค่าไม่ครบ กรุณาติดต่อผู้ดูแล','SLIP_NOT_CONFIGURED');
         }
@@ -54,8 +54,7 @@ final class PaymentService
         // Concurrent uploads now stop at the unique/active-payment guards and
         // never race two provider decisions into the same bill.
         try{
-            $expected=$this->app->transfers()->expectedAmount((int)$bill['id'],(string)$bill['total_amount']);
-            $verification=$this->verifier->verify($absolute,$mime,$expected,(string)$bill['created_at']);
+            $verification=$this->verifyEvidence($absolute,$mime,(int)$bill['id'],(string)$bill['total_amount'],(string)$bill['created_at']);
             return $this->finalizeReserved((int)$payment['id'],(int)$bill['id'],$token,$verification,$afterFinalize);
         }catch(\Throwable $error){
             try{$this->releaseClaim((int)$payment['id'],$token);}catch(\Throwable){error_log('Unable to release payment verification claim for payment '.$payment['id']);}
@@ -81,7 +80,7 @@ final class PaymentService
      */
     public function retry(int $paymentId,?callable $afterFinalize=null): array
     {
-        $settings=$this->app->settings()->publicSettings();
+        $settings=$this->app->settings()->paymentCapabilities();
         if(($settings['slip_verification_ready']??false)!==true){
             throw new HttpException(503,'ระบบตรวจสลิปยังตั้งค่าไม่ครบ','SLIP_NOT_CONFIGURED');
         }
@@ -89,8 +88,7 @@ final class PaymentService
         $claim=$this->claimRetry($paymentId,$token);
         try{
             $absolute=$this->storedSlipAbsolute((string)$claim['slip_path'],(string)$claim['slip_mime'],(string)$claim['slip_hmac']);
-            $expected=$this->app->transfers()->expectedAmount((int)$claim['bill_id'],(string)$claim['amount']);
-            $verification=$this->verifier->verify($absolute,(string)$claim['slip_mime'],$expected,(string)$claim['bill_created_at']);
+            $verification=$this->verifyEvidence($absolute,(string)$claim['slip_mime'],(int)$claim['bill_id'],(string)$claim['amount'],(string)$claim['bill_created_at']);
             return $this->finalizeReserved($paymentId,(int)$claim['bill_id'],$token,$verification,$afterFinalize);
         }catch(\Throwable $error){
             try{$this->releaseClaim($paymentId,$token);}catch(\Throwable){error_log('Unable to release payment verification claim for payment '.$paymentId);}
@@ -154,6 +152,20 @@ final class PaymentService
                 'bill_created_at'=>$bill['created_at'],
             ];
         });
+    }
+
+    private function verifyEvidence(string $path,string $mime,int $billId,string $principal,string $createdAt): array
+    {
+        try { $expected=$this->app->transfers()->expectedAmount($billId,$principal); }
+        catch(HttpException $error){
+            if(!in_array($error->errorCode,['TRANSFER_TARGET_CHANGED','TRANSFER_BILL_CHANGED'],true))throw $error;
+            // Evidence is already durably reserved. A configuration conflict is
+            // a reviewable result, not a failed upload or a reason to pay again.
+            return ['decision'=>'pending','provider'=>null,'transaction_ref'=>null,'receiver_ref'=>null,
+                'payload'=>['configuration_conflict'=>$error->errorCode],
+                'reason'=>$error->getMessage().' เก็บสลิปไว้แล้ว ไม่ต้องส่งหรือโอนซ้ำ'];
+        }
+        return $this->verifier->verify($path,$mime,$expected,$createdAt);
     }
 
     private function releaseClaim(int $paymentId,string $token): void
@@ -255,10 +267,10 @@ final class PaymentService
                 try {
                     $expected=$this->app->transfers()->expectedAmount($billId,(string)$bill['total_amount']);
                     $settings=$this->app->settings()->slipVerificationSettings();
-                    if(isset($v['settings_fingerprint'])&&!hash_equals($settings['fingerprint'],$v['settings_fingerprint']))throw new \RuntimeException('Verification settings changed');
+                    if(!is_string($v['settings_fingerprint']??null)||!hash_equals($settings['fingerprint'],$v['settings_fingerprint']))throw new \RuntimeException('Verification settings changed');
+                    $actual=Validator::scaledDecimal($v['payload']['amount']??null,'transfer_amount',2,12);
+                    if($actual!==Validator::scaledDecimal($expected,'expected_amount',2,12))throw new \RuntimeException('Transfer amount not verified');
                     if($instruction){
-                        $actual=Validator::scaledDecimal($v['payload']['amount']??null,'transfer_amount',2,12);
-                        if($actual!==Validator::scaledDecimal($expected,'expected_amount',2,12)||!isset($v['settings_fingerprint']))throw new \RuntimeException('Transfer amount not verified');
                         $v['payload']['bill_amount']=$instruction['bill_amount'];
                         $v['payload']['adjustment_amount']=$instruction['adjustment_amount'];
                         $v['payload']['expected_transfer_amount']=$expected;
@@ -318,7 +330,7 @@ final class PaymentService
         $encoder=['image/jpeg'=>'imagejpeg','image/png'=>'imagepng','image/webp'=>'imagewebp'][$mime];
         if(!function_exists($decoder)||!function_exists($encoder))throw new \RuntimeException('PHP GD with JPEG, PNG, and WebP support is required');
         $resource=@$decoder($tmp);if($resource===false)throw new HttpException(422,'ระบบอ่านรูปสลิปไม่ได้ กรุณาใช้ไฟล์รูปอื่น','SLIP_IMAGE_INVALID');
-        try{$written=$mime==='image/jpeg'?$encoder($resource,$absolute,90):($mime==='image/png'?$encoder($resource,$absolute,6):$encoder($resource,$absolute,90));}finally{imagedestroy($resource);}
+        try{$written=$mime==='image/jpeg'?$encoder($resource,$absolute,90):($mime==='image/png'?$encoder($resource,$absolute,6):$encoder($resource,$absolute,90));}finally{unset($resource);}
         if(!$written||!is_file($absolute)){@unlink($absolute);throw new \RuntimeException('Cannot canonicalize uploaded slip');}
         if(filesize($absolute)===false||filesize($absolute)>$max){@unlink($absolute);throw new HttpException(413,'ไฟล์สลิปหลังตรวจรูปภาพเกินขนาดที่ตั้งไว้','SLIP_TOO_LARGE');}
         $this->secureStoredSlipPermissions($absolute);

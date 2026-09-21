@@ -175,9 +175,11 @@
     BILL_ALREADY_PAID: 'บิลนี้ชำระแล้ว',
     PAYMENT_ALREADY_PENDING: 'บิลนี้มีรายการชำระที่กำลังดำเนินการอยู่แล้ว',
     BILL_PREVIEW_INVALID: 'บางห้องยังมีข้อมูลไม่พร้อมออกบิล กรุณาตรวจรายการที่แจ้ง',
+    INTERNAL_ERROR: 'ระบบทำรายการไม่สำเร็จ กรุณาตรวจสถานะล่าสุดก่อนลองใหม่ หากยังพบปัญหาให้ติดต่อผู้ดูแล',
   });
   const errorMessage = (error, fallback = 'เกิดข้อผิดพลาด กรุณาลองใหม่') => {
     const code = error?.details?.code;
+    if (code === 'INVALID_CREDENTIALS' && body.dataset.page === 'admin-login') return 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง กรุณาตรวจทั้งสองช่อง';
     if (code === 'RATE_LIMITED') {
       const retryAfter = Math.max(0, Math.ceil(Number(error?.details?.retry_after) || 0));
       return retryAfter > 0
@@ -355,8 +357,24 @@
 
   function showFormError(element, message = '') {
     if (!element) return;
-    element.textContent = message;
+    const failure = message instanceof Error ? message : null;
+    element.textContent = failure ? errorMessage(failure) : message;
     element.hidden = !message;
+    if (!failure) return;
+    const guide = window.DormRecoveryGuide?.explain(failure, { role: body.dataset.userRole, page: body.dataset.page });
+    if (!guide) return;
+    element.append(create('span', 'recovery-detail', ` ${guide.detail}`));
+    const control = guide.field ? element.closest('form')?.elements.namedItem(guide.field) : null;
+    if (control?.focus && control.type !== 'hidden') {
+      const button = create('button', 'button button-secondary button-small', guide.action);
+      button.type = 'button';
+      button.addEventListener('click', () => { if (!control.disabled) { control.scrollIntoView({block:'center'}); control.focus(); } });
+      element.append(button);
+    } else if (guide.view) {
+      const button = create('button', 'button button-secondary button-small', guide.action);
+      button.type = 'button'; button.dataset.recoveryView = guide.view;
+      element.append(button);
+    }
   }
 
   function toast(message, type = 'success') {
@@ -551,6 +569,11 @@
       element.replaceChildren();
       if (state === 'loading') element.append(create('span', 'spinner'));
       element.append(create('p', '', message || (state === 'loading' ? 'กำลังโหลด…' : 'ไม่พบข้อมูล')));
+      const view = element.closest('[data-admin-view]')?.dataset.adminView;
+      if (state === 'error' && view) {
+        const retry = create('button', 'button button-secondary button-small', 'ลองโหลดข้อมูลหน้านี้ใหม่');
+        retry.type = 'button'; retry.dataset.recoveryView = view; element.append(retry);
+      }
     }
   }
 
@@ -782,7 +805,7 @@
         success.focus();
         load();
       } catch (error) {
-        showFormError($('#public-booking-error'), errorMessage(error, 'ส่งคำขอไม่สำเร็จ'));
+        showFormError($('#public-booking-error'), error);
         if (['BOOKING_EXPIRED', 'BOOKING_INACTIVE', 'IDEMPOTENCY_KEY_REUSED'].includes(error?.details?.code)) {
           $('#booking-idempotency').value = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
         }
@@ -843,7 +866,7 @@
         }
         succeeded = true; location.assign('/resident');
       } catch (requestError) {
-        showFormError(error, errorMessage(requestError, 'กรุณาตรวจเบอร์ที่ผูกกับห้อง หรือติดต่อผู้ดูแลหอพัก'));
+        showFormError(error, requestError);
       } finally {
         if (!succeeded) { pending = false; setFormFieldsBusy(form, false); setBusy(button, false); form.elements.phone.focus(); }
       }
@@ -1108,14 +1131,14 @@
     }
 
     async function refreshVerifyingBills(force = false) {
-      if (state.billRefreshRequest || (!force && !state.bills.some((bill) => billStatus(bill) === 'verifying'))) return;
+      if (billDialog.dataset.dialogBusy === 'true' || state.billRefreshRequest || (!force && !state.bills.some((bill) => billStatus(bill) === 'verifying'))) return;
       state.billRefreshRequest = true;
       const currentId = state.currentBillId;
       const loadGeneration = state.loadRequest;
       const refreshOpenBill = billDialog.open && state.bills.some((bill) => String(bill.id) === String(currentId) && billStatus(bill) === 'verifying');
       try {
         const result = await api('/api/resident/bills');
-        if (loadGeneration !== state.loadRequest) return;
+        if (loadGeneration !== state.loadRequest || billDialog.dataset.dialogBusy === 'true') return;
         const nextBills = listFrom(result, 'bills');
         if (JSON.stringify(nextBills) === JSON.stringify(state.bills)) return;
         state.bills = nextBills;
@@ -1139,16 +1162,17 @@
       const box=$('#resident-transfer-summary');box.replaceChildren();box.hidden=!instruction;
       if(instruction)box.append(create('strong','',`${['settled','released'].includes(instruction.status)?'ยอดโอนที่บันทึก':'ยอดที่ต้องโอน'} ${money(instruction.transfer_amount)}`),
         create('p','',`ยอดบิล ${money(instruction.bill_amount)} + สตางค์ระบุรายการ ${money(instruction.adjustment_amount)}`),
-        create('small','','โอนครบตามยอดนี้ ห้ามปัดเศษ รีเฟรชแล้วได้ยอดเดิม ส่วนต่างบันทึกแยกจากยอดบิล'));
+        create('small','',['settled','released'].includes(instruction.status) ? 'บันทึกการชำระแล้ว ไม่ต้องโอนซ้ำ ส่วนต่างบันทึกแยกจากยอดบิล' : 'โอนครบตามยอดนี้ ห้ามปัดเศษ รีเฟรชแล้วได้ยอดเดิม ส่วนต่างบันทึกแยกจากยอดบิล'));
     }
     function showSlipLineFallback(value) {
       const box=$('#resident-line-slip-fallback'),link=$('#resident-send-slip-line');
       const fallback=window.DormTransferPayment?.safeLineFallback(value);box.hidden=false;
       link.hidden=!fallback;
       if(fallback){link.href=fallback.url;$('#resident-line-slip-message').textContent=fallback.message;}
-      else{link.removeAttribute('href');$('#resident-line-slip-message').textContent='ยังไม่ได้ตั้ง LINE ของหอพัก กรุณาติดต่อสำนักงานพร้อมเลขบิล ไม่ต้องโอนซ้ำ';}
+      else{link.removeAttribute('href');$('#resident-line-slip-message').textContent='ยังไม่ได้ตั้ง LINE ของหอพัก กรุณาติดต่อสำนักงานพร้อมเลขบิล ไม่ต้องโอนซ้ำ'+(typeof value?.message === 'string' ? ` · ${value.message}` : '');}
     }
-    async function openBill(id) {
+    const uncertainPaymentBills = window.DormTransferPayment?.recoveryStore() || new Set();
+    async function openBill(id, { preserveSlip = false } = {}) {
       state.currentBillId = id;
       state.slipReady = false;
       state.lineFallback = null;
@@ -1158,7 +1182,7 @@
       state.qrRequest += 1;
       const request = ++state.billDetailRequest;
       const slipForm = $('#resident-slip-form');
-      slipForm.reset();
+      if (!preserveSlip) slipForm.reset();
       slipForm.hidden = true;
       $('[data-file-name]', slipForm).textContent = 'ยังไม่ได้เลือกไฟล์';
       billDetailLoading.hidden = false;
@@ -1186,29 +1210,36 @@
         const slipReady = capabilities.slip_verification_ready === true;
         const paymentConfigurationReady = promptPayReady && capabilities.transfer_reservation_ready === true;
         const paymentInProgress = payment?.status === 'pending' || payment?.status === 'verified';
-        const paymentBlocked = !paymentConfigurationReady && !paymentInProgress;
+        const transferConflict = capabilities.transfer_instruction_ready === false;
+        const paymentBlocked = (!paymentConfigurationReady || transferConflict) && !paymentInProgress;
+        if (paymentInProgress) uncertainPaymentBills.delete(String(bill.id));
+        const outcomeUnknown = uncertainPaymentBills.has(String(bill.id));
         state.slipMaxBytes = Math.max(1024, Math.min(4 * 1024 * 1024, Number(capabilities.slip_max_bytes) || 4 * 1024 * 1024));
-        state.paymentReady = paymentConfigurationReady && !paymentInProgress;
+        state.paymentReady = paymentConfigurationReady && !transferConflict && !paymentInProgress && !outcomeUnknown && status !== 'paid';
         state.slipReady = slipReady && !paymentInProgress && status !== 'paid';
         state.lineFallback = bill.line_fallback;
-        renderTransferSummary(bill.transfer_instruction);
-        if(status !== 'paid')showSlipLineFallback(state.lineFallback);
+        renderTransferSummary(transferConflict ? null : bill.transfer_instruction);
+        if(status !== 'paid' && (!slipReady || payment?.status === 'pending' || payment?.status === 'rejected' || outcomeUnknown))showSlipLineFallback(state.lineFallback);
+        $('#resident-payment-refresh').hidden = !paymentInProgress && !outcomeUnknown;
         $('#resident-load-qr').hidden = !state.paymentReady;
         $('#resident-qr-stage').hidden = !state.paymentReady;
         $('#resident-slip-form').hidden = !state.slipReady;
         const limitMiB = state.slipMaxBytes / 1024 / 1024;
         $('[data-file-name]', $('#resident-slip-form')).textContent = `JPG, PNG หรือ WebP ขนาดไม่เกิน ${limitMiB < 1 ? `${Math.round(state.slipMaxBytes / 1024)} KiB` : `${limitMiB.toFixed(limitMiB % 1 ? 2 : 0)} MiB`}`;
+        if (preserveSlip && slipInput.files?.[0]) slipInput.dispatchEvent(new Event('change'));
         const notices = [];
         if (payment) {
           notices.push(payment.status === 'rejected'
             ? `สลิปถูกปฏิเสธ: ${text(payment.rejection_reason, 'ข้อมูลในสลิปไม่ตรงกับบิล')} หากโอนเงินจริงแล้ว กรุณาติดต่อผู้ดูแลเพื่อตรวจยอดก่อนโอนซ้ำ การส่งไฟล์เดิมจะได้ผลเดิม`
-            : payment.status === 'verified' ? 'สลิปผ่านการตรวจสอบแล้ว ไม่ต้องชำระซ้ำ' : 'สลิปอยู่ระหว่างตรวจสอบ กรุณารอผลและอย่าโอนซ้ำ');
+            : payment.status === 'verified' ? 'สลิปผ่านการตรวจสอบแล้ว ไม่ต้องชำระซ้ำ' : 'สลิปอยู่ระหว่างตรวจสอบ กรุณารอผลและอย่าโอนซ้ำ หากตรวจอัตโนมัติยังไม่สำเร็จ ส่งหลักฐานเดิมให้ผู้ดูแลทาง LINE Bot ด้านล่างได้');
         }
         if (paymentBlocked) {
-          if (capabilities.transfer_reservation_ready !== true) notices.push('ยังสร้าง QR ไม่ได้ กรุณาติดต่อผู้ดูแลให้เปิดระบบจองยอด หากโอนแล้วให้ส่งสลิปทาง LINE ไม่ต้องโอนซ้ำ');
+          if (transferConflict) notices.push(text(capabilities.transfer_instruction_error, 'ข้อมูลบัญชีรับเงินเปลี่ยน กรุณาติดต่อผู้ดูแลก่อนโอน'));
+          else if (capabilities.transfer_reservation_ready !== true) notices.push('ยังสร้าง QR ไม่ได้ กรุณาติดต่อผู้ดูแลให้เปิดระบบจองยอด หากโอนแล้วให้ส่งสลิปทาง LINE ไม่ต้องโอนซ้ำ');
           else if (!promptPayReady) notices.push('ยังชำระผ่านระบบไม่ได้: ยังไม่ได้ตั้งค่า PromptPay กรุณาติดต่อผู้ดูแลก่อนโอน');
           else notices.push('กรุณาตรวจสถานะบิลก่อนชำระ');
         }
+        if (outcomeUnknown) notices.push('ยังยืนยันผลการส่งสลิปครั้งก่อนไม่ได้ กดตรวจสถานะอีกครั้ง หรือส่งไฟล์เดิมเพื่อตรวจรายการเดิม ห้ามโอนซ้ำ');
         if(state.paymentReady && !slipReady && status !== 'paid')notices.push('ชำระด้วย QR ได้ตามยอดที่ระบุ หลังโอนให้ส่งสลิปทาง LINE Bot เพื่อให้ผู้ดูแลตรวจ ไม่ต้องแนบสลิปในเว็บหรือโอนซ้ำ');
         paymentNotice.hidden = notices.length === 0;
         paymentNotice.className = `payment-notice${payment ? ` payment-notice-${text(payment.status, 'pending')}` : ''}${paymentBlocked ? ' payment-notice-blocked' : ''}`;
@@ -1240,6 +1271,7 @@
         $('#resident-qr-stage').replaceChildren(create('div', 'qr-placeholder', 'แสดง QR เพื่อจองยอดบิล + 0.01–0.99 บาทสำหรับแยกรายการ ห้ามปัดเศษ'));
         billDetailLoading.hidden = true;
         $('#resident-bill-detail').hidden = false;
+        return bill;
       } catch (error) {
         if (request !== state.billDetailRequest || String(state.currentBillId) !== String(id)) return;
         billDetailLoading.setAttribute('role', 'alert');
@@ -1294,7 +1326,7 @@
         $('#resident-topbar-name').textContent = text(state.profile.full_name);
         $('#resident-dashboard-title').textContent = `สวัสดี ${text(state.profile.full_name)}`;
         toast('บันทึกข้อมูลแล้ว');
-      } catch (errorValue) { showFormError(error, errorMessage(errorValue)); }
+      } catch (errorValue) { showFormError(error, errorValue); }
       finally { setFormFieldsBusy(profileForm, false); setBusy(button, false); }
     });
     lineStartForm.addEventListener('submit', async (event) => {
@@ -1398,9 +1430,12 @@
       } catch (errorValue) { showFormError(error, errorMessage(errorValue)); }
       finally { setBusy(lineUnlinkButton, false); }
     });
+    $('#resident-payment-refresh').addEventListener('click', () => {
+      if (billDialog.dataset.dialogBusy !== 'true' && state.currentBillId !== null) openBill(state.currentBillId, { preserveSlip: true });
+    });
     $('#resident-load-qr').addEventListener('click', async (event) => {
       const button = event.currentTarget;
-      if (button.getAttribute('aria-busy') === 'true') return;
+      if (button.getAttribute('aria-busy') === 'true' || billDialog.dataset.dialogBusy === 'true') return;
       if (!state.paymentReady) { toast('ยังสร้าง QR ไม่ได้ กรุณาตรวจการตั้งค่าบัญชีและสถานะบิล', 'error'); return; }
       const billId = state.currentBillId;
       const request = ++state.qrRequest;
@@ -1412,7 +1447,8 @@
         if (request !== state.qrRequest || String(state.currentBillId) !== String(billId)) return;
         const qr = objectFrom(data, 'promptpay');
         if(!window.DormTransferPayment?.validInstruction(qr,billId))throw new ApiError('ยอดโอนตอบกลับไม่ครบ กรุณาลองใหม่เพื่ออ่านยอดเดิม');
-        state.lineFallback=qr.line_fallback;showSlipLineFallback(state.lineFallback);
+        state.lineFallback=qr.line_fallback;
+        if (!state.slipReady) showSlipLineFallback(state.lineFallback);
         renderTransferSummary({...qr,transfer_amount:qr.amount});
         const payload = qr.payload || qr.qr_payload || data?.payload;
         const qrLibrary = await getQrLibrary();
@@ -1451,19 +1487,45 @@
       if (!state.slipReady) { showFormError(error, 'แนบสลิปในเว็บไม่ได้ กรุณาส่งภาพใน LINE ตามคำแนะนำด้านบน');showSlipLineFallback(state.lineFallback); return; }
       const file = slipInput.files?.[0];
       if (!file) { showFormError(error, 'กรุณาเลือกไฟล์สลิป'); return; }
-      if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > state.slipMaxBytes) { showFormError(error, `รองรับเฉพาะไฟล์ JPG, PNG หรือ WebP ตามขนาดสูงสุดที่ผู้ดูแลตั้งไว้`); return; }
+      if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size <= 0 || file.size > state.slipMaxBytes) { showFormError(error, `รองรับเฉพาะไฟล์ JPG, PNG หรือ WebP ที่ไม่ว่างและไม่เกินขนาดสูงสุดที่ผู้ดูแลตั้งไว้`); return; }
       const button = form.querySelector('[type="submit"]');
       const billId = state.currentBillId;
+      const wasUncertain = uncertainPaymentBills.has(String(billId));
+      // Persist before dispatch so a reload during the POST cannot invite a
+      // second bank transfer before the first upload outcome is known.
+      uncertainPaymentBills.add(String(billId));
       setBusy(button, true, 'กำลังส่งสลิป…');
       setDialogBusy(billDialog, true);
+      // A QR rendered before the upload (including one still rendering) is no
+      // longer an invitation to pay. Reconcile with the server before reuse.
+      state.qrRequest += 1;
+      state.paymentReady = false;
+      $('#resident-load-qr').hidden = true;
+      $('#resident-qr-stage').hidden = true;
+      $('#resident-qr-stage').replaceChildren();
       try {
-        await api(`/api/resident/bills/${encodeURIComponent(billId)}/slip`, { method: 'POST', body: new FormData(form) });
+        const uploadData = new FormData(form);
+        slipInput.disabled = true;
+        const result = await api(`/api/resident/bills/${encodeURIComponent(billId)}/slip`, { method: 'POST', body: uploadData });
+        if (String(result?.bill_id) !== String(billId) || !['pending', 'verified', 'rejected'].includes(result?.status)) throw new ApiError('ยังยืนยันผลการส่งสลิปไม่ได้', 0, { code: 'MUTATION_OUTCOME_UNKNOWN' });
+        uncertainPaymentBills.delete(String(billId));
         form.reset();
-        toast('ส่งสลิปแล้ว ระบบกำลังตรวจสอบ');
+        toast(result.status === 'verified' ? 'ชำระสำเร็จแล้ว ไม่ต้องโอนซ้ำ' : result.status === 'rejected' ? 'สลิปไม่ผ่าน กรุณาดูเหตุผลและติดต่อผู้ดูแลก่อนโอนซ้ำ' : 'รับสลิปแล้ว รอผลตรวจ ไม่ต้องส่งหรือโอนซ้ำ', result.status === 'rejected' ? 'error' : 'success');
         if (String(state.currentBillId) === String(billId)) await Promise.all([openBill(billId), loadAll()]);
         else await loadAll();
-      } catch (errorValue) { showFormError(error, errorMessage(errorValue));showSlipLineFallback(state.lineFallback); }
-      finally { setBusy(button, false); setDialogBusy(billDialog, false); }
+      } catch (errorValue) {
+        const ambiguous = !errorValue.status || errorValue.status >= 500 || ['MUTATION_OUTCOME_UNKNOWN', 'INVALID_RESPONSE', 'RESPONSE_TOO_LARGE'].includes(errorValue.details?.code);
+        if (ambiguous) uncertainPaymentBills.add(String(billId));
+        else if (!wasUncertain) uncertainPaymentBills.delete(String(billId));
+        const bill = await openBill(billId, { preserveSlip: true });
+        await loadAll();
+        if (!bill) billDetailLoadingMessage.textContent += ' · ยังยืนยันผลการส่งสลิปไม่ได้ ห้ามโอนซ้ำ';
+        else if (!['pending', 'verified'].includes(bill.payment?.status)) {
+          showFormError(error, `${errorMessage(errorValue)} หากโอนแล้วไม่ต้องโอนซ้ำ`);
+          showSlipLineFallback(state.lineFallback);
+        }
+      }
+      finally { slipInput.disabled = false; setBusy(button, false); setDialogBusy(billDialog, false); }
     });
     const initialHash = location.hash.replace('#', '');
     const initialView = ['bills', 'profile'].includes(initialHash) ? initialHash : 'dashboard';
@@ -1719,8 +1781,8 @@
       loaded: new Set(), meterController: null, billController: null, bookingController: null, paymentController: null,
       meterListReady: false, meterSaving: false, meterDrafts: new Map(), meterErrors: new Map(), meterReturnPeriod: null,
       meterPeriod: '', billPeriod: '', billingSettingsAvailable: false, billPreview: null,
-      bookingOffset: 0, bookingHasMore: false, bookingPendingCount: 0, paymentOffset: 0, paymentHasMore: false,
-      paymentPendingCount: 0, overviewController: null,
+      bookingOffset: 0, bookingHasMore: false, bookingPendingCount: 0, bookingListReady: false, paymentOffset: 0, paymentHasMore: false,
+      paymentPendingCount: 0, paymentListReady: false, paymentActionBusy: false, userListReady: false, userController: null, overviewController: null,
     };
     const role = body.dataset.userRole || 'admin';
     const titles = { overview: 'ภาพรวม', rooms: 'ห้องพัก', bookings: 'การจอง', residents: 'ผู้พักอาศัย', meters: 'จดมิเตอร์', bills: 'ใบแจ้งหนี้', payments: 'การชำระเงิน', users: 'ผู้ดูแลระบบ', settings: 'ตั้งค่า', 'line-oas': 'บัญชี LINE OA', 'line-bindings': 'การผูก LINE ผู้พัก' };
@@ -1961,7 +2023,7 @@
       values.monthly_rent = number(values.monthly_rent); values.amenities = String(values.amenities || '').split(',').map((item) => item.trim()).filter(Boolean);
       const button = form.querySelector('[type="submit"]'); if (!beginDialogSave(form)) return; setBusy(button, true, 'กำลังบันทึก…');
       try { await api(id ? `/api/admin/rooms/${encodeURIComponent(id)}` : '/api/admin/rooms', { method: id ? 'PUT' : 'POST', body: values }); finishDialogSave(form); form.reset(); closeDialog($('#room-dialog')); toast('บันทึกห้องแล้ว'); loadRooms(); }
-      catch (requestError) { showFormError(error, errorMessage(requestError)); } finally { finishDialogSave(form); setBusy(button, false); }
+      catch (requestError) { showFormError(error, requestError); } finally { finishDialogSave(form); setBusy(button, false); }
     });
 
     const setStat = (selector, value) => { const node = $(selector); if (node) node.textContent = String(value); };
@@ -2018,7 +2080,13 @@
       $('#booking-load-more').hidden = !state.bookingHasMore;
     }
     async function loadBookings(append = false) {
-      if (!append) { state.bookingOffset = 0; state.bookingHasMore = false; setTableState($('#booking-state'), 'loading'); }
+      if (append && (!state.bookingListReady || state.bookingController || !state.bookingHasMore)) return;
+      const rows = $('#booking-rows'); rows.setAttribute('inert', ''); rows.setAttribute('aria-busy', 'true');
+      if (!append) {
+        state.bookingListReady = false; state.bookings = []; rows.replaceChildren();
+        state.bookingOffset = 0; state.bookingHasMore = false; $('#booking-load-more').hidden = true;
+        setTableState($('#booking-state'), 'loading');
+      }
       state.bookingController?.abort(); const controller = new AbortController(); state.bookingController = controller;
       const filter = $('#booking-status-filter').value;
       const query = new URLSearchParams({ offset: String(append ? state.bookingOffset : 0), limit: '100' });
@@ -2027,14 +2095,23 @@
       try {
         const data = await api(`/api/admin/bookings?${query}`, { signal: controller.signal });
         if (state.bookingController !== controller || $('#booking-status-filter').value !== filter) return;
+        if (!Array.isArray(data?.items) || typeof data.has_more !== 'boolean' || !Number.isInteger(data.next_offset) || !Number.isInteger(data.pending_count)) throw new ApiError('ข้อมูลการจองไม่ครบ กรุณาโหลดรายการใหม่');
         const items = listFrom(data, 'bookings');
         state.bookings = append ? [...state.bookings, ...items.filter((item) => !state.bookings.some((current) => String(current.id) === String(item.id)))] : items;
         state.bookingOffset = Number(data?.next_offset) || state.bookings.length;
         state.bookingHasMore = data?.has_more === true;
         state.bookingPendingCount = Math.max(0, Number(data?.pending_count) || 0);
-        state.loaded.add('bookings'); renderBookings();
-      } catch (error) { if (error?.name !== 'AbortError') { if (!append) setTableState($('#booking-state'), 'error', errorMessage(error)); else toast(errorMessage(error), 'error'); } }
-      finally { if (state.bookingController === controller) state.bookingController = null; if (append) setBusy(more, false); }
+        state.bookingListReady = true; state.loaded.add('bookings'); renderBookings();
+      } catch (error) {
+        if (state.bookingController !== controller || $('#booking-status-filter').value !== filter) return;
+        if (error?.name !== 'AbortError') { if (!append) setTableState($('#booking-state'), 'error', errorMessage(error)); else toast(errorMessage(error), 'error'); }
+      } finally {
+        if (state.bookingController === controller) {
+          state.bookingController = null; rows.setAttribute('aria-busy', 'false');
+          if (state.bookingListReady) rows.removeAttribute('inert');
+          setBusy(more, false);
+        }
+      }
     }
     async function refreshBookingPendingCount() {
       try {
@@ -2050,7 +2127,8 @@
     $('#booking-status-filter').addEventListener('change', () => loadBookings(false));
     $('#booking-load-more').addEventListener('click', () => loadBookings(true));
     $('#booking-rows').addEventListener('click', async (event) => {
-      const button = event.target.closest('[data-action]'); if (!button) return; const booking = state.bookings.find((item) => String(item.id) === button.dataset.id); if (!booking) return;
+      if (!state.bookingListReady || state.bookingController || state.bookingActionBusy) return;
+      const button = event.target.closest('[data-action]'); if (!button || button.disabled) return; const booking = state.bookings.find((item) => String(item.id) === button.dataset.id); if (!booking) return;
       if (button.dataset.action === 'move-in') {
         const form = $('#move-in-form'); form.reset(); form.elements.booking_id.value = booking.id;
         form.elements.move_in_date.min = businessIsoDateFromValue(booking.created_at) || isoDateOffsetDays(-31);
@@ -2071,8 +2149,15 @@
       if (button.dataset.action === 'confirm-booking') {
         const reference = text(booking.reference_no || booking.reference || booking.booking_reference || booking.id);
         const roomCode = text(booking.room_code || booking.room?.room_code);
-        if (!await confirmAction('ยืนยันการจอง', `ยืนยันเลขที่ ${reference} ของ ${text(booking.full_name)} สำหรับห้อง ${roomCode} หรือไม่?`, 'ยืนยันการจอง', false)) return;
-        try { await api(`/api/admin/bookings/${encodeURIComponent(booking.id)}/confirm`, { method: 'POST', body: {} }); toast('ยืนยันการจองแล้ว'); await Promise.all([loadBookings(), loadRooms()]); } catch (error) { toast(errorMessage(error), 'error'); if (error?.details?.code === 'BOOKING_EXPIRED') await Promise.all([loadBookings(), loadRooms()]); }
+        state.bookingActionBusy = true;
+        try {
+          if (!await confirmAction('ยืนยันการจอง', `ยืนยันเลขที่ ${reference} ของ ${text(booking.full_name)} สำหรับห้อง ${roomCode} หรือไม่?`, 'ยืนยันการจอง', false)) return;
+          if (!state.bookingListReady || state.bookingController || !state.bookings.includes(booking)) return;
+          setBusy(button, true, 'กำลังยืนยัน…');
+          await api(`/api/admin/bookings/${encodeURIComponent(booking.id)}/confirm`, { method: 'POST', body: {} });
+          toast('ยืนยันการจองแล้ว'); await Promise.all([loadBookings(), loadRooms()]);
+        } catch (error) { toast(`${errorMessage(error)} ตรวจสถานะการจองล่าสุดก่อนทำซ้ำ`, 'error'); await Promise.all([loadBookings(), loadRooms()]); }
+        finally { state.bookingActionBusy = false; setBusy(button, false); }
       }
       if (button.dataset.action === 'cancel-booking') {
         const form = $('#booking-cancel-form'); form.reset(); form.elements.booking_id.value = booking.id;
@@ -2083,29 +2168,34 @@
     $('#booking-cancel-form').addEventListener('submit', async (event) => {
       event.preventDefault();
       const form = event.currentTarget; const error = $('#booking-cancel-error'); showFormError(error);
+      if (form.dataset.submitting === 'true') return;
       if (!form.reportValidity()) return;
       const id = form.elements.booking_id.value; const reason = String(form.elements.reason.value || '').trim();
-      const button = form.querySelector('[type="submit"]'); setBusy(button, true, 'กำลังยกเลิก…');
+      const button = form.querySelector('[type="submit"]'); if (!beginDialogSave(form)) return; setBusy(button, true, 'กำลังยกเลิก…');
+      let released = false;
+      const release = () => { if (released) return; released = true; finishDialogSave(form); setBusy(button, false); };
       try {
         await api(`/api/admin/bookings/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: reason ? { reason } : {} });
-        closeDialog($('#booking-cancel-dialog')); form.reset(); toast('ยกเลิกการจองแล้ว');
+        release(); closeDialog($('#booking-cancel-dialog')); form.reset(); toast('ยกเลิกการจองแล้ว');
         await Promise.all([loadBookings(), loadRooms()]);
-      } catch (requestError) { showFormError(error, errorMessage(requestError)); }
-      finally { setBusy(button, false); }
+      } catch (requestError) { showFormError(error, requestError); }
+      finally { release(); }
     });
     $('#move-in-form').addEventListener('submit', async (event) => {
-      event.preventDefault(); const form = event.currentTarget; const error = $('#move-in-error'); showFormError(error); if (!form.reportValidity()) return;
+      event.preventDefault(); const form = event.currentTarget;
+      if (form.dataset.submitting === 'true') return;
+      const error = $('#move-in-error'); showFormError(error); if (!form.reportValidity()) return;
       const values = Object.fromEntries(new FormData(form).entries());
       const id = values.booking_id; delete values.booking_id;
       const summary = $('#move-in-summary').textContent;
       const dialog = $('#move-in-dialog');
       const button = form.querySelector('[type="submit"]'); setBusy(button, true, 'กำลังรับเข้าพัก…');
-      setDialogBusy(dialog, true);
+      if (!beginDialogSave(form)) return;
       let busyReleased = false;
       const releaseBusy = () => {
         if (busyReleased) return;
         busyReleased = true;
-        setDialogBusy(dialog, false); setBusy(button, false);
+        finishDialogSave(form); setBusy(button, false);
       };
       try {
         const result = await api(`/api/admin/bookings/${encodeURIComponent(id)}/move-in`, { method: 'POST', body: values });
@@ -2117,12 +2207,13 @@
         await Promise.all([loadBookings(), loadRooms()]);
       }
       catch (requestError) {
+        releaseBusy();
         if (requestError?.details?.code === 'RESIDENT_REUSE_CONFIRMATION_REQUIRED') {
           const reuseInput = form.elements.reuse_resident_id; reuseInput.value = String(requestError.details.resident_id || ''); reuseInput.disabled = false; reuseInput.required = true;
           $('#move-in-reuse-label').textContent = `ยืนยันว่า ${text(requestError.details.resident_name)} เป็นบุคคลเดิมและอนุญาตให้เชื่อมประวัติบิล`;
           $('#move-in-reuse-field').hidden = false; $('#move-in-reuse-help').hidden = false; reuseInput.focus();
         }
-        showFormError(error, errorMessage(requestError));
+        showFormError(error, requestError);
       } finally { releaseBusy(); }
     });
 
@@ -2250,7 +2341,7 @@
         if (['ROOM_NOT_AVAILABLE', 'ROOM_OCCUPIED', 'ROOM_DELETED'].includes(requestError?.details?.code)) {
           await loadRooms(); populateResidentCreateRooms(values.room_id);
         }
-        showFormError(error, errorMessage(requestError));
+        showFormError(error, requestError);
       } finally {
         releaseBusy();
       }
@@ -2326,7 +2417,7 @@
         toast('บันทึกเลขมิเตอร์เริ่มต้นแล้ว สามารถจดมิเตอร์และตรวจบิลได้');
         await loadResidents();
       } catch (requestError) {
-        showFormError(error, errorMessage(requestError));
+        showFormError(error, requestError);
       } finally { releaseBusy(); }
     });
     $('#resident-edit-form').addEventListener('submit', async (event) => {
@@ -2353,17 +2444,21 @@
         if (updated?.resident_access) showResidentAccess(updated, summary);
         toast(updated?.sessions_revoked ? 'บันทึกแล้ว ยกเลิกเซสชันเดิม ลูกบ้านเข้าใช้งานด้วยเบอร์ใหม่' : 'บันทึกข้อมูลผู้พักแล้ว');
         await loadResidents();
-      } catch (requestError) { showFormError(error, errorMessage(requestError)); } finally { releaseBusy(); }
+      } catch (requestError) { showFormError(error, requestError); } finally { releaseBusy(); }
     });
     $('#resident-move-out-form').addEventListener('submit', async (event) => {
-      event.preventDefault(); const form = event.currentTarget; const error = $('#resident-move-out-error'); showFormError(error); if (!form.reportValidity()) return;
+      event.preventDefault(); const form = event.currentTarget;
+      if (form.dataset.submitting === 'true') return;
+      const error = $('#resident-move-out-error'); showFormError(error); if (!form.reportValidity()) return;
       const values = Object.fromEntries(new FormData(form).entries());
-      const button = form.querySelector('[type="submit"]'); setBusy(button, true, 'กำลังย้ายออก…');
+      const button = form.querySelector('[type="submit"]'); if (!beginDialogSave(form)) return; setBusy(button, true, 'กำลังย้ายออก…');
+      let released = false;
+      const release = () => { if (released) return; released = true; finishDialogSave(form); setBusy(button, false); };
       try {
         await api(`/api/admin/residents/${encodeURIComponent(values.resident_id)}/move-out`, { method: 'POST', body: { move_out_date: values.move_out_date } });
-        closeDialog($('#resident-move-out-dialog')); form.reset(); toast('ย้ายผู้พักออกและเปิดห้องว่างแล้ว');
+        release(); closeDialog($('#resident-move-out-dialog')); form.reset(); toast('ย้ายผู้พักออกและเปิดห้องว่างแล้ว');
         await Promise.all([loadResidents(), loadRooms(), loadBills(), loadPayments()]);
-      } catch (requestError) { showFormError(error, errorMessage(requestError)); } finally { setBusy(button, false); }
+      } catch (requestError) { showFormError(error, requestError); } finally { release(); }
     });
     const meterHasPendingOpening = (m) => m.opening_readings_pending === true || m.water_lock_reason === 'opening_readings_pending' || m.electric_lock_reason === 'opening_readings_pending';
     const meterIsComplete = (m) => !meterHasPendingOpening(m) && ['water','electric'].every(t => m[`${t}_current`] !== null && m[`${t}_current`] !== undefined && m[`${t}_current`] !== '' && !['history_gap','occupancy_mismatch','baseline_mismatch','ambiguous_occupancy'].includes(m[`${t}_lock_reason`]));
@@ -3178,7 +3273,14 @@
       const more = $('#payment-load-more'); more.hidden = !state.paymentHasMore; more.disabled = false;
     }
     async function loadPayments(append = false) {
-      if (!append) { state.paymentOffset = 0; state.paymentHasMore = false; setTableState($('#payment-state'), 'loading'); }
+      if (append && (!state.paymentListReady || state.paymentController || !state.paymentHasMore)) return;
+      const rows = $('#payment-rows');
+      rows.setAttribute('inert', ''); rows.setAttribute('aria-busy', 'true');
+      if (!append) {
+        state.paymentListReady = false; state.payments = []; rows.replaceChildren();
+        state.paymentOffset = 0; state.paymentHasMore = false; $('#payment-load-more').hidden = true;
+        setTableState($('#payment-state'), 'loading');
+      }
       state.paymentController?.abort(); const controller = new AbortController(); state.paymentController = controller;
       const filter = $('#payment-status-filter').value;
       const query = new URLSearchParams({ offset: String(append ? state.paymentOffset : 0), limit: '100' });
@@ -3187,49 +3289,95 @@
       try {
         const data = await api(`/api/admin/payments?${query}`, { signal: controller.signal });
         if (state.paymentController !== controller || $('#payment-status-filter').value !== filter) return;
+        if (!Array.isArray(data?.items) || typeof data.has_more !== 'boolean' || !Number.isInteger(data.next_offset) || !Number.isInteger(data.pending_count)) throw new ApiError('ข้อมูลรายการชำระไม่ครบ กรุณารีเฟรชอีกครั้ง');
         const items = listFrom(data, 'payments');
         state.payments = append ? [...state.payments, ...items.filter((item) => !state.payments.some((current) => String(current.id) === String(item.id)))] : items;
         state.paymentOffset = Number(data?.next_offset) || state.payments.length;
         state.paymentHasMore = data?.has_more === true;
         state.paymentPendingCount = Math.max(0, Number(data?.pending_count) || 0);
-        state.loaded.add('payments'); renderPayments();
-      } catch (error) { if (error?.name !== 'AbortError') { if (!append) setTableState($('#payment-state'), 'error', errorMessage(error)); else toast(errorMessage(error), 'error'); } }
-      finally { if (state.paymentController === controller) state.paymentController = null; if (append) setBusy(more, false); }
+        state.paymentListReady = true; state.loaded.add('payments'); renderPayments();
+      } catch (error) {
+        if (state.paymentController !== controller || $('#payment-status-filter').value !== filter) return;
+        if (error?.name !== 'AbortError') { if (!append) setTableState($('#payment-state'), 'error', errorMessage(error)); else toast(errorMessage(error), 'error'); }
+      } finally {
+        if (state.paymentController === controller) {
+          state.paymentController = null; rows.setAttribute('aria-busy', 'false');
+          if (state.paymentListReady) rows.removeAttribute('inert');
+          setBusy(more, false);
+        }
+      }
     }
     loaders.payments = loadPayments; $('#payment-status-filter').addEventListener('change', () => loadPayments(false)); $('#payment-load-more').addEventListener('click', () => loadPayments(true));
     $('#payment-rows').addEventListener('click', async (event) => {
+      if (!state.paymentListReady || state.paymentController || state.paymentActionBusy || $('#payment-close-form').dataset.submitting === 'true') return;
       const button = event.target.closest('[data-action]'); if (!button) return;
       const payment = state.payments.find((item) => String(item.id) === button.dataset.id); if (!payment) return;
+      if (payment.status !== 'pending' || payment.verifying) return;
       const summary = `${text(payment.bill_no || payment.bill?.bill_no)} · ห้อง ${text(payment.room_code || payment.bill?.room_code)} · ${money(payment.amount)}`;
       if (button.dataset.action === 'close-payment') {
         const form = $('#payment-close-form'); form.reset(); form.elements.payment_id.value = payment.id;
         $('#payment-close-summary').textContent = summary; showFormError($('#payment-close-error')); openDialog($('#payment-close-dialog')); return;
       }
       if (button.dataset.action === 'retry-payment') {
-        if (!await confirmAction('ตรวจสลิปซ้ำ', `ส่งหลักฐานของ ${summary} ไปตรวจซ้ำกับผู้ให้บริการหรือไม่? อาจใช้โควตา API`, 'ตรวจซ้ำ', false)) return;
-        setBusy(button, true, 'กำลังตรวจ…');
+        state.paymentActionBusy = true;
         try {
+          if (!await confirmAction('ตรวจสลิปซ้ำ', `ส่งหลักฐานของ ${summary} ไปตรวจซ้ำกับผู้ให้บริการหรือไม่? อาจใช้โควตา API`, 'ตรวจซ้ำ', false)) return;
+          if (!state.paymentListReady || state.paymentController || !state.payments.some((item) => item.id === payment.id && item.status === 'pending' && !item.verifying)) return;
+          setBusy(button, true, 'กำลังตรวจ…');
           const result = await api(`/api/admin/payments/${encodeURIComponent(payment.id)}/retry`, { method: 'POST', body: {} });
           const status = result?.status;
           toast(status === 'verified' ? 'ตรวจผ่านและอัปเดตบิลเป็นชำระแล้ว' : (status === 'rejected' ? 'ตรวจแล้วไม่ผ่าน ดูเหตุผลในรายการ' : 'ผู้ให้บริการยังไม่ให้ผลสุดท้าย ระบบคงรายการไว้ให้ตรวจซ้ำ'));
           await Promise.all([loadPayments(), loadBills()]);
-        } catch (requestError) { toast(errorMessage(requestError), 'error'); } finally { setBusy(button, false); }
+        } catch (requestError) { toast(`${errorMessage(requestError)} กรุณาตรวจสถานะก่อนทำซ้ำ`, 'error'); await loadPayments(); } finally { state.paymentActionBusy = false; setBusy(button, false); }
       }
     });
     $('#payment-close-form').addEventListener('submit', async (event) => {
-      event.preventDefault(); const form = event.currentTarget; const error = $('#payment-close-error'); showFormError(error); if (!form.reportValidity()) return;
-      const values = Object.fromEntries(new FormData(form).entries()); const button = form.querySelector('[type="submit"]'); setBusy(button, true, 'กำลังปิด…');
+      event.preventDefault(); const form = event.currentTarget;
+      if (form.dataset.submitting === 'true') return;
+      const error = $('#payment-close-error'); showFormError(error); if (!form.reportValidity()) return;
+      const values = Object.fromEntries(new FormData(form).entries()); const button = form.querySelector('[type="submit"]');
+      if (!beginDialogSave(form)) return;
+      setBusy(button, true, 'กำลังปิด…');
+      let released = false;
+      const release = () => { if (released) return; released = true; finishDialogSave(form); setBusy(button, false); };
       try {
         await api(`/api/admin/payments/${encodeURIComponent(values.payment_id)}/close`, { method: 'POST', body: { reason: values.reason } });
-        closeDialog($('#payment-close-dialog')); form.reset(); toast('ปิดรายการถาวรแล้ว หากผู้พักโอนเงินจริงแล้ว ให้ตรวจยอดก่อนโอนซ้ำ'); await Promise.all([loadPayments(), loadBills()]);
-      } catch (requestError) { showFormError(error, errorMessage(requestError)); } finally { setBusy(button, false); }
+        release(); closeDialog($('#payment-close-dialog')); form.reset(); toast('ปิดรายการถาวรแล้ว หากผู้พักโอนเงินจริงแล้ว ให้ตรวจยอดก่อนโอนซ้ำ'); await Promise.all([loadPayments(), loadBills()]);
+      } catch (requestError) { showFormError(error, `${errorMessage(requestError)} กรุณาตรวจสถานะก่อนทำซ้ำ`); await loadPayments(); } finally { release(); }
     });
     function renderUsers() { const rows = $('#user-rows'); rows.replaceChildren(); state.users.forEach((user) => { const tr = create('tr'); const status = user.is_active === false || user.is_active === 0 ? 'inactive' : 'active'; const actions = [actionButton('แก้ไข', 'edit-user', user.id, 'button-ghost', `แก้ไขผู้ดูแล ${text(user.username)}`)]; if (status === 'active') actions.push(actionButton('ปิดใช้งาน', 'delete-user', user.id, 'button-danger-text', `ปิดใช้งานผู้ดูแล ${text(user.username)}`)); tr.append(td(text(user.username)), td(text(user.role === 'owner' ? 'เจ้าของ' : 'ผู้ดูแล')), td(pill(status)), td(formatDate(user.updated_at)), td(rowActions(...actions), 'align-right')); rows.append(tr); }); setTableState($('#user-state'), state.users.length ? 'ready' : 'empty', 'ยังไม่มีบัญชีผู้ดูแล'); }
-    async function loadUsers() { if (role !== 'owner') return; setTableState($('#user-state'), 'loading'); try { const data = await api('/api/admin/users'); state.users = listFrom(data, 'users'); state.loaded.add('users'); renderUsers(); } catch (error) { setTableState($('#user-state'), 'error', errorMessage(error)); } }
+    async function loadUsers() {
+      if (role !== 'owner') return;
+      state.userController?.abort(); const controller = new AbortController(); state.userController = controller;
+      const rows = $('#user-rows'); state.userListReady = false; state.users = []; rows.replaceChildren(); rows.setAttribute('inert', '');
+      setTableState($('#user-state'), 'loading');
+      try {
+        const data = await api('/api/admin/users', {signal:controller.signal});
+        if (state.userController !== controller) return;
+        if (!Array.isArray(data) && !Array.isArray(data?.users) && !Array.isArray(data?.items)) throw new ApiError('ข้อมูลผู้ดูแลไม่ครบ กรุณาโหลดรายการใหม่');
+        state.users = listFrom(data, 'users'); state.userListReady = true; state.loaded.add('users'); renderUsers(); rows.removeAttribute('inert');
+      } catch (error) { if (state.userController === controller && error?.name !== 'AbortError') setTableState($('#user-state'), 'error', errorMessage(error)); }
+      finally { if (state.userController === controller) state.userController = null; }
+    }
     loaders.users = loadUsers;
     function openUserForm(user = null) { const form = $('#user-form'); if (form.dataset.submitting === 'true') return; form.reset(); showFormError($('#user-form-error')); form.elements.id.value = user?.id || ''; form.elements.username.value = user?.username || ''; form.elements.role.value = user?.role || 'admin'; form.elements.is_active.checked = user ? !(user.is_active === false || user.is_active === 0) : true; form.elements.password.required = !user; $('#user-dialog-title').textContent = user ? `แก้ไข ${text(user.username)}` : 'เพิ่มผู้ดูแล'; $('#user-password-help').textContent = user ? 'เว้นว่างหากไม่ต้องการเปลี่ยนรหัสผ่าน' : 'อย่างน้อย 12 ตัวอักษร'; rememberDialogDraft(form); openDialog($('#user-dialog')); }
     $('[data-open-user-dialog]')?.addEventListener('click', () => openUserForm());
-    $('#user-rows').addEventListener('click', async (event) => { const button = event.target.closest('[data-action]'); if (!button) return; const user = state.users.find((item) => String(item.id) === button.dataset.id); if (!user) return; if (button.dataset.action === 'edit-user') openUserForm(user); if (button.dataset.action === 'delete-user' && await confirmAction('ปิดใช้งานผู้ดูแล', `ปิดบัญชี ${text(user.username)} ไม่ให้เข้าสู่ระบบอีกหรือไม่?`)) { try { await api(`/api/admin/users/${encodeURIComponent(user.id)}`, { method: 'DELETE', body: {} }); toast('ปิดใช้งานผู้ดูแลแล้ว'); loadUsers(); } catch (error) { toast(errorMessage(error), 'error'); } } });
+    $('#user-rows').addEventListener('click', async (event) => {
+      const button = event.target.closest('[data-action]');
+      if (!button || button.disabled || !state.userListReady || state.userController || state.userActionBusy) return;
+      const user = state.users.find((item) => String(item.id) === button.dataset.id); if (!user) return;
+      if (button.dataset.action === 'edit-user') { openUserForm(user); return; }
+      if (button.dataset.action !== 'delete-user') return;
+      state.userActionBusy = true;
+      try {
+        if (!await confirmAction('ปิดใช้งานผู้ดูแล', `ปิดบัญชี ${text(user.username)} ไม่ให้เข้าสู่ระบบอีกหรือไม่?`)) return;
+        if (!state.userListReady || state.userController || !state.users.includes(user)) return;
+        setBusy(button, true, 'กำลังปิดบัญชี…');
+        await api(`/api/admin/users/${encodeURIComponent(user.id)}`, { method: 'DELETE', body: {} });
+        toast('ปิดใช้งานผู้ดูแลแล้ว'); await loadUsers();
+      } catch (error) { toast(`${errorMessage(error)} ตรวจรายการล่าสุดก่อนทำซ้ำ`, 'error'); await loadUsers(); }
+      finally { state.userActionBusy = false; setBusy(button, false); }
+    });
     $('#user-form').addEventListener('submit', async (event) => {
       event.preventDefault(); const form = event.currentTarget;
       if (form.dataset.submitting === 'true') return;
@@ -3243,13 +3391,13 @@
         await api(id ? `/api/admin/users/${encodeURIComponent(id)}` : '/api/admin/users', { method: id ? 'PUT' : 'POST', body: values });
         finishDialogSave(form); form.reset(); closeDialog($('#user-dialog'));
         toast('บันทึกผู้ดูแลแล้ว'); loadUsers();
-      } catch (requestError) { showFormError(error, errorMessage(requestError)); }
+      } catch (requestError) { showFormError(error, requestError); }
       finally { finishDialogSave(form); setBusy(button, false); }
     });
 
     billingSettingsForm?.addEventListener('input', () => { billingSettingsForm.dataset.dirty = 'true'; });
     billingSettingsForm?.addEventListener('change', () => { billingSettingsForm.dataset.dirty = 'true'; });
-    billingSettingsForm?.addEventListener('submit', async (event) => { event.preventDefault(); const form = event.currentTarget; const error = $('#settings-error'); showFormError(error); if (settingsSaveInProgress || !form.reportValidity()) return; const values = Object.fromEntries(new FormData(form).entries()); values.water_rate = number(values.water_rate); values.electric_rate = number(values.electric_rate); values.due_days = Number(values.due_days); const button = form.querySelector('[type="submit"]'); settingsSaveInProgress = true; setFormFieldsBusy(form, true); setBusy(button, true, 'กำลังบันทึก…'); try { const data = await api('/api/admin/settings', { method: 'PUT', body: values }); ++settingsLoadGeneration; state.settings = { ...state.settings, ...objectFrom(data, 'settings') }; state.billingSettingsAvailable = true; renderBillingSettings(state.settings); renderBillDefaults(); invalidateBillPreview(); applyBillingReadiness(); toast('ยืนยันและบันทึกการตั้งค่าแล้ว'); } catch (requestError) { showFormError(error, errorMessage(requestError)); } finally { settingsSaveInProgress = false; setFormFieldsBusy(form, false); setBusy(button, false); } });
+    billingSettingsForm?.addEventListener('submit', async (event) => { event.preventDefault(); const form = event.currentTarget; const error = $('#settings-error'); showFormError(error); if (settingsSaveInProgress || !form.reportValidity()) return; const values = Object.fromEntries(new FormData(form).entries()); values.water_rate = number(values.water_rate); values.electric_rate = number(values.electric_rate); values.due_days = Number(values.due_days); const button = form.querySelector('[type="submit"]'); settingsSaveInProgress = true; setFormFieldsBusy(form, true); setBusy(button, true, 'กำลังบันทึก…'); try { const data = await api('/api/admin/settings', { method: 'PUT', body: values }); ++settingsLoadGeneration; state.settings = { ...state.settings, ...objectFrom(data, 'settings') }; state.billingSettingsAvailable = true; renderBillingSettings(state.settings); renderBillDefaults(); invalidateBillPreview(); applyBillingReadiness(); toast('ยืนยันและบันทึกการตั้งค่าแล้ว'); } catch (requestError) { showFormError(error, requestError); } finally { settingsSaveInProgress = false; setFormFieldsBusy(form, false); setBusy(button, false); } });
     integrationSettingsForm?.addEventListener('input', (event) => {
       const target = event.target;
       if (target instanceof HTMLInputElement && ['line_channel_access_token', 'line_channel_secret', 'slipok_api_key', 'easyslip_api_key'].includes(target.name) && target.value !== '') {
@@ -3292,7 +3440,7 @@
         toast('บันทึกการเชื่อมต่อแล้ว');
       } catch (requestError) {
         clearPromptPayTestQr();
-        showFormError(error, errorMessage(requestError));
+        showFormError(error, requestError);
       } finally { settingsSaveInProgress = false; setFormFieldsBusy(form, false); setBusy(button, false); }
     });
     $$('[data-test-integration]').forEach((button) => button.addEventListener('click', async () => {
@@ -3499,6 +3647,17 @@
     loaders.overview = loadOverview;
     $$('[data-overview-jump]').forEach((button) => button.addEventListener('click', () => switchView(button.dataset.overviewJump)));
 
+    doc.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-recovery-view]');
+      if (!button || !Object.hasOwn(titles, button.dataset.recoveryView)) return;
+      const dialog = button.closest('dialog');
+      if (dialog) {
+        if (dialogCloseBlocked(dialog)) { toast('กรุณารอให้การบันทึกสิ้นสุดก่อน', 'error'); return; }
+        if (!window.confirm('ไปหน้าที่ช่วยแก้ปัญหาหรือไม่? หน้าต่างนี้จะปิด กรุณาจดข้อมูลที่ยังไม่บันทึกไว้ก่อน')) return;
+        if (!closeDialog(dialog)) return;
+      }
+      switchView(button.dataset.recoveryView, true);
+    });
     $$('[data-admin-nav]').forEach((button) => button.addEventListener('click', () => switchView(button.dataset.adminNav)));
     $$('[data-refresh]').forEach((button) => button.addEventListener('click', () => switchView(button.dataset.refresh, true)));
     menuToggles.forEach((toggle) => toggle.addEventListener('click', () => {

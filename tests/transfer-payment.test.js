@@ -2,6 +2,20 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const context={window:{}};vm.createContext(context);vm.runInContext(fs.readFileSync('public/assets/js/transfer-payment.js','utf8'),context);
 const helper=context.window.DormTransferPayment;
+test('unresolved upload marker survives a reload and clears only after reconciliation',()=>{
+ const saved=new Map();context.window.sessionStorage={getItem:key=>saved.get(key),setItem:(key,value)=>saved.set(key,value)};
+ const first=helper.recoveryStore();first.add('7');assert.equal(helper.recoveryStore().has('7'),true);
+ helper.recoveryStore().delete('7');assert.equal(helper.recoveryStore().has('7'),false);
+});
+test('unavailable browser storage retains an in-memory recovery guard',()=>{
+ context.window.sessionStorage={getItem(){throw new Error('storage disabled');},setItem(){throw new Error('storage disabled');}};
+ const store=helper.recoveryStore();store.add('8');assert.equal(store.has('8'),true);store.delete('8');assert.equal(store.has('8'),false);
+});
+test('malformed recovery storage cannot break payment UI initialization',()=>{
+ for(const value of ['not json','null','{}','[null,{},"not-an-id"]']){
+  context.window.sessionStorage={getItem:()=>value,setItem(){}};assert.equal(helper.recoveryStore().has('7'),false);
+ }
+});
 const instruction={bill_id:4,bill_amount:'100.00',adjustment_amount:'0.25',amount:'100.25',amount_locked:true,payload:'000201TEST6304ABCD'};
 test('exact transfer amount includes the declared cents and is scoped to the requested bill',()=>{assert.equal(helper.validInstruction(instruction,4),true);assert.equal(helper.validInstruction(instruction,5),false);});
 test('zero, out-of-range, ambiguous and inconsistent cents never render as a valid instruction',()=>{
@@ -26,11 +40,11 @@ test('resident payment notices agree with QR availability when verification or r
  const end=source.indexOf("const breakdown = $('#resident-bill-breakdown');",start);
  function render({reservation=true,slip=false,payment=null}={}){
   const nodes=new Map(),$=key=>{if(!nodes.has(key))nodes.set(key,{setAttribute(){}});return nodes.get(key);};
-  const state={};const paymentNotice={setAttribute(){}};
+  const state={};const paymentNotice={setAttribute(){}};let lineShown=false;
   const ctx={promptPayReady:true,slipReady:slip,capabilities:{transfer_reservation_ready:reservation},payment,status:'pending',
-   state,paymentNotice,bill:{},renderTransferSummary(){},showSlipLineFallback(){},$,text:(value,fallback)=>value||fallback};
+   state,paymentNotice,bill:{},uncertainPaymentBills:new Set(),preserveSlip:false,renderTransferSummary(){},showSlipLineFallback(){lineShown=true;},$,text:(value,fallback)=>value||fallback};
   vm.runInNewContext(source.slice(start,end),ctx);
-  return {state,paymentNotice,qrHidden:$('#resident-load-qr').hidden,uploadHidden:$('#resident-slip-form').hidden};
+  return {state,paymentNotice,lineShown,qrHidden:$('#resident-load-qr').hidden,uploadHidden:$('#resident-slip-form').hidden};
  }
  const available=render();assert.equal(available.qrHidden,false);assert.equal(available.uploadHidden,true);
  assert.match(available.paymentNotice.textContent,/ชำระด้วย QR ได้ตามยอดที่ระบุ/);assert.match(available.paymentNotice.textContent,/LINE Bot/);
@@ -38,6 +52,9 @@ test('resident payment notices agree with QR availability when verification or r
  assert.match(unavailable.paymentNotice.textContent,/ยังสร้าง QR ไม่ได้/);assert.doesNotMatch(unavailable.paymentNotice.textContent,/ชำระด้วย QR ได้|migration/);
  const pending=render({payment:{status:'pending'}});assert.equal(pending.qrHidden,true);assert.match(pending.paymentNotice.textContent,/อย่าโอนซ้ำ/);
  assert.equal(render({slip:true}).uploadHidden,false);
+ const providerDown=render({slip:true,payment:{status:'pending'}});
+ assert.equal(providerDown.lineShown,true);assert.equal(providerDown.qrHidden,true);assert.equal(providerDown.uploadHidden,true);
+ assert.match(providerDown.paymentNotice.textContent,/LINE Bot/);
 });
 test('LINE fallback does not submit images, or mark the bill paid, and needs no extra identifier inputs',()=>{
  const source=fs.readFileSync('templates/resident/portal.php','utf8');const part=source.slice(source.indexOf('id="resident-line-slip-fallback"'),source.indexOf('<form class="slip-form"'));
