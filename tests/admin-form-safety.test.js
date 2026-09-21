@@ -45,5 +45,5 @@ test('room loading fences both late results and failures and clears stale cached
 });
 test('bill actions are not ready while the room list is stale or refreshing', () => {
   const ready=extract('function billDataReady()', 'function selectedBillRooms()');
-  assert.ok(ready.includes('state.roomListReady !== false && !state.roomController'));
+  assert.ok(ready.includes('state.billCandidatesReady === true && state.billListAvailable === true && !state.billController'));
 });

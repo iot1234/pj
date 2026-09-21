@@ -2212,19 +2212,12 @@ $test('settings saves fence stale loads and block navigation until completion',f
 });
 
 $test('bill preview invalidates an older token before starting a replacement request',function()use($same):void{
-    $js=file_get_contents(dirname(__DIR__).'/public/assets/js/app.js');
-    if(!is_string($js))throw new RuntimeException('cannot read bill preview source');
-    $previewStart=strpos($js,"$('#preview-bills-button').addEventListener('click'");
-    $previewEnd=$previewStart===false?false:strpos($js,"$('#bill-builder-form').addEventListener('submit'",$previewStart);
-    if($previewStart===false||$previewEnd===false)throw new RuntimeException('cannot isolate bill preview handler');
-    $preview=substr($js,$previewStart,$previewEnd-$previewStart);
-    $validation=strpos($preview,"if (!$('#bill-builder-form').reportValidity() || !payload.room_ids.length)");
-    $invalidate=strpos($preview,'invalidateBillPreview();');
-    $busy=strpos($preview,"setBusy(button, true, 'กำลังคำนวณ…');");
-    $request=strpos($preview,"api('/api/admin/bills/preview'");
-    $same(true,$validation!==false&&$invalidate!==false&&$busy!==false&&$request!==false
-        &&$validation<$invalidate&&$invalidate<$busy&&$busy<$request);
-    $same(1,substr_count($preview,'invalidateBillPreview();'));
+    $source=file_get_contents(dirname(__DIR__).'/public/assets/js/app.js');
+    $start=strpos($source,'async function previewBills(');$end=strpos($source,"$('#preview-bills-button').addEventListener",$start);
+    $block=substr($source,$start,$end-$start);
+    $validate=strpos($block,'form.reportValidity()');$invalidate=strpos($block,'state.billPreview=null');$busy=strpos($block,'state.billWorking=true');$request=strpos($block,"api('/api/admin/bills/preview'");
+    $same(true,$validate!==false&&$invalidate!==false&&$busy!==false&&$request!==false&&$validate<$invalidate&&$invalidate<$busy&&$busy<$request);
+    $same(true,str_contains($block,'billPayloadSignature()!==signature'));
 });
 
 $test('admin bill status and LINE queues honor the deterministic latest payment',function()use($same):void{

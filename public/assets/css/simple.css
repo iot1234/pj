@@ -100,3 +100,20 @@ input[readonly] { cursor: text; background: #f5f7fa; }
   .admin-content .table-scroll.meter-table th:last-child,
   .admin-content .table-scroll.meter-table td:last-child { position: static; right: auto; z-index: auto; box-shadow: none; background: transparent; }
 }
+
+/* ขั้นตอนแก้ไขอยู่กับงานเดิม ใช้ข้อความแทนไอคอน และไม่บังช่องกรอกบนมือถือ */
+.billing-next-steps, .billing-issues, .billing-recovery-context { padding: 1rem; border: 1px solid var(--line); border-radius: 10px; background: #fafbfc; margin-block: .75rem; min-width: 0; }
+.billing-recovery-context { border-color: #aabddd; background: #f4f7fc; }
+.billing-recovery-context.is-error { border-color: #c96a64; }
+.billing-step { padding-block: .75rem; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.billing-step:first-of-type { margin-top: .5rem; }
+.billing-step p { margin: .35rem 0 .6rem; color: var(--ink-soft); max-width: 80ch; line-height: 1.65; }
+.billing-step .button { margin: .15rem .35rem .15rem 0; min-height: 44px; white-space: normal; }
+.billing-recovery-context small { display: block; margin-top: .75rem; color: var(--ink-soft); }
+.guided-focus { outline: 3px solid #426ac5; outline-offset: 4px; scroll-margin-block: 7rem; }
+#bill-clear-extra { justify-self: start; min-height: 44px; }
+@media(max-width: 600px) {
+  .billing-step .button { width: 100%; margin-inline: 0; }
+  .billing-recovery-context .form-actions { flex-wrap: wrap; }
+  .billing-recovery-context .form-actions .button { width: 100%; }
+}

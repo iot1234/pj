@@ -18,6 +18,30 @@ final class BillingService
     {
     }
 
+    /** Rooms are selected by tenancy in the requested month, not current occupancy. */
+    public function roomCandidates(string $period): array
+    {
+        $periodDate = Validator::periodDate($period);
+        $zone = new \DateTimeZone((string)$this->app->config->get('APP_TIMEZONE','Asia/Bangkok'));
+        if ($period > (new \DateTimeImmutable('now',$zone))->format('Y-m')) {
+            throw new HttpException(422,'เลือกรอบเดือนไม่เกินเดือนปัจจุบัน','BILL_PERIOD_INVALID');
+        }
+        $query = $this->app->database()->pdo()->prepare(
+            'SELECT r.id,r.room_code,r.floor,COUNT(o.id) AS occupancy_count,
+                EXISTS(SELECT 1 FROM bills b WHERE b.room_id=r.id AND b.period=?) AS is_billed
+             FROM rooms r JOIN occupancies o ON o.room_id=r.id
+             WHERE o.move_in_date<=LAST_DAY(?) AND (o.move_out_date IS NULL OR o.move_out_date>=?)
+             GROUP BY r.id,r.room_code,r.floor ORDER BY r.floor,r.room_code LIMIT 501'
+        );
+        $query->execute([$periodDate,$periodDate,$periodDate]);
+        $rows = $query->fetchAll();
+        if (count($rows)>500) throw new HttpException(409,'ห้องในงวดนี้เกินขอบเขต 500 ห้อง กรุณาให้ผู้ดูแลตรวจสอบก่อนออกบิล','BILL_BATCH_TOO_LARGE');
+        return ['period'=>$period,'rooms'=>array_map(static fn(array $row):array=>[
+            'id'=>(int)$row['id'],'room_code'=>$row['room_code'],'floor'=>(int)$row['floor'],
+            'occupancy_count'=>(int)$row['occupancy_count'],'is_billed'=>(bool)$row['is_billed'],
+        ],$rows)];
+    }
+
     /** @return array<string,mixed> */
     public function settings(bool $lock = false): array
     {

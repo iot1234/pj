@@ -78,6 +78,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
         </header>
 
         <main class="admin-content" id="main-content" tabindex="-1">
+            <aside class="billing-recovery-context" id="billing-recovery-context" hidden aria-label="กลับไปทำรายการเดิม"><strong>แก้ข้อมูลก่อนออกบิล</strong><p id="billing-recovery-message" role="status"></p><div class="form-actions"><button type="button" class="button button-primary" id="billing-recovery-back">กลับไปตรวจยอด</button><button type="button" class="button button-secondary" id="billing-recovery-retry" hidden>ลองเปิดจุดแก้ไขอีกครั้ง</button></div><small>ร่างอยู่เฉพาะแท็บนี้ ปิดแท็บหรือรีเฟรชอาจทำให้ร่างหาย การเปิดหน้าแก้ไขยังไม่ถือว่าบันทึกสำเร็จ</small></aside>
             <section class="admin-view is-active" data-admin-view="overview" aria-labelledby="overview-title">
                 <div class="section-heading">
                     <div><p class="eyebrow">สรุปสถานะวันนี้</p><h2 id="overview-title">วันนี้ต้องทำอะไรบ้าง</h2><p>กดการ์ดเพื่อไปยังหน้าที่เกี่ยวข้องได้ทันที</p></div>
@@ -192,13 +193,14 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
             <section class="admin-view" data-admin-view="bills" aria-labelledby="bills-title" hidden>
                 <div class="section-heading"><div><p class="eyebrow">ออกเอกสารจากค่ามิเตอร์</p><h2 id="bills-title">ใบแจ้งหนี้</h2></div></div>
                 <form class="panel billing-builder" id="bill-builder-form">
+                    <section class="billing-next-steps" id="billing-next-steps" aria-label="ขั้นตอนก่อนออกบิล"></section>
                     <div class="security-note" id="billing-readiness-note"><strong>ตรวจสอบค่ารายเดือนก่อนออกบิล</strong><span>ระบบกำลังโหลดสถานะจากหน้า “ตั้งค่า”</span></div>
                     <div class="form-grid form-grid-four">
                         <label class="field"><span>รอบเดือน</span><input type="month" name="period" id="bill-period" max="<?= e($maximumBillingPeriod) ?>" required></label>
                         <div class="field"><span>ค่าน้ำ / หน่วย · จากตั้งค่า</span><output class="auto-value" id="bill-water-rate">กำลังโหลด…</output></div>
                         <div class="field"><span>ค่าไฟ / หน่วย · จากตั้งค่า</span><output class="auto-value" id="bill-electric-rate">กำลังโหลด…</output></div>
                         <div class="field"><span>กำหนดชำระ · คำนวณอัตโนมัติ</span><output class="auto-value" id="bill-due-date">กำลังโหลด…</output></div>
-                        <label class="field form-span-two"><span>รายการอื่น (ไม่บังคับ)</span><input type="text" name="other_description" maxlength="120" placeholder="เช่น ค่าทำความสะอาด"></label>
+                        <label class="field form-span-two"><span>ชื่อรายการอื่น (ไม่ใช่ช่องใส่ยอดเงิน)</span><input type="text" name="other_description" maxlength="120" placeholder="เช่น ค่าทำความสะอาด"></label>
                         <label class="field"><span>จำนวนเงินอื่น / ห้อง</span><input type="number" name="other_amount" min="0" step="0.01" value="0"><small>จำนวนนี้จะเพิ่มให้ทุกห้องที่เลือก ไม่ใช่ยอดรวมของทุกห้อง</small></label>
                     </div>
                     <label class="check-field" id="bill-current-period-confirmation" hidden>
@@ -207,7 +209,9 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                     </label>
                     <p class="field-hint" id="bill-current-period-help" hidden>บิลเดือนปัจจุบันเป็นยอดเต็มรอบ ระบบไม่คิดค่าเช่าแบบแบ่งวัน และจะไม่รับการแก้เลขมิเตอร์หลังออกบิลแล้ว</p>
                     <p class="field-hint">ค่าเช่าและเลขมิเตอร์ดึงจากห้อง ค่าน้ำ ค่าไฟ และกำหนดชำระดึงจากการตั้งค่าบนเซิร์ฟเวอร์ ไม่ต้องกรอกซ้ำ เลือกห้องแล้วตรวจยอดก่อนยืนยันทุกครั้ง</p>
+                    <button type="button" class="button button-ghost" id="bill-clear-extra">ไม่คิดรายการอื่น</button>
                     <fieldset class="room-selector"><legend>เลือกห้องที่จะออกบิล</legend><label class="check-field"><input type="checkbox" id="select-all-bill-rooms"><span>เลือกทุกห้อง</span></label><div class="room-check-grid" id="bill-room-options"><span class="muted">เลือกรอบเดือนเพื่อโหลดห้อง</span></div></fieldset>
+                    <section id="bill-recovery-issues" class="billing-issues" aria-label="ปัญหาที่ต้องแก้รายห้อง" hidden></section>
                     <p class="form-error" id="bill-builder-error" role="alert" hidden></p>
                     <div class="form-actions"><button class="button button-secondary" type="button" id="preview-bills-button" disabled>ตรวจยอดก่อน</button><button class="button button-primary" type="submit" id="create-bills-button" disabled>ออกบิลที่เลือก</button></div>
                 </form>

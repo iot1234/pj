@@ -38,6 +38,7 @@ if (!isset($contentTemplate) || !is_string($contentTemplate) || !is_file($conten
     <div class="noscript-notice">หน้านี้ต้องใช้ JavaScript เพื่อโหลดข้อมูลและส่งแบบฟอร์มอย่างปลอดภัย</div>
   </noscript>
   <script src="<?= e($assetUrl('/assets/js/vendor/qrcode.min.js')) ?>" defer></script>
+  <?php if ($pageId === 'admin-console'): ?><script src="<?= e($assetUrl('/assets/js/billing-guidance.js')) ?>" defer></script><?php endif; ?>
   <script src="<?= e($assetUrl('/assets/js/app.js')) ?>" defer></script>
 </body>
 </html>

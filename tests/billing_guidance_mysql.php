@@ -1,0 +1,46 @@
+<?php
+declare(strict_types=1);
+use Dormitory\Http\HttpException;
+use Dormitory\Security\Password;
+if(PHP_SAPI!=='cli'||getenv('APP_ENV')!=='testing'||preg_match('/^appj_[a-z0-9_]+$/D',(string)getenv('DB_DATABASE'))!==1){fwrite(STDERR,"Dedicated testing database required\n");exit(64);}
+$app=require dirname(__DIR__).'/bootstrap.php';$pdo=$app->database()->pdo();
+foreach(['admin_users','rooms','residents','bills']as$table)if((int)$pdo->query("SELECT COUNT(*) FROM {$table}")->fetchColumn()!==0)throw new RuntimeException('Fresh test database required');
+$count=0;$assert=static function(bool $ok,string $name)use(&$count):void{if(!$ok)throw new RuntimeException($name);$count++;fwrite(STDOUT,"PASS {$name}\n");};
+$expect=static function(callable $fn,string $code)use($assert):void{try{$fn();}catch(HttpException $e){$assert($e->errorCode===$code,'Rejected with '.$code);return;}throw new RuntimeException('Expected '.$code);};
+$q=$pdo->prepare("INSERT INTO admin_users(username,password_hash,role,auth_version,active) VALUES('billing_guide_owner',?,'owner',1,1)");$q->execute([Password::hash('Testing-Only-Guide-2026!')]);$owner=(int)$pdo->lastInsertId();
+$now=new DateTimeImmutable('today',new DateTimeZone('Asia/Bangkok'));
+$month=$now->format('Y-m');$prior=$now->modify('first day of this month')->modify('-1 day');
+$earlier=$now->modify('first day of this month')->modify('-2 months')->format('Y-m');
+$room=$app->rooms()->create(['room_code'=>'GUIDE-NEW','floor'=>1,'room_type'=>'test','monthly_rent'=>'3000.00']);
+$previousRoom=$app->rooms()->create(['room_code'=>'GUIDE-PRIOR','floor'=>1,'room_type'=>'test','monthly_rent'=>'3000.00']);
+$app->rooms()->create(['room_code'=>'GUIDE-VACANT','floor'=>1,'room_type'=>'test','monthly_rent'=>'3000.00']);
+foreach([[$room,$now,'0817700001'],[$previousRoom,$prior,'0817700002']]as[$r,$date,$phone])$app->bookings()->createAdminResident($owner,['room_id'=>$r['id'],'full_name'=>'Guide fixture','phone'=>$phone,'move_in_date'=>$date->format('Y-m-d'),'opening_water_reading'=>'100.00','opening_electric_reading'=>'200.00','idempotency_key'=>'billing-guidance-fixture-room-'.$r['id']]);
+$candidates=$app->billing()->roomCandidates($prior->format('Y-m'));
+$assert(array_column($candidates['rooms'],'id')===[$previousRoom['id']],'Previous month excludes rooms occupied only this month and vacant rooms');
+$assert($app->billing()->roomCandidates($earlier)['rooms']===[],'Month before all move-ins has no candidates');
+$assert(count($app->billing()->roomCandidates($month)['rooms'])===2,'Current month selects overlapping occupancies');
+$expect(fn()=>$app->billing()->roomCandidates($now->modify('first day of next month')->format('Y-m')),'BILL_PERIOD_INVALID');
+$input=['period'=>$month,'room_ids'=>[$room['id']],'confirm_current_period'=>true,'other_description'=>'','other_amount'=>'0'];
+$expect(fn()=>$app->billing()->preview($input),'BILLING_SETTINGS_NOT_CONFIRMED');
+$app->billing()->updateSettings(['water_rate'=>'0.00','electric_rate'=>'0.00','due_days'=>7],$owner);
+$assert($app->billing()->settings()['configured']===true,'Explicitly confirmed zero rates remain valid');
+$incomplete=$app->billing()->preview($input);
+$assert(count($incomplete['issues'])===1&&$incomplete['issues'][0]['code']==='MISSING_METER'&&$incomplete['issues'][0]['room_id']===$room['id'],'Preview supplies the exact room needing meter repair');
+$expect(fn()=>$app->billing()->preview(array_replace($input,['other_description'=>'10'])),'VALIDATION_ERROR');
+$expect(fn()=>$app->billing()->preview(array_replace($input,['other_amount'=>'10'])),'VALIDATION_ERROR');
+$app->meters()->record(['room_id'=>$room['id'],'period'=>$month,'water_current'=>'110.00','electric_current'=>'220.00'],$owner);
+$preview=$app->billing()->preview($input);
+$assert($preview['issues']===[]&&count($preview['bills'])===1,'Repair permits a fresh preview without altering the booking');
+$assert((int)$pdo->query('SELECT COUNT(*) FROM bills')->fetchColumn()===0,'Read candidates and preview never issue bills');
+$app->meters()->record(['room_id'=>$room['id'],'period'=>$month,'water_current'=>'111.00','electric_current'=>'220.00'],$owner);
+$expect(fn()=>$app->billing()->bulk($input+['preview_token'=>$preview['preview_token']],$owner),'BILL_PREVIEW_CHANGED');
+$assert((int)$pdo->query('SELECT COUNT(*) FROM bills')->fetchColumn()===0,'Stale preview cannot partially create a bill');
+$fresh=$app->billing()->preview($input);
+$result=$app->billing()->bulk($input+['preview_token'=>$fresh['preview_token']],$owner);
+$assert(count($result['created'])===1,'Explicit confirmation issues one bill after prerequisites pass');
+$list=$app->billing()->roomCandidates($month)['rooms'];$entry=array_values(array_filter($list,fn(array $r):bool=>$r['id']===$room['id']))[0];
+$assert($entry['is_billed']===true,'Issued room is clearly marked and cannot be reselected');
+try{$app->billing()->bulk($input+['preview_token'=>$fresh['preview_token']],$owner);}catch(HttpException){}
+$assert((int)$pdo->query('SELECT COUNT(*) FROM bills')->fetchColumn()===1,'Repeating issuance does not duplicate the bill');
+$expect(fn()=>$app->meters()->record(['room_id'=>$room['id'],'period'=>$month,'water_current'=>'112.00'],$owner),'METER_ALREADY_BILLED');
+fwrite(STDOUT,"{$count} billing guidance MySQL checks passed; no external calls\n");
