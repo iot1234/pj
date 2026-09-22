@@ -327,6 +327,7 @@
       button.textContent = label;
       button.disabled = true;
       button.setAttribute('aria-busy', 'true');
+      if(button.id==='line-bulk-button')globalThis.DormActionGuide?.present($('#bill-line-help'),[globalThis.DormActionGuide.reason('BUSY')]);
     } else {
       button.textContent = button.dataset.originalLabel || button.dataset.submitLabel || button.textContent;
       button.disabled = false;
@@ -384,15 +385,22 @@
       button.type = 'button'; button.dataset.recoveryView = guide.view;
       element.append(button);
     }
+    const code=failure.details?.code;
+    if(typeof code==='string'&&/^[A-Z][A-Z0-9_]{2,80}$/.test(code))element.append(create('small','recovery-detail',`รหัสสำหรับแจ้งผู้ดูแล: ${code}`));
   }
 
   function toast(message, type = 'success') {
     const region = $('#toast-region');
     if (!region) return;
-    const item = create('div', `toast toast-${type}`, message);
+    const item = create('div', `toast toast-${type}`, message instanceof Error ? errorMessage(message) : message);
     item.setAttribute('role', type === 'error' ? 'alert' : 'status');
     region.append(item);
     requestAnimationFrame(() => item.classList.add('is-visible'));
+    if(type==='error'){
+      if(message instanceof Error)showFormError(item,message);
+      const dismiss=create('button','button button-secondary button-small','ปิดข้อความ');dismiss.type='button';dismiss.addEventListener('click',()=>item.remove());item.append(dismiss);
+      return;
+    }
     window.setTimeout(() => {
       item.classList.remove('is-visible');
       window.setTimeout(() => item.remove(), 250);
@@ -1006,7 +1014,7 @@
         else if (!linked && !silent) toast(state.profile.line_blocked === true ? 'บัญชีนี้ถูกระงับการผูก LINE กรุณาติดต่อผู้ดูแล' : 'ยังไม่พบการยืนยัน กรุณาส่งรหัสให้ LINE Bot แล้วลองอีกครั้ง', 'error');
         return linked;
       } catch (errorValue) {
-        if (!silent) showFormError($('#resident-line-error'), errorMessage(errorValue));
+        if (!silent) showFormError($('#resident-line-error'), errorValue);
         return false;
       } finally {
         state.lineStatusRequest = false;
@@ -1101,6 +1109,7 @@
       const ready = profile.line_binding_ready === true && !blocked;
       lineStartForm.querySelector('[type="submit"]').disabled = !ready || state.lineIssueRequest;
       lineCodeRenewButton.disabled = !ready || state.lineIssueRequest;
+      [lineStartForm.querySelector('[type="submit"]'),lineCodeRenewButton].forEach(button=>globalThis.DormActionGuide?.set(button,state.lineIssueRequest?'BUSY':blocked?'LINE_BLOCKED':'LINE_NOT_READY'));
       $('#resident-line-readiness').hidden = ready || hasLine;
       $('#resident-line-readiness').textContent = blocked ? 'บัญชีนี้ถูกระงับการผูก LINE กรุณาติดต่อผู้ดูแลเพื่อปลดระงับ' : 'ระบบยังตั้งค่า LINE ไม่ครบ กรุณาติดต่อผู้ดูแลก่อนสร้างรหัส';
       lineUnlinkButton.hidden = !hasLine;
@@ -1316,7 +1325,7 @@
       } catch (errorValue) {
         residentLogoutInProgress = false;
         residentLogoutButtons.forEach((item) => { item.disabled = false; item.removeAttribute('aria-busy'); });
-        toast(errorMessage(errorValue, 'ออกจากระบบไม่สำเร็จ กรุณาลองอีกครั้ง'), 'error');
+        toast(errorValue, 'error');
       }
     }));
     profileForm.addEventListener('input', () => { profileForm.dataset.dirty = 'true'; });
@@ -1392,7 +1401,7 @@
         lineCodeInput.select();
         toast('สร้างรหัสแล้ว เปิด LINE พร้อมรหัสแล้วกดส่งในแชตของหอพัก');
       } catch (errorValue) {
-        showFormError(error, errorMessage(errorValue));
+        showFormError(error, errorValue);
       }
       finally {
         state.lineIssueRequest = false;
@@ -1443,7 +1452,7 @@
         stopLineCodeTracking(true);
         renderLineStatus();
         toast('ยกเลิกการผูก LINE แล้ว');
-      } catch (errorValue) { showFormError(error, errorMessage(errorValue)); }
+      } catch (errorValue) { showFormError(error, errorValue); }
       finally { setBusy(lineUnlinkButton, false); }
     });
     $('#resident-payment-refresh').addEventListener('click', () => {
@@ -1537,7 +1546,8 @@
         await loadAll();
         if (!bill) billDetailLoadingMessage.textContent += ' · ยังยืนยันผลการส่งสลิปไม่ได้ ห้ามโอนซ้ำ';
         else if (!['pending', 'verified'].includes(bill.payment?.status)) {
-          showFormError(error, `${errorMessage(errorValue)} หากโอนแล้วไม่ต้องโอนซ้ำ`);
+          showFormError(error, errorValue);
+          error.append(create('span','recovery-detail','หากโอนแล้วไม่ต้องโอนซ้ำ ตรวจสถานะรายการเดิมหรือส่งหลักฐานให้ LINE Bot ของหอพัก'));
           showSlipLineFallback(state.lineFallback);
         }
       }
@@ -1622,10 +1632,12 @@
       $('#admin-line-readiness').hidden = !currentStatus || ready || hasLine;
       $('#admin-line-readiness').textContent = blocked ? 'ปลดระงับในหน้า “การผูก LINE ผู้พัก” ก่อนสร้างรหัสใหม่' : 'ระบบยังตั้งค่า LINE ไม่ครบ กรุณาตรวจบัญชี LINE OA';
       issueButton.disabled = mutation || !ready || hasLine;
+      globalThis.DormActionGuide?.set(issueButton,mutation?'BUSY':!currentStatus?'LOADING':blocked?'LINE_BLOCKED':hasLine?'LINE_LINKED':'LINE_NOT_READY');
       if (!mutation) issueButton.textContent = pending || codeInput.value ? 'สร้างรหัสใหม่' : 'สร้างรหัสผูก LINE';
       unlinkButton.hidden = !hasLine;
       unlinkButton.disabled = mutation;
       refreshButton.disabled = mutation || Boolean(statusRequest);
+      [unlinkButton,refreshButton].forEach(button=>globalThis.DormActionGuide?.set(button,mutation?'BUSY':'LOADING'));
       const friendLink = $('#admin-line-add-friend');
       const friendUrl = currentStatus?.line_add_friend_url;
       const validFriend = typeof friendUrl === 'string' && /^https:\/\/line\.me\/R\/ti\/p\/(?:@|%40)[A-Za-z0-9._-]{1,32}$/.test(friendUrl);
@@ -1657,7 +1669,7 @@
         applyStatus(objectFrom(result));
         return true;
       } catch (error) {
-        if (statusRequest === request && epoch === request.epoch && !silent) showFormError(errorNode, errorMessage(error));
+        if (statusRequest === request && epoch === request.epoch && !silent) showFormError(errorNode, error);
         return false;
       } finally {
         if (statusRequest === request) {
@@ -1720,7 +1732,7 @@
         codeInput.focus(); codeInput.select();
         toast('สร้างรหัสแล้ว ให้ผู้พักเปิด LINE ของตนเองและกดส่งรหัส');
       } catch (error) {
-        if (epoch === request.epoch) showFormError(errorNode, errorMessage(error));
+        if (epoch === request.epoch) showFormError(errorNode, error);
       } finally {
         if (epoch === request.epoch) {
           mutation = false; setDialogBusy(dialog, false); setBusy(issueButton, false); renderStatus();
@@ -1756,7 +1768,7 @@
         if (epoch !== request.epoch || !dialog.open) return;
         clearCode(); applyStatus(objectFrom(result));
         toast('ยกเลิก LINE ของผู้พักรายนี้แล้ว');
-      } catch (error) { if (epoch === request.epoch) showFormError(errorNode, errorMessage(error)); }
+      } catch (error) { if (epoch === request.epoch) showFormError(errorNode, error); }
       finally {
         if (epoch === request.epoch) { mutation = false; setDialogBusy(dialog, false); setBusy(unlinkButton, false); renderStatus(); }
       }
@@ -2038,7 +2050,7 @@
           setBusy(button, true, 'กำลังลบ…');
           await api(`/api/admin/rooms/${encodeURIComponent(room.id)}`, { method: 'DELETE', body: {} });
           toast('ลบห้องแล้ว'); await loadRooms();
-        } catch (error) { toast(`${errorMessage(error)} ตรวจสถานะห้องล่าสุดก่อนทำซ้ำ`, 'error'); await loadRooms(); }
+        } catch (error) { toast(error, 'error'); await loadRooms(); }
         finally { state.roomActionBusy = false; setBusy(button, false); }
       }
     });
@@ -2129,7 +2141,7 @@
         state.bookingListReady = true; state.loaded.add('bookings'); renderBookings();
       } catch (error) {
         if (state.bookingController !== controller || $('#booking-status-filter').value !== filter) return;
-        if (error?.name !== 'AbortError') { if (!append) setTableState($('#booking-state'), 'error', errorMessage(error)); else toast(errorMessage(error), 'error'); }
+        if (error?.name !== 'AbortError') { if (!append) setTableState($('#booking-state'), 'error', errorMessage(error)); else toast(error, 'error'); }
       } finally {
         if (state.bookingController === controller) {
           state.bookingController = null; rows.setAttribute('aria-busy', 'false');
@@ -2181,7 +2193,7 @@
           setBusy(button, true, 'กำลังยืนยัน…');
           await api(`/api/admin/bookings/${encodeURIComponent(booking.id)}/confirm`, { method: 'POST', body: {} });
           toast('ยืนยันการจองแล้ว'); await Promise.all([loadBookings(), loadRooms()]);
-        } catch (error) { toast(`${errorMessage(error)} ตรวจสถานะการจองล่าสุดก่อนทำซ้ำ`, 'error'); await Promise.all([loadBookings(), loadRooms()]); }
+        } catch (error) { toast(error, 'error'); await Promise.all([loadBookings(), loadRooms()]); }
         finally { state.bookingActionBusy = false; setBusy(button, false); }
       }
       if (button.dataset.action === 'cancel-booking') {
@@ -2267,6 +2279,7 @@
         ? `พบห้องว่าง ${rooms.length} ห้อง ระบบจะตรวจสถานะซ้ำอีกครั้งตอนบันทึก`
         : 'ยังไม่มีห้องว่าง กรุณาตรวจการจอง/ผู้พัก หรือเพิ่มห้องก่อน';
       form.querySelector('[type="submit"]').disabled = rooms.length === 0;
+      [select,form.querySelector('[type="submit"]')].forEach(control=>globalThis.DormActionGuide?.set(control,'NO_ROOMS'));
     }
     async function openResidentCreateForm(room = null) {
       const form = $('#resident-create-form');
@@ -2420,7 +2433,7 @@
           toast('ยกเลิกเซสชันและการผูก LINE เดิมแล้ว ผู้พักเข้าใช้งานด้วยเบอร์เดิมได้');
           await loadResidents();
         } catch (requestError) {
-          toast(errorMessage(requestError), 'error');
+          toast(requestError, 'error');
         } finally {
           setBusy(button, false);
         }
@@ -2546,6 +2559,7 @@
           Object.assign(input.dataset,{meterType:type,savedValue:input.value,version:meter[`${type}_version`]||'',previous:has?String(previous):'0',hasPrevious:String(has)});
           input.setAttribute('aria-label',`เลขมิเตอร์${label}ปัจจุบัน ห้อง ${roomCode}${meterHasPendingOpening(meter)?' ยังขาดเลขมิเตอร์ ณ วันเข้าพัก':''}`);
           if(locked) input.title=issue?.message || (meter.is_billed?'ออกบิลรอบนี้แล้ว':'มีงวดถัดไปอ้างอิงแล้ว');
+          if(locked){const guide=globalThis.DormActionGuide;const info=guide?.reason(meterHasPendingOpening(meter)?'METER_OPENING':meter.is_billed?'METER_BILLED':'METER_HISTORY');if(info){if(issue?.message)info.title=issue.message;guide.set(input,info);}}
           if(draft?.[type]&&!locked){input.value=draft[type].value; input.dataset.version=draft[type].version;}
           const before=td(has?text(raw):create('span','meter-baseline-label',meterHasPendingOpening(meter)?'รอเลข ณ วันเข้าพัก':vacant?'ตั้งต้นห้องว่าง':issue?.code==='METER_HISTORY_GAP'?'ขาดงวดก่อน':'ยังไม่มีข้อมูล'));
           before.dataset.meterPrevious=type; before.dataset.label=`${label} · ก่อนหน้า`;
@@ -2735,19 +2749,21 @@
         dataState:state.billController?'loading':state.billListAvailable&&state.billCandidatesReady?'ready':'error', configured:state.settings.configured===true,
         confirmed:form.elements.confirm_current_period.checked, other_amount:form.elements.other_amount.value,
         other_description:form.elements.other_description.value, selected:selectedBillRooms().length,
-        candidates:(state.billCandidates||[]).length });
+        candidates:(state.billCandidates||[]).length,
+        unbilled:(state.billCandidates||[]).filter(room=>room.is_billed!==true&&!state.bills.some(bill=>Number(bill.room_id)===Number(room.id))).length });
     }
     function focusBillingNode(node) {
       if (!node) return;
       node.classList.add('guided-focus'); node.scrollIntoView({block:'center',behavior:'auto'});
       const control=node.matches('input,select,textarea,button')?node:$('input:not([disabled]),button:not([disabled])',node);
       if(control) control.focus({preventScroll:true});
+      else if(node.hasAttribute('tabindex'))node.focus({preventScroll:true});
       window.setTimeout(()=>node.classList.remove('guided-focus'),3500);
     }
     function makeBillingIssue(item) {
       const card=create('article','billing-step');
       card.append(create('strong','',`${item.room_id ? `ห้อง ${text(item.room_code||item.room_id)} · `:''}${item.title}`),create('p','',item.detail));
-      if(item.target){const button=create('button','button button-secondary',item.action);button.type='button';button.disabled=state.billWorking===true;button.addEventListener('click',()=>goBillingRecovery(item));card.append(button);}
+      if(item.target&&(item.target!=='settings'||role==='owner')){const button=create('button','button button-secondary',item.action);button.type='button';button.disabled=state.billWorking===true;button.addEventListener('click',()=>goBillingRecovery(item));card.append(button);}
       if(item.clearExtra){const clear=create('button','button button-ghost','ไม่คิดรายการอื่น');clear.type='button';clear.disabled=state.billWorking===true;clear.addEventListener('click',clearBillExtra);card.append(clear);}
       return card;
     }
@@ -2755,7 +2771,7 @@
       const panel=$('#billing-next-steps'); if(!panel)return;
       panel.replaceChildren();
       if(state.billWorking){panel.append(create('strong','','กำลังตรวจยอดหรือออกบิล'),create('p','','กรุณารอผลก่อนแก้ไขหรือเปลี่ยนหน้า ระบบจะไม่ส่งคำขอซ้ำ'));return;}
-      panel.append(create('strong','',blockers.length?'ต้องแก้ก่อนตรวจยอด':'ข้อมูลเบื้องต้นพร้อมตรวจยอด'));
+      panel.append(create('strong','',blockers.length===1&&blockers[0].code==='ALL_ROOMS_BILLED'?'ออกบิลครบแล้วสำหรับห้องในงวดนี้':blockers.length?'ต้องแก้ก่อนตรวจยอด':'ข้อมูลเบื้องต้นพร้อมตรวจยอด'));
       if(blockers.length) blockers.forEach(item=>panel.append(makeBillingIssue(item)));
       else panel.append(create('p','',state.billPreview?'ตรวจรายละเอียดล่าสุดแล้ว จึงกดยืนยันออกบิลได้':'กด “ตรวจยอดก่อน” ระบบจะตรวจมิเตอร์และผู้พักรายห้องก่อนเปิดให้ยืนยันออกบิล'));
       const list=$('#bill-recovery-issues'); if(!list)return;
@@ -2780,7 +2796,7 @@
       if(state.billWorking||state.billingNavigating||state.meterSaving||settingsSaveInProgress)return;
       if(!['bills','settings','meters','residents','reload'].includes(item.target))return;
       const preview=$('#preview-dialog');if(preview.open&&!closeDialog(preview))return;
-      if(item.target==='bills'){const form=$('#bill-builder-form');focusBillingNode(item.focus==='rooms'?$('#bill-room-options'):form.elements[item.focus]);return;}
+      if(item.target==='bills'){const form=$('#bill-builder-form');focusBillingNode(item.focus==='existing'?$('#bill-existing-section'):item.focus==='rooms'?$('#bill-room-options'):form.elements[item.focus]);return;}
       const draft=$('[data-admin-view].is-active',app)?.dataset.adminView==='bills'?rememberBillDraft():(state.billingRecovery?.draft||rememberBillDraft());invalidateBillPreview();
       state.billingRecovery={draft,item};
       const target=item.target==='reload'?'bills':item.target;
@@ -2861,6 +2877,10 @@
       previewButton.disabled = previewButton.getAttribute('aria-busy') === 'true' || !ready;
       createButton.disabled = createButton.getAttribute('aria-busy') === 'true' || !previewFresh;
       createButton.title = previewFresh ? 'ออกบิลจากยอดที่ตรวจล่าสุด' : 'กด “ตรวจยอดก่อน” และตรวจรายละเอียดให้ครบก่อนออกบิล';
+      const guide=globalThis.DormActionGuide;
+      const busy=state.billWorking||previewButton.getAttribute('aria-busy')==='true'||createButton.getAttribute('aria-busy')==='true';
+      guide?.present($('#bill-action-help'),busy?[guide.reason('BUSY')]:blockers.length?blockers:previewFresh?[]:[guide.reason('PREVIEW_REQUIRED')],goBillingRecovery);
+      guide?.set(master,busy?'BUSY':blockers.find(item=>['ALL_ROOMS_BILLED','NO_BILLING_CANDIDATES','BILL_DATA_LOADING','BILL_DATA_UNAVAILABLE'].includes(item.code))||guide.reason('LOADING'));
     }
     function syncCurrentPeriodConfirmation() {
       const form = $('#bill-builder-form');
@@ -2893,6 +2913,7 @@
         const billed = room.is_billed === true || billedRoomIds.has(Number(room.id));
         const label = create('label', `check-field room-check${billed ? ' is-disabled' : ''}`);
         const input = create('input'); input.type = 'checkbox'; input.value = room.id; input.disabled = billed; input.checked = !billed && (preserveSelection ? selectedRoomIds.has(Number(room.id)) : true);
+        if(billed)globalThis.DormActionGuide?.set(input,'BILLED');
         label.append(input, create('span', '', `ห้อง ${text(room.room_code)}${billed ? ' — ออกบิลแล้ว' : ''}`)); wrap.append(label);
       });
       if (!candidates.length) wrap.append(create('span', 'muted', state.billController?'กำลังตรวจผู้พักในงวดที่เลือก':'ไม่มีห้องที่มีผู้พักในงวดที่เลือก ตรวจเดือนและวันเข้าพักจริง'));
@@ -2947,6 +2968,11 @@
         else if (!bill.line_status && bill.status !== 'pending') line.append(create('small', 'muted', 'ชำระแล้ว ไม่ส่งซ้ำ'));
         else if (!bill.line_status && !bill.line_linked) line.append(create('small', 'muted', 'ผู้พักยังไม่ผูก LINE'));
         else if (!bill.line_status && !billLineReady) line.append(create('small', 'muted', 'OA ที่ผูกยังไม่พร้อมรับบิล'));
+        if(!mayQueue&&globalThis.DormActionGuide){
+          const explanation=create('details','line-action-explanation'),panel=create('span','action-help');
+          explanation.append(create('summary','','ดูสาเหตุและวิธีดำเนินการ'),panel);
+          globalThis.DormActionGuide.present(panel,globalThis.DormActionGuide.lineReasons([bill],true,lineReady));line.append(explanation);
+        }
         const displayStatus = paymentStatus === 'pending' ? 'verifying' : (paymentStatus === 'verified' ? 'paid' : (bill.display_status || bill.status));
         const billStatusLabel = displayStatus === 'overdue' ? 'เลยกำหนด'
           : (displayStatus === 'verifying' ? 'กำลังตรวจสลิป' : (displayStatus === 'paid' ? 'ชำระแล้ว' : (displayStatus === 'pending' ? 'รอชำระ' : '')));
@@ -2956,6 +2982,7 @@
       const bulkButton = $('#line-bulk-button');
       bulkButton.disabled = !billDataReady() || eligibleForLine === 0;
       bulkButton.title = eligibleForLine === 0 ? 'ไม่มีบิลค้างชำระที่ผูก LINE กับ OA ที่พร้อมเข้าคิว' : 'เข้าคิวบิลค้างชำระที่พร้อมส่ง';
+      globalThis.DormActionGuide?.present($('#bill-line-help'),bulkButton.disabled?globalThis.DormActionGuide.lineReasons(state.bills,billDataReady(),lineReady):[]);
       const statuses = state.bills.map(effectiveBillStatus);
       setStat('[data-bill-stat="all"]', state.bills.length);
       setStat('[data-bill-stat="pending"]', statuses.filter((value) => value === 'pending' || value === 'overdue').length);
@@ -2973,6 +3000,7 @@
       const rows=$('#bill-admin-rows');rows.setAttribute('inert','');$('#bill-room-options').setAttribute('inert','');
       if(state.billPeriod!==period){state.bills=[];state.billCandidates=[];rows.replaceChildren();$('#bill-room-options').replaceChildren();}
       $('#line-bulk-button').disabled=true;syncBillActionState();setTableState($('#bill-admin-state'),'loading');
+      globalThis.DormActionGuide?.present($('#bill-line-help'),[globalThis.DormActionGuide.reason('LOADING')]);
       const requestOptions={signal:controller.signal};
       try{
         const [billResult,roomResult]=await Promise.allSettled([
@@ -2988,7 +3016,7 @@
         state.billCandidates=state.billCandidatesReady?candidates.rooms:[];
         fillBillRooms(preserveSelection);
         if(state.billListAvailable){state.loaded.add('bills');renderAdminBills();}
-        else{rows.replaceChildren();setTableState($('#bill-admin-state'),'error','อ่านบิลของงวดนี้ไม่สำเร็จ กรุณาลองโหลดใหม่');}
+        else{rows.replaceChildren();setTableState($('#bill-admin-state'),'error','อ่านบิลของงวดนี้ไม่สำเร็จ กรุณาลองโหลดใหม่');globalThis.DormActionGuide?.present($('#bill-line-help'),[{title:'เข้าคิว LINE ไม่ได้ เพราะอ่านบิลล่าสุดไม่สำเร็จ',detail:'กดลองโหลดรายการใหม่ในส่วนบิล ตรวจสถานะการส่งเดิมก่อนทำซ้ำ ไม่ใช้ข้อมูลเก่าเข้าคิว'}]);}
       }finally{
         if(state.billController===controller){state.billController=null;state.restoringBillDraft=false;rows.removeAttribute('inert');$('#bill-room-options').removeAttribute('inert');if(state.billListAvailable)renderAdminBills();syncBillActionState();}
       }
@@ -3150,8 +3178,11 @@
         state.billingSettingsAvailable = false;state.billingSettingsLoading=false;
         renderBillDefaults();applyBillingReadiness();
         clearPromptPayTestQr();
-        showFormError($('#settings-error'), errorMessage(error));
-        showFormError($('#integration-settings-error'), errorMessage(error));
+        showFormError($('#settings-error'), error);
+        showFormError($('#integration-settings-error'), error);
+        if(role==='owner')for(const element of [$('#settings-error'),$('#integration-settings-error')]){
+          if(element&&!$('[data-recovery-view="settings"]',element)){const retry=create('button','button button-secondary button-small','ลองโหลดการตั้งค่าใหม่');retry.type='button';retry.dataset.recoveryView='settings';element.append(retry);}
+        }
       }
     }
     function applyBillingReadiness() {
@@ -3160,7 +3191,7 @@
       const status = $('#billing-settings-status');
       if (note) {
         note.classList.toggle('security-note-warning', !ready);
-        const copy = $('span', note); if (copy) copy.textContent = ready ? 'ยืนยันค่ารายเดือนแล้ว ขั้นต่อไปคือตรวจมิเตอร์และยอดรายห้อง' : 'ยังไม่ยืนยันค่ารายเดือน กดปุ่มไปยืนยันด้านบนก่อน ระบบไม่ใช้ค่า 0 แทนโดยอัตโนมัติ';
+        const copy = $('span', note); if (copy) copy.textContent = ready ? 'ยืนยันค่ารายเดือนแล้ว ขั้นต่อไปคือตรวจมิเตอร์และยอดรายห้อง' : !state.billingSettingsAvailable ? 'ยังอ่านค่ารายเดือนไม่สำเร็จ ให้ลองโหลดข้อมูลใหม่ก่อน ระบบไม่ใช้ค่า 0 หรือค่าเก่าแทน' : 'ยังไม่ยืนยันค่ารายเดือน ให้เจ้าของตรวจและบันทึกยืนยันที่หน้าตั้งค่าก่อน ระบบไม่ใช้ค่า 0 แทนโดยอัตโนมัติ';
       }
       if (status) status.textContent = ready ? `ยืนยันแล้ว${state.settings.updated_at ? ` · แก้ไขล่าสุด ${formatDate(state.settings.updated_at)}` : ''}` : 'ยังไม่ยืนยัน — ตรวจสอบตัวเลขแล้วกด “ยืนยันและบันทึกการตั้งค่า”';
       syncBillActionState();
@@ -3177,6 +3208,7 @@
     });
     $('#select-all-bill-rooms').addEventListener('change', (event) => {
       $$('#bill-room-options input:not([disabled])').forEach((input) => { input.checked = event.currentTarget.checked; });
+      rememberBillDraft();state.billIssues=[];
       invalidateBillPreview();
     });
     $('#bill-room-options').addEventListener('change', (event) => {
@@ -3186,7 +3218,8 @@
     billBuilderForm.addEventListener('change',()=>{state.billDraftEdited=true;});
     billBuilderForm.addEventListener('input', (event) => {
       state.billDraftEdited=true;
-      if (!event.target.matches('#bill-room-options input')) { rememberBillDraft();state.billIssues=[];invalidateBillPreview(); }
+      // Checkbox input fires before change. Do not reset the master from the old room selection.
+      if (!event.target.matches('#bill-room-options input, #select-all-bill-rooms')) { rememberBillDraft();state.billIssues=[];invalidateBillPreview(); }
     });
     billBuilderForm.elements.confirm_current_period.addEventListener('change', invalidateBillPreview);
     function renderBillPreview(data, previewPayload = billPayload()) {
@@ -3281,8 +3314,8 @@
       finally{state.billWorking=false;setFormFieldsBusy(form,false);setBusy(button,false);syncBillActionState();}
       if(created){await loadBills();}
     });
-    $('#bill-admin-rows').addEventListener('click', async (event) => { const button = event.target.closest('[data-action="send-line"]'); if (!button || !billDataReady()) return; setBusy(button, true, 'กำลังเข้าคิว…'); try { await api(`/api/admin/bills/${encodeURIComponent(button.dataset.id)}/line`, { method: 'POST', body: {} }); toast('นำบิลเข้าคิว LINE แล้ว'); await loadBills(); } catch (error) { toast(errorMessage(error), 'error'); } finally { setBusy(button, false); } });
-    $('#line-bulk-button').addEventListener('click', async (event) => { if (!billDataReady()) return; if (!await confirmAction('เข้าคิว LINE ทั้งหมด', `นำบิลรอบ${formatPeriod($('#bill-period').value)} เข้าคิวสำหรับผู้พักที่ผูก LINE ไว้?`, 'เข้าคิว', false)) return; const button = event.currentTarget; setBusy(button, true, 'กำลังเข้าคิว…'); try { const result = await api('/api/admin/bills/line-bulk', { method: 'POST', body: { period: $('#bill-period').value } }); const queued = listFrom(result, 'queued'); const already = listFrom(result, 'already'); const skipped = listFrom(result, 'skipped'); toast(`เข้าคิวใหม่ ${queued.length} รายการ${already.length ? ` · อยู่ในคิว/ส่งแล้ว ${already.length}` : ''}${skipped.length ? ` · ข้าม ${skipped.length}` : ''}`); await loadBills(); } catch (error) { toast(errorMessage(error), 'error'); } finally { setBusy(button, false); renderAdminBills(); } });
+    $('#bill-admin-rows').addEventListener('click', async (event) => { const button = event.target.closest('[data-action="send-line"]'); if (!button || !billDataReady()) return; setBusy(button, true, 'กำลังเข้าคิว…'); try { await api(`/api/admin/bills/${encodeURIComponent(button.dataset.id)}/line`, { method: 'POST', body: {} }); toast('นำบิลเข้าคิว LINE แล้ว'); await loadBills(); } catch (error) { toast(error, 'error'); } finally { setBusy(button, false); } });
+    $('#line-bulk-button').addEventListener('click', async (event) => { if (!billDataReady()) return; if (!await confirmAction('เข้าคิว LINE ทั้งหมด', `นำบิลรอบ${formatPeriod($('#bill-period').value)} เข้าคิวสำหรับผู้พักที่ผูก LINE ไว้?`, 'เข้าคิว', false)) return; const button = event.currentTarget; setBusy(button, true, 'กำลังเข้าคิว…'); try { const result = await api('/api/admin/bills/line-bulk', { method: 'POST', body: { period: $('#bill-period').value } }); const queued = listFrom(result, 'queued'); const already = listFrom(result, 'already'); const skipped = listFrom(result, 'skipped'); toast(`เข้าคิวใหม่ ${queued.length} รายการ${already.length ? ` · อยู่ในคิว/ส่งแล้ว ${already.length}` : ''}${skipped.length ? ` · ข้าม ${skipped.length}` : ''}`); await loadBills(); } catch (error) { toast(error, 'error'); } finally { setBusy(button, false); renderAdminBills(); } });
 
     function renderPayments() {
       const rows = $('#payment-rows'); rows.replaceChildren();
@@ -3351,7 +3384,7 @@
         state.paymentListReady = true; state.loaded.add('payments'); renderPayments();
       } catch (error) {
         if (state.paymentController !== controller || $('#payment-status-filter').value !== filter) return;
-        if (error?.name !== 'AbortError') { if (!append) setTableState($('#payment-state'), 'error', errorMessage(error)); else toast(errorMessage(error), 'error'); }
+        if (error?.name !== 'AbortError') { if (!append) setTableState($('#payment-state'), 'error', errorMessage(error)); else toast(error, 'error'); }
       } finally {
         if (state.paymentController === controller) {
           state.paymentController = null; rows.setAttribute('aria-busy', 'false');
@@ -3381,7 +3414,7 @@
           const status = result?.status;
           toast(status === 'verified' ? 'ตรวจผ่านและอัปเดตบิลเป็นชำระแล้ว' : (status === 'rejected' ? 'ตรวจแล้วไม่ผ่าน ดูเหตุผลในรายการ' : 'ผู้ให้บริการยังไม่ให้ผลสุดท้าย ระบบคงรายการไว้ให้ตรวจซ้ำ'));
           await Promise.all([loadPayments(), loadBills()]);
-        } catch (requestError) { toast(`${errorMessage(requestError)} กรุณาตรวจสถานะก่อนทำซ้ำ`, 'error'); await loadPayments(); } finally { state.paymentActionBusy = false; setBusy(button, false); }
+        } catch (requestError) { toast(requestError, 'error'); await loadPayments(); } finally { state.paymentActionBusy = false; setBusy(button, false); }
       }
     });
     $('#payment-close-form').addEventListener('submit', async (event) => {
@@ -3396,7 +3429,7 @@
       try {
         await api(`/api/admin/payments/${encodeURIComponent(values.payment_id)}/close`, { method: 'POST', body: { reason: values.reason } });
         release(); closeDialog($('#payment-close-dialog')); form.reset(); toast('ปิดรายการถาวรแล้ว หากผู้พักโอนเงินจริงแล้ว ให้ตรวจยอดก่อนโอนซ้ำ'); await Promise.all([loadPayments(), loadBills()]);
-      } catch (requestError) { showFormError(error, `${errorMessage(requestError)} กรุณาตรวจสถานะก่อนทำซ้ำ`); await loadPayments(); } finally { release(); }
+      } catch (requestError) { showFormError(error, requestError); await loadPayments(); } finally { release(); }
     });
     function renderUsers() { const rows = $('#user-rows'); rows.replaceChildren(); state.users.forEach((user) => { const tr = create('tr'); const status = user.is_active === false || user.is_active === 0 ? 'inactive' : 'active'; const actions = [actionButton('แก้ไข', 'edit-user', user.id, 'button-ghost', `แก้ไขผู้ดูแล ${text(user.username)}`)]; if (status === 'active') actions.push(actionButton('ปิดใช้งาน', 'delete-user', user.id, 'button-danger-text', `ปิดใช้งานผู้ดูแล ${text(user.username)}`)); tr.append(td(text(user.username)), td(text(user.role === 'owner' ? 'เจ้าของ' : 'ผู้ดูแล')), td(pill(status)), td(formatDate(user.updated_at)), td(rowActions(...actions), 'align-right')); rows.append(tr); }); setTableState($('#user-state'), state.users.length ? 'ready' : 'empty', 'ยังไม่มีบัญชีผู้ดูแล'); }
     async function loadUsers() {
@@ -3428,7 +3461,7 @@
         setBusy(button, true, 'กำลังปิดบัญชี…');
         await api(`/api/admin/users/${encodeURIComponent(user.id)}`, { method: 'DELETE', body: {} });
         toast('ปิดใช้งานผู้ดูแลแล้ว'); await loadUsers();
-      } catch (error) { toast(`${errorMessage(error)} ตรวจรายการล่าสุดก่อนทำซ้ำ`, 'error'); await loadUsers(); }
+      } catch (error) { toast(error, 'error'); await loadUsers(); }
       finally { state.userActionBusy = false; setBusy(button, false); }
     });
     $('#user-form').addEventListener('submit', async (event) => {
@@ -3527,7 +3560,7 @@
         if (form.dataset.revision !== revision || form.dataset.dirty === 'true') return;
         if (integration === 'promptpay') clearPromptPayTestQr();
         if (resultNode) { resultNode.className = 'integration-test-result is-error'; resultNode.textContent = `ทดสอบค่าที่บันทึกแล้ว: ไม่ผ่าน · ${errorMessage(error)}`; }
-        toast(errorMessage(error), 'error');
+        toast(error, 'error');
       }
       finally { setBusy(button, false); button.disabled = role !== 'owner' || form.dataset.dirty === 'true'; }
     }));
@@ -3757,7 +3790,7 @@
       } catch (errorValue) {
         adminLogoutInProgress = false;
         adminLogoutButtons.forEach((item) => { item.disabled = false; item.removeAttribute('aria-busy'); });
-        toast(errorMessage(errorValue, 'ออกจากระบบไม่สำเร็จ กรุณาลองอีกครั้ง'), 'error');
+        toast(errorValue, 'error');
       }
     }));
     const initialHash = location.hash.replace('#', '');

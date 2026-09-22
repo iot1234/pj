@@ -34,7 +34,7 @@
     const card = (title) => { const node = create('article', 'line-platform-card'); node.append(create('h3', '', title)); return node; };
     const isCurrent = (epoch, mode, id) => dialog.open && epoch === state.epoch && state.mode === mode && String(state.id) === String(id);
     const error = (cause) => {
-      showFormError(errorNode, errorMessage(cause));
+      showFormError(errorNode, cause);
       if ($('#line-platform-summary').textContent === 'กำลังโหลด…') $('#line-platform-summary').textContent = 'โหลดข้อมูล LINE ไม่สำเร็จ';
       feedback('error', 'การดำเนินการล่าสุดไม่สำเร็จ · ข้อมูลที่เห็นอาจยังไม่เป็นปัจจุบัน');
       const retry = $('#line-platform-retry');
@@ -191,7 +191,7 @@
       } catch (cause) {
         if (applied) cause = new Error('เซิร์ฟเวอร์ตอบสำเร็จแล้ว แต่แสดงข้อมูลต่อไม่ได้ กรุณาโหลดสถานะใหม่ก่อนทำซ้ำ');
         state.lastFailureCode = cause?.details?.code || (applied ? 'MUTATION_OUTCOME_UNKNOWN' : 'LINE_REQUEST_FAILED');
-        if (dialog.open && epoch === state.epoch) error(cause); else toast(errorMessage(cause), 'error');
+        if (dialog.open && epoch === state.epoch) error(cause); else toast(cause, 'error');
         return false;
       } finally { release(); }
     }
@@ -376,7 +376,7 @@
       } catch (cause) {
         if (generation !== state.bindingLoad) return;
         state.bindingListState = 'error'; state.rows = []; state.counts = {}; renderBindings();
-        showFormError($('#line-bindings-error'), errorMessage(cause));
+        showFormError($('#line-bindings-error'), cause);
       }
     }
 
@@ -390,6 +390,7 @@
       $('#line-binding-block').hidden = row.blocked === true; $('#line-block-reason').hidden = row.blocked === true;
       $('#line-binding-unblock').hidden = row.blocked !== true;
       $('#line-binding-revoke-all').disabled = !(list(row.pending_codes).length || list(row.bound_accounts).length);
+      globalThis.DormActionGuide?.set($('#line-binding-revoke-all'),'NO_BINDINGS');
       const pending = $('#line-pending-list'); pending.replaceChildren();
       list(row.pending_codes).forEach((code) => {
         const item = card(`รหัสสำหรับ ${txt(code.oa_name)}`); item.append(codeSurface(code), btn('ยกเลิกรหัสนี้', (event) => bindingAction('code', code.id, event.currentTarget), true)); pending.append(item);
@@ -422,6 +423,7 @@
         if (!isCurrent(epoch, 'binding', id)) return;
         state.oas = list(oas); state.defaultId = oas.default_oa_id;
         const available = showPrimaryBot($('#line-binding-bot')); $('button[type="submit"]', codeForm).disabled = !available;
+        globalThis.DormActionGuide?.set($('button[type="submit"]',codeForm),'LINE_NOT_READY');
         renderDetail(row);
       } catch (cause) { if (isCurrent(epoch, 'binding', id)) error(cause); }
     }
@@ -472,6 +474,7 @@
         state.oas = list(oas); state.defaultId = oas.default_oa_id;
         const available = showPrimaryBot($('#line-recipient-bot'));
         $('button[type="submit"]', recipientForm).disabled = id === null && !available;
+        globalThis.DormActionGuide?.set($('button[type="submit"]',recipientForm),'LINE_NOT_READY');
         renderRecipient(row);
       } catch (cause) { if (isCurrent(epoch, 'recipient', id)) error(cause); }
     }

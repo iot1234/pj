@@ -68,7 +68,7 @@ function harness(kind) {
     errorMessage: (error) => error.message,
     formatDateTime: (value) => value,
     text: (value, fallback = '—') => value == null || value === '' ? fallback : String(value),
-    showFormError: (node, message = '') => { node.textContent = message; node.hidden = !message; },
+    showFormError: (node, message = '') => { node.textContent = message instanceof Error ? message.message : message; node.hidden = !message; },
     toast: (message) => effects.toasts.push(message),
     confirmAction: async (...args) => { effects.confirms.push(args); return allowConfirm; },
     getQrLibrary: async () => ({ toCanvas() {} }),

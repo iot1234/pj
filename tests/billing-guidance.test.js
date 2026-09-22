@@ -5,6 +5,12 @@ const source=fs.readFileSync(path.join(__dirname,'../public/assets/js/billing-gu
 const context={window:{}};vm.createContext(context);vm.runInContext(source,context);const guide=context.window.DormBillingGuide;
 const clean={period:'2026-08',currentPeriod:'2026-09',settingsState:'ready',dataState:'ready',configured:true,selected:1,candidates:1,confirmed:false,other_amount:'0',other_description:''};
 const codes=state=>Array.from(guide.blockers({...clean,...state}),item=>item.code);
+test('all billed rooms explain duplicate protection and lead to existing bills, not impossible selection',()=>{
+ assert.deepEqual(codes({selected:0,candidates:2,unbilled:0}),['ALL_ROOMS_BILLED']);
+ const item=guide.blockers({...clean,selected:0,candidates:2,unbilled:0})[0];assert.equal(item.focus,'existing');assert.match(item.detail,/ไม่ต้องออกบิลอีก/);
+ assert.deepEqual(codes({selected:0,candidates:2,unbilled:1}),['NO_ROOMS_SELECTED']);
+ assert.deepEqual(codes({selected:0,candidates:0,unbilled:0}),['NO_BILLING_CANDIDATES']);
+});
 test('unconfirmed settings have an actionable repair rather than a silent disabled button',()=>{
  const list=guide.blockers({...clean,configured:false});assert.equal(list[0].code,'BILLING_SETTINGS_NOT_CONFIRMED');assert.equal(list[0].target,'settings');assert.equal(list[0].focus,'water_rate');
 });

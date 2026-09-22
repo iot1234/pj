@@ -34,6 +34,18 @@ test('nonpayment conflicts guide to existing records without bypassing identity 
  for(const code of ['SELF_DELETE','SELF_OWNER_CHANGE','LAST_OWNER']){const guide=explain(error(code),admin);assert.equal(guide.view,undefined);assert.match(guide.detail,/อย่างน้อยหนึ่ง/);}
 });
 const source=fs.readFileSync('public/assets/js/app.js','utf8');
+test('billing, meter, payment and LINE aliases route to an actual repair without bypassing safeguards',()=>{
+ for(const [code,view]of Object.entries({BILLING_SETTINGS_NOT_CONFIRMED:'settings',METER_ALREADY_BILLED:'bills',METER_HISTORY_LOCKED:'meters',RESIDENT_REUSE_CONFIRMATION_REQUIRED:'residents',BILL_PAYMENT_VERIFIED:'payments',DUPLICATE_SLIP:'payments',LINE_LINK_CODE_INVALID:'line-bindings',LINE_TOKEN_REJECTED:'line-oas',LINE_SINGLE_BOT_ONLY:'line-oas'})){
+  const result=explain(error(code),admin);assert.equal(result.view,view);assert.ok(result.detail.length>30);
+ }
+ for(const code of ['SLIP_TOO_LARGE','SLIP_FILE_UNREADABLE','SLIP_TYPE_INVALID'])assert.match(explain(error(code)).detail,/ไม่ต้องโอนซ้ำ/);
+ assert.equal(explain(error('LINE_TOKEN_REJECTED'),{page:'admin-console',role:'admin'}).view,null);
+});
+test('credential, permissions and missing records have honest manual recovery, no write retry',()=>{
+ assert.match(explain(error('INVALID_CREDENTIALS'),{page:'admin-login'}).detail,/รหัสผ่าน/);
+ assert.match(explain(error('INVALID_CREDENTIALS'),{page:'resident-login'}).detail,/เบอร์โทร/);
+ for(const code of ['FORBIDDEN','RESIDENT_SESSION_STALE','REQUEST_IN_PROGRESS','BILL_NOT_FOUND','PAYMENT_NOT_FOUND']){const result=explain(error(code),admin);assert.equal(result.view,undefined);assert.ok(result.detail.length>30);}
+});
 test('locked receiver and uncertain LINE errors guide to review without resending or clearing amounts',()=>{
  for(const code of ['PROMPTPAY_HAS_RESERVED_BILLS','LINE_DELIVERY_RECONCILIATION_REQUIRED','LINE_RETRY_WINDOW_EXPIRED']){
   const guide=explain(error(code),admin);assert.equal(guide.view,'bills');

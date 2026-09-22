@@ -213,9 +213,11 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                     <fieldset class="room-selector"><legend>เลือกห้องที่จะออกบิล</legend><label class="check-field"><input type="checkbox" id="select-all-bill-rooms"><span>เลือกทุกห้อง</span></label><div class="room-check-grid" id="bill-room-options"><span class="muted">เลือกรอบเดือนเพื่อโหลดห้อง</span></div></fieldset>
                     <section id="bill-recovery-issues" class="billing-issues" aria-label="ปัญหาที่ต้องแก้รายห้อง" hidden></section>
                     <p class="form-error" id="bill-builder-error" role="alert" hidden></p>
-                    <div class="form-actions"><button class="button button-secondary" type="button" id="preview-bills-button" disabled>ตรวจยอดก่อน</button><button class="button button-primary" type="submit" id="create-bills-button" disabled>ออกบิลที่เลือก</button></div>
+                    <div class="form-actions"><button class="button button-secondary" type="button" id="preview-bills-button" data-action-help aria-describedby="bill-action-help" disabled>ตรวจยอดก่อน</button><button class="button button-primary" type="submit" id="create-bills-button" data-action-help aria-describedby="bill-action-help" disabled>ออกบิลที่เลือก</button></div>
+                    <div class="action-help" id="bill-action-help" role="note">กำลังอ่านข้อมูลล่าสุด กรุณารอผลก่อนตรวจยอดหรือออกบิล</div>
                 </form>
-                <div class="section-subheading"><h3>บิลในรอบเดือน</h3><button class="button button-secondary button-small" type="button" id="line-bulk-button" disabled>เข้าคิว LINE ทั้งหมด</button></div>
+                <div class="section-subheading" id="bill-existing-section" tabindex="-1"><h3>บิลในรอบเดือน</h3><button class="button button-secondary button-small" type="button" id="line-bulk-button" data-action-help aria-describedby="bill-line-help" disabled>เข้าคิว LINE ทั้งหมด</button></div>
+                <div class="action-help" id="bill-line-help" role="note">กำลังอ่านข้อมูลบิลและสถานะ LINE กรุณารอผลก่อนเข้าคิว</div>
                 <p class="field-hint">ส่ง LINE จะแนบ QR พร้อมยอดโอนที่ล็อกตรงกับหน้าเว็บเมื่อ PromptPay และเว็บ HTTPS พร้อม แม้ไม่ได้เปิดตรวจสลิป ผู้พักพิมพ์ “บิล” ในแชตเพื่อดู QR ล่าสุดได้ หากมีสลิปรอตรวจหรือชำระแล้ว ระบบไม่ส่ง QR ให้โอนซ้ำ</p>
                 <div class="stats-grid stats-grid-four" id="bill-stats" aria-live="polite">
                     <article class="stat-card"><span>บิลรอบนี้</span><strong data-bill-stat="all">—</strong></article>

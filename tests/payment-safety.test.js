@@ -2,7 +2,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const source=fs.readFileSync('public/assets/js/app.js','utf8');
 function extract(start,end){const a=source.indexOf(start),b=source.indexOf(end,a);assert.ok(a>=0&&b>a);return source.slice(a,b);}
-function node(){return {dataset:{},hidden:false,textContent:'',attributes:{},replaceChildren(){this.cleared=true;},setAttribute(k,v){this.attributes[k]=v;},removeAttribute(k){delete this.attributes[k];}};}
+function node(){return {dataset:{},hidden:false,textContent:'',attributes:{},append(child){this.textContent+=child.textContent;},replaceChildren(){this.cleared=true;},setAttribute(k,v){this.attributes[k]=v;},removeAttribute(k){delete this.attributes[k];}};}
 function resident({result={bill_id:7,status:'pending'},error=null,bill={id:7,payment:{status:'pending'}},busy=false,fileSize=100}={}){
  const nodes=new Map(),$=key=>{if(!nodes.has(key))nodes.set(key,node());return nodes.get(key);};
  const calls=[],toasts=[],reads=[],unknown=new Set();let submit;
@@ -11,7 +11,7 @@ function resident({result={bill_id:7,status:'pending'},error=null,bill={id:7,pay
  const ctx={$,state:{slipReady:true,slipMaxBytes:1024,currentBillId:7,qrRequest:1,paymentReady:true},billDialog:dialog,
   slipInput:{files:[{type:'image/png',size:fileSize}]},uncertainPaymentBills:unknown,billDetailLoadingMessage:node(),
   FormData:class{},ApiError:class extends Error{constructor(message,status,details){super(message);this.status=status;this.details=details;}},
-  showFormError:(n,message='')=>{n.textContent=message;},showSlipLineFallback(){},setBusy(){},
+  showFormError:(n,message='')=>{n.textContent=message instanceof Error?message.message:message;},create:(_tag,_class,textContent)=>({...node(),textContent}),showSlipLineFallback(){},setBusy(){},
   setDialogBusy:(d,b)=>{d.dataset.dialogBusy=String(b);},toast:(...args)=>toasts.push(args),errorMessage:e=>e.message,
   api:async url=>{calls.push(url);if(error)throw error;return result;},
   openBill:async(...args)=>{reads.push(args);return bill;},loadAll:async()=>{reads.push('list');}};

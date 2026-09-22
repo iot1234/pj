@@ -17,24 +17,26 @@
   function blockers(state) {
     const items = [];
     if (state.settingsState === 'loading' || state.dataState === 'loading') return [{ code: 'BILL_DATA_LOADING', title: 'กำลังตรวจข้อมูลล่าสุด', detail: 'รอค่ารายเดือนและห้องของงวดที่เลือกก่อน ยังไม่มีการออกบิล', target: null }];
+    if(state.dataState==='ready'&&state.candidates>0&&state.unbilled===0&&state.selected===0&&validPeriod(state.period)&&state.period<=state.currentPeriod)return [explain({code:'ALL_ROOMS_BILLED'})];
     if (state.settingsState !== 'ready') items.push(explain({ code: 'BILL_SETTINGS_UNAVAILABLE' }));
     else if (state.configured !== true) items.push(explain({ code: 'BILLING_SETTINGS_NOT_CONFIRMED' }));
     if (state.dataState !== 'ready') items.push(explain({ code: 'BILL_DATA_UNAVAILABLE' }));
     if (!validPeriod(state.period) || state.period > state.currentPeriod) items.push(explain({ code: 'BILL_PERIOD_INVALID' }));
     else if (state.period === state.currentPeriod && !state.confirmed) items.push(explain({ code: 'CURRENT_BILLING_PERIOD_NOT_FINALIZED' }));
     items.push(...fields(state));
-    if (state.dataState === 'ready' && state.selected === 0) items.push(explain({ code: state.candidates === 0 ? 'NO_BILLING_CANDIDATES' : 'NO_ROOMS_SELECTED' }));
+    if (state.dataState === 'ready' && state.selected === 0) items.push(explain({ code: state.candidates === 0 ? 'NO_BILLING_CANDIDATES' : state.unbilled === 0 ? 'ALL_ROOMS_BILLED' : 'NO_ROOMS_SELECTED' }));
     return items;
   }
   // ปลายทางทั้งหมดอยู่ในรายการนี้ ไม่ตีความ URL หรือ selector ที่ผู้ให้บริการส่งมา
   const routes = {
-    BILLING_SETTINGS_NOT_CONFIRMED: ['ยังไม่ยืนยันค่าน้ำ ค่าไฟ และระยะชำระ', 'ตรวจราคาจริงแล้วบันทึกที่หน้าตั้งค่าเพียงครั้งเดียว จากนั้นกลับมาตรวจยอดได้ ค่า 0 ใช้ได้เมื่อคุณตั้งใจยืนยันว่าไม่คิดค่าบริการนั้น', 'settings', 'water_rate', 'ไปยืนยันค่ารายเดือน'],
+    BILLING_SETTINGS_NOT_CONFIRMED: ['ยังไม่ยืนยันค่าน้ำ ค่าไฟ และระยะชำระ', 'ให้เจ้าของตรวจราคาจริงแล้วบันทึกที่หน้าตั้งค่า จากนั้นกลับมาตรวจยอดได้ ค่า 0 ใช้ได้เมื่อคุณตั้งใจยืนยันว่าไม่คิดค่าบริการนั้น', 'settings', 'water_rate', 'ไปยืนยันค่ารายเดือน'],
     BILL_SETTINGS_UNAVAILABLE: ['อ่านค่ารายเดือนไม่สำเร็จ', 'ลองโหลดใหม่ ระบบจะไม่ใช้ค่าศูนย์หรือข้อมูลเก่าแทนค่าที่อ่านไม่ได้', 'reload', '', 'ลองโหลดข้อมูลใหม่'],
     BILL_DATA_UNAVAILABLE: ['อ่านข้อมูลห้องหรือบิลไม่สำเร็จ', 'ต้องทราบข้อมูลของงวดนี้ก่อน เพื่อไม่ออกบิลซ้ำหรือเลือกห้องผิดงวด', 'reload', '', 'ลองโหลดข้อมูลใหม่'],
     BILL_PERIOD_INVALID: ['ตรวจรอบเดือนที่จะออกบิล', 'เลือกเดือนไม่เกินเดือนปัจจุบัน ตามช่วงที่ผู้พักเข้าอยู่จริง', 'bills', 'period', 'ไปเลือกรอบเดือน'],
     CURRENT_BILLING_PERIOD_NOT_FINALIZED: ['ยังไม่ได้ยืนยันปิดยอดเดือนปัจจุบัน', 'จดมิเตอร์ให้ครบก่อน แล้วอ่านและเลือกยืนยันปิดยอดเดือนนี้ด้วยตนเอง ระบบไม่ทำเครื่องหมายให้แทน', 'bills', 'confirm_current_period', 'ไปตรวจการปิดยอด'],
     NO_BILLING_CANDIDATES: ['ไม่มีห้องที่มีผู้พักในงวดนี้', 'ตรวจเดือนและวันเข้าพักจริง ห้องที่เพิ่งมีผู้พักภายหลังไม่ควรถูกออกบิลย้อนหลังเป็นเดือนที่ยังไม่ได้เข้าอยู่', 'bills', 'period', 'ไปเลือกรอบเดือน'],
     NO_ROOMS_SELECTED: ['ยังไม่ได้เลือกห้องที่ออกบิลได้', 'เลือกห้องที่ต้องการ ห้องที่มีบิลแล้วจะไม่เปิดให้เลือกซ้ำ', 'bills', 'rooms', 'ไปเลือกห้อง'],
+    ALL_ROOMS_BILLED: ['ทุกห้องในงวดนี้ออกบิลแล้ว จึงเลือกหรือออกบิลซ้ำไม่ได้', 'ไม่ต้องออกบิลอีก ดูบิลเดิมและสถานะชำระใน “บิลในรอบเดือน” ด้านล่าง หากต้องการออกบิลรอบอื่นให้เปลี่ยนเดือนก่อน', 'bills', 'existing', 'ดูบิลที่ออกแล้ว'],
     METER_OPENING_REQUIRED: ['ยังขาดเลขมิเตอร์ ณ วันเข้าพัก', 'เปิดผู้พักรอบนี้ แล้วเติมเลขน้ำและไฟจริง ณ วันส่งมอบห้อง ไม่ใส่ 0 แทนเลขที่ไม่ทราบ', 'residents', 'opening', 'ไปเติมเลขเริ่มต้น'],
     MISSING_METER: ['ยังจดมิเตอร์ของงวดนี้ไม่ครบ', 'ระบบจะเลือกเดือนและห้องให้ จดเลขที่ขาด บันทึก แล้วกลับมาตรวจยอดใหม่', 'meters', '', 'ไปจดมิเตอร์ห้องนี้'],
     METER_HISTORY_GAP: ['ขาดประวัติมิเตอร์งวดก่อน', 'หน้ามิเตอร์จะบอกงวดแรกที่ขาด กดเติมงวดตามลำดับแล้วกลับมา ไม่ใช้เลขของผู้พักคนก่อนและไม่เติมศูนย์เพื่อข้าม', 'meters', '', 'ไปเติมงวดที่ขาด'],

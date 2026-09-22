@@ -365,7 +365,7 @@ $test('critical usability guards remain in the web UI',function()use($same):void
     foreach(['input.disabled=locked','inputs.filter(i=>!i.disabled)','ออกบิลแล้ว']as$item)$same(true,str_contains($js,$item));
     $same(true,str_contains($js,"profile.line_user_id_hint"));
     $same(true,str_contains($resident,"unset(\$row['line_user_id'],\$row['auth_version'])"));
-    $same(2,preg_match_all('/id="(?:preview-bills-button|create-bills-button)" disabled/',$admin));
+    $same(2,preg_match_all('/id="(?:preview-bills-button|create-bills-button)"[^>]*\sdisabled(?:\s|>)/',$admin));
     $same(true,str_contains($portal,'id="resident-line-status-refresh"'));
     $same(true,str_contains($portal,'id="resident-line-add-friend"'));
     $same(true,str_contains($portal,'id="resident-line-code-qr"'));

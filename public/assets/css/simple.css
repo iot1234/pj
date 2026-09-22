@@ -123,3 +123,17 @@ input[readonly] { cursor: text; background: #f5f7fa; }
 #resident-line-slip-message { white-space: pre-line; overflow-wrap: anywhere; }
 /* Recovery remains inside the failed form, with a clear optional next step. */
 .recovery-detail { display: block; margin: .5rem 0; line-height: 1.65; }
+.action-help { display: block; flex-basis: 100%; grid-column: 1 / -1; width: 100%; min-width: 0; margin-block: .6rem; padding: .75rem; border: 1px solid #aabddd; border-radius: 8px; background: #f4f7fc; color: #263d60; font-size: .88rem; font-weight: 400; line-height: 1.65; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.action-help[hidden] { display: none; }
+.action-help-item, .action-help-item > strong, .action-help-item > span { display: block; }
+.action-help-item + .action-help-item { margin-top: .7rem; padding-top: .7rem; border-top: 1px solid #ccd6e5; }
+.action-help .button { margin-top: .5rem; min-height: 44px; white-space: normal; }
+label:has(> .action-help) { flex-wrap: wrap; }
+.room-check:has(> .action-help) { align-content: start; }
+.room-check-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr)); }
+.room-check > .action-help { margin: 0; padding: .35rem 0 0; border: 0; background: transparent; font-size: .8rem; }
+.toast-error { pointer-events: auto; max-height: 60dvh; overflow-y: auto; }
+.toast-error .button { margin: .5rem .4rem 0 0; white-space: normal; }
+.toast-region { max-height: 65dvh; overflow-y: auto; }
+.line-action-explanation { min-width: 12rem; max-width: 25rem; text-align: left; white-space: normal; }
+.line-action-explanation > summary { cursor: pointer; min-height: 44px; padding-block: .6rem; color: var(--accent-dark); }

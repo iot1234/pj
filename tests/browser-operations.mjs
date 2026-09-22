@@ -1,5 +1,6 @@
 // Opt-in browser regression: run only after operations_mysql.php in its disposable schema.
 import assert from 'node:assert/strict';
+import {verifyActionGuidance} from './browser-action-guidance.mjs';
 const base=process.env.OPERATIONS_TEST_URL || 'http://127.0.0.1:18947';
 if(process.env.APP_ENV!=='testing' || !/^appj_(?:line_test_)?operations(?:_[a-z0-9_]+)?$/.test(process.env.DB_DATABASE||'')
   || !/^http:\/\/127\.0\.0\.1:\d+$/.test(base))throw new Error('Disposable operations fixture and loopback HTTP server required');
@@ -74,4 +75,5 @@ try {
   await page.goto(base+'/admin#'+view);await page.locator(`[data-admin-view="${view}"]`).waitFor();await page.waitForLoadState('networkidle');
  }
  assert.deepEqual(errors,[]);log('all 11 admin views remain compatible; no JavaScript errors or external calls');
+ await verifyActionGuidance(page,base);assert.deepEqual(errors,[]);
 } finally {await browser.close();}
