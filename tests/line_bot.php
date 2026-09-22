@@ -27,6 +27,11 @@ $check('free chat and embedded commands do not trigger a bot response', static f
         $assert(LineBotService::intent($text)===null);
     }
 });
+$check('slip image marker and official prefilled payment text reach guidance intent',static function()use($assert):void{
+    $assert(LineBotService::intent('SLIP_IMAGE_REVIEW_ONLY')==='slip_guidance');
+    $assert(LineBotService::intent("แจ้งชำระ BILL-TEST\nห้อง A-101")==='slip_guidance');
+    $assert(LineBotService::intent('ขอสอบถามเรื่องแจ้งชำระ')===null);
+});
 $bill = ['bill_no'=>'B-TEST','period'=>'2026-09-01','due_date'=>'2026-09-20',
     'room_code_snapshot'=>'A-101','total_amount'=>'4848.50','status'=>'pending','payment_status'=>null];
 $check('bill output keeps the stored decimal amount and period', static function() use ($assert,$bill): void {

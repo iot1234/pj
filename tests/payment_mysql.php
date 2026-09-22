@@ -95,8 +95,8 @@ try{
         $a=$make();$b=$make();$f=$image();$reference='SAME-BANK-REFERENCE';$upload($a,$f);
         $expect(fn()=>$upload($b,$f),'DUPLICATE_SLIP');$assert($upload($b,$image())['status']==='rejected'&&$status($b)==='pending');$reference=null;
     });
-    $test('changed QR receiver blocks QR but retains uploaded evidence with a reviewable result',function()use($make,$image,$upload,$service,$app,$owner,$status,$assert,&$calls):void{
-        $b=$make();$app->settings()->update(['promptpay_target'=>'0812345679'],$owner);$before=$calls;
+    $test('changed QR receiver blocks QR but retains uploaded evidence with a reviewable result',function()use($make,$image,$upload,$service,$app,$pdo,$owner,$status,$assert,&$calls):void{
+        $b=$make();$pdo->exec("UPDATE integration_settings SET promptpay_target='0812345679' WHERE id=1");$before=$calls;
         $detail=$app->billing()->residentDetail($b['resident_id'],$b['id']);$assert($detail['payment_capabilities']['transfer_instruction_ready']===false);
         $p=$upload($b,$image());$assert($p['status']==='pending'&&$calls===$before&&str_contains($p['rejection_reason'],'เก็บสลิปไว้แล้ว')&&$status($b)==='pending');
         $app->settings()->update(['promptpay_target'=>'0812345678'],$owner);$assert($service->retry($p['id'])['status']==='verified');

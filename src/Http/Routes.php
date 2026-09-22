@@ -29,6 +29,13 @@ final class Routes
 
         $router->get('/api/public/rooms',fn(Request $r)=>Response::json($app->rooms()->available()));
         $router->get('/api/public/contact',fn(Request $r)=>Response::json($app->settings()->publicContact()));
+        $router->get('/api/public/line-payment-qr/{id}',function(Request $r)use($app,$id):Response{
+            $app->limiter()->hit('line-payment-image-ip',$app->security()->clientIp($r),240,60,60);
+            $png=$app->lineBills()->image($id($r),$r->query['token']??null);
+            return new Response($png,200,['Content-Type'=>'image/png','Content-Length'=>(string)strlen($png),
+                'Cache-Control'=>'no-store, private, max-age=0','Referrer-Policy'=>'no-referrer',
+                'X-Content-Type-Options'=>'nosniff','X-Robots-Tag'=>'noindex, nofollow, noarchive']);
+        });
         $router->post('/api/public/bookings',function(Request $r)use($app):Response{$clientIp=$app->security()->clientIp($r);$app->limiter()->hit('public-booking-attempt-ip',$clientIp,60,3600,3600);$app->bookings()->expirePublicPhoneHolds($r->body['phone']??null);$outcome=$app->database()->transaction(function()use($app,$r,$clientIp):array{$outcome=$app->bookings()->createPublicOutcome($r->body,$clientIp);$replay=($outcome['idempotent_replay']??false)===true;if(!$app->bookings()->isErrorOutcome($outcome)&&!$replay)$app->audit()->writeStrict($r,$app->actor(),'booking.create','booking',$outcome['id'],['room_id'=>$outcome['room_id']]);return $outcome;});$data=$app->bookings()->resolveOutcome($outcome);$replay=($data['idempotent_replay']??false)===true;return Response::json($data,$replay?200:201,$replay?'Existing booking returned':'Booking request received');});
         $router->post('/api/webhooks/line',fn(Request $r)=>Response::json($app->lineWebhook()->handle($r),200,'LINE webhook accepted'));
         $router->post('/api/webhooks/line/oa/{routeToken}',function(Request $r)use($app):Response{

@@ -955,7 +955,7 @@ $test('direct resident UI keeps one idempotency key, lists only available rooms,
         'name="full_name"','name="phone"','name="email"','name="reuse_resident_id" type="checkbox" disabled',
         'id="resident-create-reuse-field" hidden','id="resident-create-error" role="alert" hidden',
     ]as$surface)$same(true,str_contains($template,$surface));
-    $same(true,str_contains($template,'activation code'));
+    $same(true,str_contains($template,'เบอร์ที่ผูกกับห้องเข้าสู่ระบบได้ทันที'));
     $same(true,str_contains($template,'name="opening_water_reading"'));
     $same(true,str_contains($template,'name="opening_electric_reading"'));
     $same(false,str_contains(substr($template,strpos($template,'id="resident-create-dialog"'),strpos($template,'id="resident-edit-dialog"')-strpos($template,'id="resident-create-dialog"')),'PIN'));
@@ -977,7 +977,7 @@ $test('direct resident UI keeps one idempotency key, lists only available rooms,
     $same(true,str_contains($js,"actionButton('เพิ่มผู้พัก', 'add-resident-to-room'"));
     $same(true,str_contains($js,"if (room.status === 'available') actions.push"));
     $same(true,str_contains($js,"button.dataset.action === 'add-resident-to-room'"));
-    foreach(['resident.access_active === true','resident.activation_pending === true','ต้องออกคีย์']as$accessState)$same(true,str_contains($js,$accessState));
+    foreach(['resident.access_active === true','resident.opening_readings_pending === true','ตรวจข้อมูลผู้พัก']as$accessState)$same(true,str_contains($js,$accessState));
 
     $submitStart=strpos($js,"\$('#resident-create-form').addEventListener('submit'");
     $submitEnd=strpos($js,"\$('#resident-rows').addEventListener('click'",$submitStart===false?0:$submitStart);
@@ -1492,13 +1492,15 @@ $test('LINE outbox retries preserve identity, payload bytes, and retry UUID',fun
 
     $source=file_get_contents(dirname(__DIR__).'/src/Domain/NotificationService.php');
     if(!is_string($source))throw new RuntimeException('cannot read NotificationService');
-    $same(true,str_contains($source,"\$existing['status']==='pending'&&(int)\$existing['attempts']===0"));
+    $same(true,str_contains($source,"(int)\$existing['attempts']===0 && in_array(\$existing['status'],['pending','failed'],true)"));
     $same(false,str_contains($source,"line_request_id=NULL,line_accepted_request_id=NULL"));
-    $failedStart=strpos($source,"if(\$existing['status']==='failed'){");
-    $failedEnd=strpos($source,"}elseif(\$existing['status']==='pending'",$failedStart);
+    $failedStart=strpos($source,"}elseif(\$existing['status']==='failed'){");
+    $failedEnd=strpos($source,"\$get=\$pdo->prepare('SELECT id,bill_id,status,attempts",$failedStart);
     $failedSource=substr($source,$failedStart,$failedEnd-$failedStart);
     foreach(['retry_key=?','created_at=','payload=?','attempts=0']as$reset)$same(false,str_contains($failedSource,$reset));
     $same(true,str_contains($failedSource,'LINE_RETRY_WINDOW_EXPIRED'));
+    $same(true,str_contains($failedSource,'LINE_DELIVERY_RECONCILIATION_REQUIRED'));
+    $same(true,str_contains($source,"\$neverSent=(int)\$row['attempts']===1&&!\$providerAttempted&&!\$e->retryable;"));
     $same(true,str_contains($source,'created_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP()'));
     $same(true,str_contains($source,'SELECT id,resident_id,line_oa_id,line_binding_id,retry_key,attempts,recipient,payload'));
     $same(true,str_contains($source,'retry_generation_expired'));
@@ -1521,7 +1523,9 @@ $test('LINE delivery response classification is fail closed and provider IDs are
     $same(true,str_contains($source,"'accepted_request_id'=>\$providerHeaders['x-line-accepted-request-id']??null"));
     $same(true,str_contains($source,"new LineDeliveryException('LINE network request failed"));
     $same(true,str_contains($source,'in_array($status,[408,429],true)'));
-    $same(true,str_contains($source,"SUM(n.status='failed' AND b.status='pending')"));
+    $same(true,str_contains($source,"SUM(n.status='failed' AND b.status='pending' AND ("));
+    $same(true,str_contains($source,"rb.id=n.line_binding_id AND rb.status='bound'"));
+    $same(true,str_contains($source,'BINARY r.line_user_id=BINARY n.recipient'));
     $same(false,str_contains($source,"if(\$status>=400&&\$status<500)throw new LineDeliveryException('LINE API rejected the request (HTTP '.\$status.')',true"));
 });
 $test('signed LINE webhook binds the exact raw body and strict direct-user IDs',function()use($same,$throwsHttp,$app):void{
@@ -2239,8 +2243,8 @@ $test('admin bill status and LINE queues honor the deterministic latest payment'
     $same(true,str_contains($period,"\$skipped[]=['bill_id'=>(int)\$id,'code'=>\$e->errorCode,'message'=>\$e->getMessage()];"));
 
     $same(true,str_contains($notifications,"\$id=(int)\$row['id'];\$billId=(int)\$row['bill_id'];"));
-    $same(true,str_contains($notifications,'return $this->deliverClaimed($id,$billId,$claimToken);'));
-    $deliveryStart=strpos($notifications,'private function deliverClaimed(int $id,int $billId,string $claimToken): array');
+    $same(true,str_contains($notifications,'return $this->deliverClaimed($id,$billId,$claimToken,$providerAttempted);'));
+    $deliveryStart=strpos($notifications,'private function deliverClaimed(int $id,int $billId,string $claimToken,bool &$providerAttempted): array');
     $deliveryEnd=$deliveryStart===false?false:strpos($notifications,'private function refreshClaim(',$deliveryStart);
     if($deliveryStart===false||$deliveryEnd===false)throw new RuntimeException('cannot isolate claimed LINE delivery');
     $delivery=substr($notifications,$deliveryStart,$deliveryEnd-$deliveryStart);
@@ -2457,4 +2461,5 @@ $test('LINE binding lock rejects an unbounded wait before touching MySQL',functi
 require __DIR__.'/line_setup_unit.php';
 require __DIR__.'/external_api_unit.php';
 require __DIR__.'/meter_readiness_unit.php';
+require __DIR__.'/line_qr_unit.php';
 fwrite(STDOUT,"\n{$passed} passed, {$failed} failed".PHP_EOL);exit($failed===0?0:1);

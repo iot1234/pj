@@ -318,7 +318,7 @@ final class BillingService
         $deliveries=[];
         foreach(array_chunk(array_column($rows,'id'),200) as $billIds){
             $deliveryQuery=$this->app->database()->pdo()->prepare(
-                "SELECT bill_id,line_binding_id,line_oa_id,status,attempts,last_error,sent_at,line_request_id,line_accepted_request_id
+                "SELECT bill_id,line_binding_id,line_oa_id,recipient,status,attempts,last_error,sent_at,line_request_id,line_accepted_request_id
                  FROM notification_outbox WHERE purpose='bill_delivery' AND bill_id IN (".implode(',',array_fill(0,count($billIds),'?')).") ORDER BY id DESC");
             $deliveryQuery->execute($billIds);
             foreach($deliveryQuery->fetchAll() as $delivery)$deliveries[(int)$delivery['bill_id']][]=$delivery;
@@ -334,6 +334,14 @@ final class BillingService
             $targets=$recipients[$residentId];
             $readyTargets=array_values(array_filter($targets,static fn(array $target):bool=>$oaReady[(int)$target['oa_id']]??false));
             $billDeliveries=$deliveries[(int)$row['id']]??[];
+            $currentRecipients=[];
+            foreach($targets as $target)$currentRecipients[$target['oa_id'].':'.$target['id']]=(string)$target['line_user_id'];
+            $allDeliveryCount=count($billDeliveries);
+            $billDeliveries=array_values(array_filter($billDeliveries,static function(array $delivery)use($currentRecipients):bool{
+                $key=$delivery['line_oa_id'].':'.(int)($delivery['line_binding_id']??0);
+                return isset($currentRecipients[$key])&&hash_equals($currentRecipients[$key],(string)$delivery['recipient']);
+            }));
+            $row['line_previous_delivery_count']=$allDeliveryCount-count($billDeliveries);
             $row+=self::summarizeLineDeliveries($billDeliveries);
             $row['line_linked']=$targets!==[];
             $row['line_ready']=$readyTargets!==[];

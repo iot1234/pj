@@ -102,6 +102,7 @@ final class Application
     public function lineNotices(): LineNoticeService { return $this->lineNotices; }
     public function payments(): PaymentService { return $this->payments; }
     public function transfers(): \Dormitory\Domain\TransferInstructionService { return $this->transferInstructions ??= new \Dormitory\Domain\TransferInstructionService($this); }
+    public function lineBills(): \Dormitory\Domain\LineBillService { return new \Dormitory\Domain\LineBillService($this); }
 
     /** @return array<string,mixed>|null */
     public function actor(bool $refresh = false): ?array

@@ -175,7 +175,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                 <div class="stats-grid stats-grid-four" id="resident-stats" aria-live="polite">
                     <article class="stat-card"><span>ผู้พักทั้งหมด</span><strong data-resident-stat="all">—</strong></article>
                     <article class="stat-card stat-occupied"><span>ผูก LINE แล้ว</span><strong data-resident-stat="line">—</strong><small>รับบิลผ่าน LINE ได้</small></article>
-                    <article class="stat-card stat-reserved"><span>รอเปิดใช้งาน</span><strong data-resident-stat="activation">—</strong><small>ยังไม่ได้ใช้รหัสเปิดใช้งาน</small></article>
+                    <article class="stat-card stat-reserved"><span>รอเลขมิเตอร์เริ่มต้น</span><strong data-resident-stat="opening">—</strong><small>เติมเลขน้ำและไฟจริงก่อนออกบิล</small></article>
                     <article class="stat-card"><span>ยังไม่ผูก LINE</span><strong data-resident-stat="noline">—</strong><small>ต้องแจ้งบิลด้วยวิธีอื่น</small></article>
                 </div>
                 <div class="security-note" id="resident-opening-note" role="status" hidden><strong id="resident-opening-count"></strong><span>กรอกเลขน้ำและไฟจริง ณ วันเข้าพักด้วยปุ่ม “เติมเลขเริ่มต้น” ของแต่ละห้อง ระบบจะพักการจดมิเตอร์และออกบิลของห้องเหล่านี้ไว้จนกว่าข้อมูลจะครบ</span></div>
@@ -216,6 +216,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                     <div class="form-actions"><button class="button button-secondary" type="button" id="preview-bills-button" disabled>ตรวจยอดก่อน</button><button class="button button-primary" type="submit" id="create-bills-button" disabled>ออกบิลที่เลือก</button></div>
                 </form>
                 <div class="section-subheading"><h3>บิลในรอบเดือน</h3><button class="button button-secondary button-small" type="button" id="line-bulk-button" disabled>เข้าคิว LINE ทั้งหมด</button></div>
+                <p class="field-hint">ส่ง LINE จะแนบ QR พร้อมยอดโอนที่ล็อกตรงกับหน้าเว็บเมื่อ PromptPay และเว็บ HTTPS พร้อม แม้ไม่ได้เปิดตรวจสลิป ผู้พักพิมพ์ “บิล” ในแชตเพื่อดู QR ล่าสุดได้ หากมีสลิปรอตรวจหรือชำระแล้ว ระบบไม่ส่ง QR ให้โอนซ้ำ</p>
                 <div class="stats-grid stats-grid-four" id="bill-stats" aria-live="polite">
                     <article class="stat-card"><span>บิลรอบนี้</span><strong data-bill-stat="all">—</strong></article>
                     <article class="stat-card stat-reserved"><span>รอชำระ</span><strong data-bill-stat="pending">—</strong></article>
@@ -346,7 +347,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
             <label class="field"><span>เลขมิเตอร์น้ำเริ่มต้น</span><input name="opening_water_reading" type="number" inputmode="decimal" min="0" max="9999999" step="0.01" required><small>อ่านจากหน้ามิเตอร์ ณ ตอนส่งมอบห้อง</small></label>
             <label class="field"><span>เลขมิเตอร์ไฟเริ่มต้น</span><input name="opening_electric_reading" type="number" inputmode="decimal" min="0" max="9999999" step="0.01" required><small>อ่านจากหน้ามิเตอร์ ณ ตอนส่งมอบห้อง</small></label>
         </div>
-        <p class="field-hint">หลังบันทึก ระบบจะแสดงรหัสเปิดใช้งานครั้งเดียว ผู้พักต้องใช้รหัสนี้กับเบอร์โทรเพื่อตั้งรหัสผ่านใหม่</p>
+        <p class="field-hint">หลังบันทึก ผู้พักใช้เบอร์โทรที่ผูกกับห้องเข้าสู่ระบบได้ทันที ไม่ต้องตั้งรหัสผ่าน ตรวจตัวตนและเบอร์โทรให้ถูกต้องก่อนส่งมอบห้อง</p>
         <label class="check-field" id="move-in-reuse-field" hidden><input name="reuse_resident_id" type="checkbox" disabled><span id="move-in-reuse-label">ยืนยันการเชื่อมบัญชีผู้พักเดิม</span></label>
         <p class="field-hint" id="move-in-reuse-help" hidden>เลือกเฉพาะเมื่อยืนยันแล้วว่าเป็นบุคคลเดิม ประวัติบิลเก่าจะถูกเชื่อมกับบัญชีนี้ หากเป็นคนละคนต้องใช้เบอร์โทรอื่นเพื่อปกป้องข้อมูลส่วนบุคคล</p>
         <p class="form-error" id="move-in-error" role="alert" hidden></p>
@@ -362,7 +363,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
     <form class="modal-card modal-card-wide" id="resident-create-form">
         <input type="hidden" name="idempotency_key">
         <div class="modal-header"><div><p class="eyebrow">ผู้พักหลัก / ผู้ถือบัญชีของห้อง</p><h2 id="resident-create-title">เพิ่มผู้พักเข้าห้อง</h2></div><button class="text-control" type="button" data-close-dialog aria-label="ปิด">ปิด</button></div>
-        <div class="security-note"><strong>หนึ่งห้องมีผู้พักหลักได้ครั้งละ 1 คน</strong><span>ระบบจะสร้างหลักฐานรับเข้าพักและรหัสเปิดใช้งานครั้งเดียว ต้องตรวจตัวตน เบอร์ และเลขมิเตอร์จริงก่อนบันทึก</span></div>
+        <div class="security-note"><strong>หนึ่งห้องมีผู้พักหลักได้ครั้งละ 1 คน</strong><span>ผู้พักใช้เบอร์ที่ผูกกับห้องเข้าสู่ระบบได้ทันที ไม่ต้องใช้รหัสเปิดใช้งาน ต้องตรวจตัวตน เบอร์ และเลขมิเตอร์จริงก่อนบันทึก</span></div>
         <div class="form-grid form-grid-two">
             <label class="field"><span>ห้องว่าง</span><select name="room_id" required></select><small id="resident-create-room-help">แสดงเฉพาะห้องที่ระบบตรวจว่าไม่มีผู้จองหรือผู้พัก</small></label>
             <label class="field"><span>วันที่เข้าพัก</span><input name="move_in_date" type="date" min="2000-01-01" required></label>
@@ -395,7 +396,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
 </dialog>
 
 <dialog class="modal" id="resident-edit-dialog" aria-labelledby="resident-edit-title">
-    <form class="modal-card" id="resident-edit-form"><input type="hidden" name="resident_id"><div class="modal-header"><div><p class="eyebrow">ข้อมูลผู้พักที่ยืนยันแล้ว</p><h2 id="resident-edit-title">แก้ข้อมูลผู้พัก</h2></div><button class="text-control" type="button" data-close-dialog aria-label="ปิด">ปิด</button></div><p class="modal-lead" id="resident-edit-summary"></p><div class="security-note"><strong>เบอร์โทรเป็นชื่อบัญชี ไม่ใช่รหัสผ่าน</strong><span>ตรวจสอบตัวตนก่อนเปลี่ยนเบอร์ เมื่อบันทึก ระบบจะยกเลิกเซสชันและรหัสผ่านเดิม แล้วออก activation code ใหม่ให้ส่งมอบผู้พัก</span></div><div class="form-grid form-grid-two"><label class="field"><span>ชื่อ–นามสกุล</span><input name="full_name" type="text" minlength="1" maxlength="150" required autocomplete="name"></label><label class="field"><span>เบอร์โทรศัพท์</span><input name="phone" type="tel" minlength="10" maxlength="20" required autocomplete="tel"></label><label class="field"><span>อีเมล</span><input name="email" type="email" maxlength="190" autocomplete="email"></label></div><p class="field-hint">LINE User ID เปลี่ยนได้จากบัญชีผู้พักเท่านั้น และต้องยืนยันรหัสที่ส่งผ่าน LINE</p><p class="form-error" id="resident-edit-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-primary" type="submit">บันทึกข้อมูล</button></div></form>
+    <form class="modal-card" id="resident-edit-form"><input type="hidden" name="resident_id"><div class="modal-header"><div><p class="eyebrow">ข้อมูลผู้พักที่ยืนยันแล้ว</p><h2 id="resident-edit-title">แก้ข้อมูลผู้พัก</h2></div><button class="text-control" type="button" data-close-dialog aria-label="ปิด">ปิด</button></div><p class="modal-lead" id="resident-edit-summary"></p><div class="security-note"><strong>ตรวจตัวตนก่อนเปลี่ยนเบอร์เข้าใช้งาน</strong><span>เมื่อเปลี่ยนเบอร์ ระบบจะยกเลิกเซสชันและการผูก LINE เดิม ผู้พักใช้เบอร์ใหม่เข้าสู่ระบบได้ทันที แล้วผูก LINE ใหม่ ไม่ต้องใช้รหัสผ่านหรือรหัสเปิดใช้งาน</span></div><div class="form-grid form-grid-two"><label class="field"><span>ชื่อ–นามสกุล</span><input name="full_name" type="text" minlength="1" maxlength="150" required autocomplete="name"></label><label class="field"><span>เบอร์โทรศัพท์</span><input name="phone" type="tel" minlength="10" maxlength="20" required autocomplete="tel"></label><label class="field"><span>อีเมล</span><input name="email" type="email" maxlength="190" autocomplete="email"></label></div><p class="field-hint">จัดการการผูก LINE ได้ที่ปุ่มสถานะ LINE ของผู้พัก ต้องยืนยันด้วยรหัสผูกบัญชีผ่านแชตบอทของหอพัก</p><p class="form-error" id="resident-edit-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-primary" type="submit">บันทึกข้อมูล</button></div></form>
 </dialog>
 
 <script src="<?= e($assetUrl('/assets/js/admin-line-platform.js')) ?>" defer></script>

@@ -19,6 +19,14 @@ test('resident login has exactly one phone input and no credential or activation
  assert.ok(!template.includes('type="password"'));assert.ok(!login.includes('firstActivation'));
 });
 test('an invalid empty form does not send a request',async()=>{const h=harness();h.form.valid=false;await h.submit();assert.equal(h.requests.length,0);});
+test('admin onboarding and phone-change guidance agree with phone-only access',()=>{
+ const admin=fs.readFileSync(path.join(__dirname,'../templates/admin/console.php'),'utf8');
+ assert.doesNotMatch(admin,/ระบบจะแสดงรหัสเปิดใช้งาน|ตั้งรหัสผ่านใหม่|แล้วออก activation code/);
+ assert.match(admin,/ผู้พักใช้เบอร์ใหม่เข้าสู่ระบบได้ทันที แล้วผูก LINE ใหม่/);
+ assert.match(admin,/data-resident-stat="opening"/);assert.doesNotMatch(admin,/data-resident-stat="activation"/);
+ const render=source.slice(source.indexOf('function renderResidents()'),source.indexOf('async function loadResidents()'));
+ assert.match(render,/data-resident-stat="opening"/);assert.doesNotMatch(render,/activation_pending|ต้องออกคีย์/);
+});
 test('a pending phone request locks the whole form and a second submit sends nothing',async()=>{
  const h=harness(),work=h.submit();assert.equal(h.form.locked,true);await h.submit();assert.equal(h.requests.length,1);
  assert.deepEqual(JSON.parse(JSON.stringify(h.requests[0].options.body)),{phone:'081-234-5678'});

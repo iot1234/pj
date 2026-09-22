@@ -161,6 +161,7 @@ final class LineWebhookService
                             $candidate['reply_token'],
                             $reply['text'],
                             $deadlineNanoseconds,
+                            $reply['messages'] ?? null,
                         );
                         if ($replyDisposition === 'deferred') {
                             return 'deferred';
@@ -228,7 +229,7 @@ final class LineWebhookService
                 if (self::remainingMilliseconds($deadlineNanoseconds) < self::MIN_REPLY_START_MILLISECONDS) {
                     return 'deferred';
                 }
-                $current = (new LineBotService($this->app,$this->oaId))->command($candidate['line_user_id'], $intent, $residentId);
+                $current = (new LineBotService($this->app,$this->oaId))->command($candidate['line_user_id'], $intent, $residentId, true, $deadlineNanoseconds);
                 if ($current['outcome'] === 'bound' && $reply['outcome'] === 'already_bound') {
                     $current['text'] = "บัญชีนี้ผูกเรียบร้อยแล้ว ไม่ต้องดำเนินการซ้ำ\n" . $current['text'];
                     $current['outcome'] = 'already_bound';
@@ -344,7 +345,7 @@ final class LineWebhookService
         if ($candidate['event_type'] !== 'message') return 'instructions';
         if (preg_match('/^BIND-[A-F0-9]{32}$/Di', $message) === 1) return 'bind';
         if (preg_match('/^(OWNER|ADMIN)-[A-F0-9]{32}$/Di', $message) === 1) return 'bind';
-        return in_array(LineBotService::intent($message), ['help', 'status', 'bills'], true)
+        return in_array(LineBotService::intent($message), ['help', 'status', 'bills', 'slip_guidance'], true)
             ? 'command' : 'instructions';
     }
 
@@ -455,7 +456,7 @@ final class LineWebhookService
                 'outcome' => 'instructions',
             ];
         }
-        if($message==='SLIP_IMAGE_REVIEW_ONLY'||str_starts_with($message,'แจ้งชำระ ')){
+        if(LineBotService::intent($message)==='slip_guidance'){
             return ['text'=>"ส่งเลขบิล ห้อง ยอดโอน และรูปสลิปในแชตนี้ให้ผู้ดูแลตรวจยอดรับเงินจริง\nยังไม่ยืนยันว่าชำระแล้ว และเว็บยังไม่ได้รับไฟล์จากแชตนี้\nไม่ต้องโอนซ้ำ หากเร่งด่วนให้ติดต่อสำนักงานหอพัก",'outcome'=>'slip_manual_guidance'];
         }
         $intent = LineBotService::intent($message);
@@ -466,7 +467,8 @@ final class LineWebhookService
             }catch(HttpException $error){return ['text'=>'คีย์ผู้รับแจ้งเตือนไม่ถูกต้อง หมดอายุ หรือส่งผิด OA กรุณาขอคีย์ใหม่จากผู้ดูแล','outcome'=>'admin_claim_invalid'];}
         }
         if (in_array($intent, ['help', 'status', 'bills'], true)) {
-            return $bot->command($candidate['line_user_id'], $intent);
+            // Prepare identity/text only. Reserve QR amounts after the final binding fence.
+            return $bot->command($candidate['line_user_id'], $intent, null, false);
         }
         if (!str_starts_with(strtoupper($message), 'BIND-')) {
             return [
@@ -550,10 +552,10 @@ final class LineWebhookService
     }
 
     /** @return 'replied'|'token_unavailable'|'deferred' */
-    private function replyWithText(string $token, string $replyToken, string $text, int $deadlineNanoseconds): string
+    private function replyWithText(string $token, string $replyToken, string $text, int $deadlineNanoseconds, ?array $messages = null): string
     {
         if ($this->replyTransport !== null) {
-            $result = ($this->replyTransport)($token, $replyToken, $text, $deadlineNanoseconds);
+            $result = ($this->replyTransport)($token, $replyToken, $text, $deadlineNanoseconds, $messages ?? [['type'=>'text','text'=>$text]]);
             if (!in_array($result, ['replied', 'token_unavailable', 'deferred'], true)) {
                 throw new \RuntimeException('Invalid LINE reply transport result');
             }
@@ -567,7 +569,7 @@ final class LineWebhookService
         }
         $body = json_encode([
             'replyToken' => $replyToken,
-            'messages' => [[
+            'messages' => $messages ?? [[
                 'type' => 'text',
                 'text' => $text,
             ]],

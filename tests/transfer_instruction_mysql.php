@@ -6,6 +6,12 @@ use Dormitory\Integration\SlipVerifier;
 if(PHP_SAPI!=='cli'||getenv('APP_ENV')!=='testing'||!preg_match('/^appj_[a-z0-9_]+$/D',(string)getenv('DB_DATABASE')))exit(64);
 $app=require dirname(__DIR__).'/bootstrap.php';$pdo=$app->database()->pdo();
 if(($argv[1]??'')==='reserve'){fwrite(STDOUT,json_encode($app->transfers()->reserve((int)$argv[2],(int)$argv[3]),JSON_THROW_ON_ERROR));exit;}
+if(($argv[1]??'')==='try-change-target'){
+ $pdo->exec('SET SESSION innodb_lock_wait_timeout=2');fwrite(STDOUT,"READY\n");fflush(STDOUT);
+ try{$app->settings()->update(['promptpay_target'=>'0812345679'],(int)$argv[2]);fwrite(STDOUT,'UNEXPECTED_SUCCESS');}
+ catch(HttpException $e){fwrite(STDOUT,json_encode(['code'=>$e->errorCode,'bill_ids'=>$e->details['bill_ids']??[]],JSON_THROW_ON_ERROR));}
+ exit;
+}
 foreach(['admin_users','rooms','residents','bills','transfer_instructions']as$t)if((int)$pdo->query("SELECT COUNT(*) FROM {$t}")->fetchColumn()!==0)throw new RuntimeException('Fresh fixture required');
 $passed=0;$assert=static function(bool $ok,string $why='Assertion failed'):void{if(!$ok)throw new RuntimeException($why);};
 $test=static function(string $name,callable $fn)use(&$passed):void{$fn();$passed++;fwrite(STDOUT,"PASS {$name}\n");};
@@ -58,8 +64,10 @@ $test('LINE fallback is scoped to the bill and only opens the official chat',fun
  $assert(str_starts_with($e['line_fallback']['url'],'https://line.me/R/oaMessage/%40fixture/?')&&str_contains($e['line_fallback']['message'],$bill['bill_no']));
  $assert($bill['total_amount']==='100.00'&&$bill['status']==='pending');
 });
-$test('changed receiver never rerolls a shown QR or silently substitutes another account',function()use($app,$owner,$one,$instruction,$expect,$assert):void{
- $app->settings()->update(['promptpay_target'=>'0812345679'],$owner);$expect(fn()=>$app->transfers()->reserve($one['id'],$one['resident_id']),'TRANSFER_TARGET_CHANGED');
+$test('changed receiver never rerolls a shown QR or silently substitutes another account',function()use($app,$pdo,$owner,$one,$instruction,$expect,$assert):void{
+ $expect(fn()=>$app->settings()->update(['promptpay_target'=>'0812345679'],$owner),'PROMPTPAY_HAS_RESERVED_BILLS');
+ // Also retain the fail-closed guard against configuration drift outside the API.
+ $pdo->exec("UPDATE integration_settings SET promptpay_target='0812345679' WHERE id=1");$expect(fn()=>$app->transfers()->reserve($one['id'],$one['resident_id']),'TRANSFER_TARGET_CHANGED');
  $assert($app->transfers()->find($one['id'])===$instruction);$app->settings()->update(['promptpay_target'=>'0812345678'],$owner);
 });
 $test('transfer snapshots and unpaid reservations cannot be altered or released',function()use($pdo,$one,$assert):void{
@@ -88,4 +96,18 @@ $test('parallel processes allocate once for the same bill and unique amounts for
 });
 
 $test('slip verification expects the reserved transfer amount rather than changing invoice principal',function()use($app,$one,$instruction,$assert):void{$assert($app->transfers()->expectedAmount($one['id'],'100.00')===$instruction['transfer_amount']);});
+$test('receiver update waits for an in-flight reservation and rejects the newly committed target conflict',function()use($app,$make,$owner,$assert):void{
+ $f=$make('900.00');$other=new Dormitory\Application($app->config);$peer=$other->database()->pdo();$peer->beginTransaction();
+ $process=null;
+ try{
+  $instruction=$other->transfers()->reserve($f['id'],$f['resident_id']);
+  $process=proc_open([PHP_BINARY,__FILE__,'try-change-target',(string)$owner],[0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes,dirname(__DIR__));
+  $assert(is_resource($process));fclose($pipes[0]);$assert(trim((string)fgets($pipes[1]))==='READY');
+  usleep(150000);$assert(proc_get_status($process)['running']);$peer->commit();
+  $out=stream_get_contents($pipes[1]);$err=stream_get_contents($pipes[2]);fclose($pipes[1]);fclose($pipes[2]);
+  $exit=proc_close($process);$process=null;$assert($exit===0,$err);$result=json_decode($out,true,512,JSON_THROW_ON_ERROR);
+  $assert($result['code']==='PROMPTPAY_HAS_RESERVED_BILLS'&&$app->settings()->value('promptpay_target')==='0812345678');
+  $assert($app->transfers()->find($f['id'])===$instruction);
+ }finally{if($peer->inTransaction())$peer->rollBack();if(is_resource($process)){proc_terminate($process);proc_close($process);}}
+});
 fwrite(STDOUT,"{$passed} transfer reservation groups passed; no external calls\n");

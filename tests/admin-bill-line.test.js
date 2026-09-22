@@ -49,3 +49,9 @@ test('complete delivery suppresses repeat queueing and mixed sent/pending remain
   const pending = render([bill({ line_status: 'pending', line_can_queue: false, line_delivery_counts: { total: 2, sent: 1, pending: 1 } })]);
   assert.match(pending.rows.allText(), /รอส่ง 1/); assert.equal(pending.bulk.disabled, true);
 });
+test('revoked-binding history is separate from the current successful recipient', () => {
+  const result = render([bill({ line_status:'sent', line_can_queue:false, line_previous_delivery_count:1, line_delivery_counts:{total:1,sent:1,failed:0} })]);
+  assert.match(result.rows.allText(), /ประวัติการผูกเดิม 1 รายการ/);
+  assert.doesNotMatch(result.rows.allText(), /ไม่สำเร็จ/);
+  assert.equal(result.actions.length,0);
+});

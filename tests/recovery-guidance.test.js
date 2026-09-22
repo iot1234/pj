@@ -34,6 +34,14 @@ test('nonpayment conflicts guide to existing records without bypassing identity 
  for(const code of ['SELF_DELETE','SELF_OWNER_CHANGE','LAST_OWNER']){const guide=explain(error(code),admin);assert.equal(guide.view,undefined);assert.match(guide.detail,/อย่างน้อยหนึ่ง/);}
 });
 const source=fs.readFileSync('public/assets/js/app.js','utf8');
+test('locked receiver and uncertain LINE errors guide to review without resending or clearing amounts',()=>{
+ for(const code of ['PROMPTPAY_HAS_RESERVED_BILLS','LINE_DELIVERY_RECONCILIATION_REQUIRED','LINE_RETRY_WINDOW_EXPIRED']){
+  const guide=explain(error(code),admin);assert.equal(guide.view,'bills');
+  assert.equal(explain(error(code),{role:'resident',page:'resident-portal'}).view,null);
+ }
+ assert.match(explain(error('PROMPTPAY_HAS_RESERVED_BILLS'),admin).detail,/บัญชีเดิมยังไม่ถูกเปลี่ยน/);
+ assert.match(explain(error('LINE_DELIVERY_RECONCILIATION_REQUIRED'),admin).detail,/ห้ามเข้าคิวซ้ำ/);
+});
 function extract(start,end){const a=source.indexOf(start),b=source.indexOf(end,a);assert.ok(a>=0&&b>a);return source.slice(a,b);}
 function node(){return {dataset:{},children:[],append(n){this.children.push(n);},addEventListener(name,fn){this[name]=fn;}};}
 test('form recovery focuses the invalid field without submitting, including after a save lock releases',()=>{

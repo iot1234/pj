@@ -5,7 +5,7 @@ namespace Dormitory\Domain;
 
 use Dormitory\Application;
 
-/** Explicit, read-only resident commands. Free-text chat is left to staff. */
+/** Explicit resident commands. Bill QR commands reserve amounts, never payment status. */
 final class LineBotService
 {
     public function __construct(private readonly Application $app,private readonly int $oaId=0) {}
@@ -21,6 +21,7 @@ final class LineBotService
     public static function intent(string $text): ?string
     {
         $text = strtolower(self::normalize($text));
+        if ($text === 'slip_image_review_only' || str_starts_with($text, 'แจ้งชำระ ')) return 'slip_guidance';
         if (str_starts_with($text, 'owner-') || str_starts_with($text, 'admin-')) return 'admin_claim';
         if (str_starts_with($text, 'bind-')) return 'bind';
         return match ($text) {
@@ -58,9 +59,9 @@ final class LineBotService
      * Private replies carry the identity needed for a final locked recheck.
      * An expected resident prevents a reply prepared for an old binding from
      * switching to another resident if the LINE account is rebound meanwhile.
-     * @return array{text:string,outcome:string,private_resident_id?:int,private_intent?:string}
+     * @return array{text:string,outcome:string,private_resident_id?:int,private_intent?:string,messages?:list<array<string,mixed>>}
      */
-    public function command(string $lineUserId, string $intent, ?int $expectedResidentId = null): array
+    public function command(string $lineUserId, string $intent, ?int $expectedResidentId = null, bool $withPaymentCards = true, ?int $deadlineNanoseconds = null): array
     {
         if ($intent === 'help') {
             return ['text' => "เมนูผู้พัก\n"
@@ -108,7 +109,19 @@ final class LineBotService
         }
         $today = (new \DateTimeImmutable('today', new \DateTimeZone(
             (string) $this->app->config->get('APP_TIMEZONE', 'Asia/Bangkok'))))->format('Y-m-d');
-        return ['text' => self::billsText($name, $bills, $today, $this->portalUrl('bills')), 'outcome' => 'bills'] + $private;
+        $reply = ['text' => self::billsText($name, $bills, $today, $this->portalUrl('bills')), 'outcome' => 'bills'] + $private;
+        if ($withPaymentCards) {
+            $target = $this->app->lineBills()->recipient((int)$resident['id'], $this->oaId, $lineUserId);
+            $messages = [['type'=>'text','text'=>$reply['text']]];
+            if ($target !== null) foreach ($bills as $bill) {
+                if ($bill['status'] !== 'pending' || in_array($bill['payment_status'], ['pending','verified'], true)) continue;
+                if ($deadlineNanoseconds !== null && $deadlineNanoseconds - hrtime(true) < 2_500_000_000) break;
+                $card = $this->app->lineBills()->paymentCard((int)$bill['id'], (int)$resident['id'], $target, $deadlineNanoseconds);
+                if ($card !== null) $messages[] = $card;
+            }
+            $reply['messages'] = $messages;
+        }
+        return $reply;
     }
 
     /** @return array<string,mixed>|null */

@@ -25,4 +25,10 @@ try{
         ?Response::error('Internal server error',500,'INTERNAL_ERROR',['request_id'=>$requestId])
         :Response::htmlError(500,$requestId);
 }
-$response->send($app->security()->headers($requestId));
+$headers=$app->security()->headers($requestId);
+if(isset($request)&&preg_match('#^/api/public/line-payment-qr/[0-9]+/?$#D',$request->path)){
+    // LINE fetches this signed image outside our origin. Other resources remain same-origin.
+    $headers['Cross-Origin-Resource-Policy']='cross-origin';
+    $headers['Referrer-Policy']='no-referrer';
+}
+$response->send($headers);

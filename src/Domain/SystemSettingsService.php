@@ -239,6 +239,28 @@ final class SystemSettingsService
 
             if (array_key_exists('promptpay_target', $input)) {
                 $settings['promptpay_target'] = $this->promptPayTarget($input['promptpay_target']);
+                if ($settings['promptpay_target'] !== ($existing['promptpay_target'] ?? null)
+                    && $this->app->transfers()->available()) {
+                    // The settings row fences new reservations. Read only instruction
+                    // rows here: locking bills would invert the bill -> settings order.
+                    $reserved = $pdo->prepare("SELECT bill_id FROM transfer_instructions
+                        WHERE status='reserved' AND NOT (BINARY promptpay_target <=> BINARY ?)
+                        ORDER BY bill_id LIMIT 21 FOR SHARE");
+                    $reserved->execute([$settings['promptpay_target']]);
+                    $billIds = array_map('intval', $reserved->fetchAll(PDO::FETCH_COLUMN));
+                    if ($billIds !== []) {
+                        // Bill identifiers/periods are immutable. A nonlocking
+                        // lookup supplies actionable guidance without lock inversion.
+                        $shownIds=array_slice($billIds,0,5);
+                        $references=$pdo->prepare('SELECT bill_no,period FROM bills WHERE id IN ('.implode(',',array_fill(0,count($shownIds),'?')).') ORDER BY id');
+                        $references->execute($shownIds);
+                        $labels=array_map(static fn(array $row):string=>$row['bill_no'].' ('.substr((string)$row['period'],0,7).')',$references->fetchAll());
+                        throw new HttpException(409,
+                            'ยังเปลี่ยนบัญชีพร้อมเพย์ไม่ได้ มีบิลที่ล็อกยอดกับบัญชีเดิม กรุณาตรวจและชำระรายการเดิมให้เสร็จก่อน บัญชีรับเงินยังไม่ถูกเปลี่ยน'.($labels!==[]?' — บิลที่ต้องตรวจ: '.implode(', ',$labels):''),
+                            'PROMPTPAY_HAS_RESERVED_BILLS',
+                            ['field'=>'promptpay_target','bill_ids'=>array_slice($billIds,0,20),'has_more'=>count($billIds)>20]);
+                    }
+                }
             }
             if (array_key_exists('promptpay_name', $input)) {
                 $settings['promptpay_name'] = $this->optionalText($input['promptpay_name'], 'promptpay_name', 120);

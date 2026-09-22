@@ -2301,9 +2301,7 @@
           ? pill('inactive', 'สิ้นสุดแล้ว')
           : (resident.access_active === true
             ? pill('active', 'เข้าสู่ระบบได้')
-            : (resident.activation_pending === true
-              ? pill('pending', 'รอเปิดใช้งาน')
-              : pill('danger', 'ต้องออกคีย์')));
+            : pill('danger', 'ตรวจข้อมูลผู้พัก'));
         const status = create('span', 'person-cell'); status.append(access);
         if (openingPending) status.append(pill('pending', 'รอเลขมิเตอร์เริ่มต้น'));
         const actions = active ? rowActions(
@@ -2320,7 +2318,7 @@
       const linked = state.residents.filter((resident) => resident.line_verified === true).length;
       setStat('[data-resident-stat="all"]', state.residents.length);
       setStat('[data-resident-stat="line"]', linked);
-      setStat('[data-resident-stat="activation"]', state.residents.filter((resident) => resident.activation_pending === true).length);
+      setStat('[data-resident-stat="opening"]', state.residents.filter((resident) => resident.opening_readings_pending === true).length);
       setStat('[data-resident-stat="noline"]', state.residents.length - linked);
       const pendingOpenings = state.residents.filter((resident) => resident.opening_readings_pending === true).length;
       const pendingNote = $('#resident-opening-note');
@@ -2333,7 +2331,7 @@
       const rows = $('#resident-rows');
       state.residentListReady = false; state.residents = []; rows.replaceChildren(); rows.setAttribute('inert', '');
       $('#resident-opening-note').hidden = true;
-      ['all','line','activation','noline'].forEach(key => setStat(`[data-resident-stat="${key}"]`, '—'));
+      ['all','line','opening','noline'].forEach(key => setStat(`[data-resident-stat="${key}"]`, '—'));
       setTableState($('#resident-state'), 'loading');
       try {
         const data = await api('/api/admin/residents'); if (generation !== state.residentLoadGeneration) return;
@@ -2410,16 +2408,16 @@
       if (button.dataset.action === 'resident-line') { adminLineBinding.open(resident); return; }
       if (button.dataset.action === 'reissue-resident-access') {
         if (!await confirmAction(
-          'ออก activation code ใหม่',
-          `ออกคีย์ใหม่ให้ ${summary} หรือไม่? รหัสผ่านและเซสชันเดิมจะถูกยกเลิกทันที`,
-          'ยกเลิกของเดิมและออกคีย์ใหม่',
+          'ยกเลิกเซสชันและการผูก LINE เดิม',
+          `ยกเลิกเซสชันและการผูก LINE ของ ${summary} หรือไม่? ผู้พักยังเข้าใช้งานด้วยเบอร์เดิมได้ทันที และต้องผูก LINE ใหม่ การดำเนินการนี้ไม่ใช่การปิดบัญชี`,
+          'ยกเลิกเซสชันและ LINE เดิม',
           true,
         )) return;
-        setBusy(button, true, 'กำลังออกคีย์…');
+        setBusy(button, true, 'กำลังยกเลิกสิทธิ์เดิม…');
         try {
           const result = await api(`/api/admin/residents/${encodeURIComponent(resident.id)}/access/reissue`, { method: 'POST', body: {} });
           showResidentAccess(result, summary);
-          toast('ออก activation code ใหม่และยกเลิกสิทธิ์เดิมแล้ว');
+          toast('ยกเลิกเซสชันและการผูก LINE เดิมแล้ว ผู้พักเข้าใช้งานด้วยเบอร์เดิมได้');
           await loadResidents();
         } catch (requestError) {
           toast(errorMessage(requestError), 'error');
@@ -2930,6 +2928,9 @@
         if (Number(deliveryCounts.total) > 1) {
           const parts = [['sent', 'LINE รับแล้ว'], ['pending', 'รอส่ง'], ['processing', 'กำลังส่ง'], ['failed', 'ไม่สำเร็จ']].filter(([key]) => Number(deliveryCounts[key]) > 0).map(([key, label]) => `${label} ${Number(deliveryCounts[key])}`);
           line.append(create('small', 'muted', `${Number(deliveryCounts.total)} ผู้รับ · ${parts.join(' · ')}`));
+        }
+        if (Number(bill.line_previous_delivery_count) > 0) {
+          line.append(create('small', 'muted', `ประวัติการผูกเดิม ${Number(bill.line_previous_delivery_count)} รายการ ไม่รวมสถานะปัจจุบัน`));
         }
         if (bill.line_status === 'failed' && bill.line_last_error) {
           const failure = create('small', 'line-error', text(bill.line_last_error));
