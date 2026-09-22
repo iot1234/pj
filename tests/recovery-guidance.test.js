@@ -28,6 +28,11 @@ test('unknown write outcomes, session expiry and rate limits never suggest an au
  assert.match(explain(error('MUTATION_OUTCOME_UNKNOWN')).detail,/ตรวจรายการล่าสุดก่อนทำซ้ำ/);
  assert.match(explain(error('SLIP_NOT_CONFIGURED')).detail,/ไม่ต้องโอนซ้ำ/);
 });
+test('nonpayment conflicts guide to existing records without bypassing identity or owner guards',()=>{
+ for(const [code,view]of Object.entries({ROOM_IN_USE:'rooms',BOOKING_BAD_STATE:'bookings',BOOKING_PHONE_ACTIVE:'bookings',RESIDENT_IDENTITY_IN_USE:'residents',BILL_PREVIEW_CHANGED:'bills'}))assert.equal(explain(error(code),admin).view,view);
+ assert.equal(explain(error('ROOM_CODE_EXISTS'),admin).field,'room_code');
+ for(const code of ['SELF_DELETE','SELF_OWNER_CHANGE','LAST_OWNER']){const guide=explain(error(code),admin);assert.equal(guide.view,undefined);assert.match(guide.detail,/อย่างน้อยหนึ่ง/);}
+});
 const source=fs.readFileSync('public/assets/js/app.js','utf8');
 function extract(start,end){const a=source.indexOf(start),b=source.indexOf(end,a);assert.ok(a>=0&&b>a);return source.slice(a,b);}
 function node(){return {dataset:{},children:[],append(n){this.children.push(n);},addEventListener(name,fn){this[name]=fn;}};}

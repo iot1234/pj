@@ -122,6 +122,15 @@
     if (key && payload[key] && typeof payload[key] === 'object') return payload[key];
     return payload;
   };
+  const requiredEntityList = (payload, key) => {
+    const items = Array.isArray(payload) ? payload : (payload?.[key] ?? payload?.items);
+    const ids = new Set();
+    if (!Array.isArray(items) || !items.every((item) => {
+      if (!item || !Number.isSafeInteger(item.id) || item.id <= 0 || ids.has(item.id)) return false;
+      ids.add(item.id); return true;
+    })) throw new ApiError('ข้อมูลรายการไม่ครบ กรุณาโหลดข้อมูลล่าสุดก่อนทำรายการ', 0, {code:'INVALID_RESPONSE'});
+    return items;
+  };
   const errorMessagesByCode = Object.freeze({
     CSRF_INVALID: 'หน้าที่เปิดอยู่อาจหมดอายุ กรุณารีเฟรชแล้วลองใหม่',
     ORIGIN_REQUIRED: 'ตรวจสอบแหล่งที่มาของคำขอไม่ได้ กรุณารีเฟรชหน้าแล้วลองใหม่',
@@ -823,15 +832,20 @@
     const form = $(formId);
     if (!form) return;
     const error = $(`${formId.replace('-form', '-error')}`);
+    let pending = false;
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
+      if (pending) return;
       showFormError(error);
       if (!form.reportValidity()) return;
       const button = form.querySelector('[type="submit"]');
       const values = Object.fromEntries(new FormData(form).entries());
+      pending = true; setFormFieldsBusy(form, true);
       setBusy(button, true, 'กำลังตรวจสอบ…');
+      let succeeded = false;
       try {
         await api(endpoint, { method: 'POST', body: values });
+        succeeded = true;
         location.assign(destination);
       } catch (requestError) {
         const message = requestError?.details?.code === 'INVALID_CREDENTIALS'
@@ -839,7 +853,7 @@
           : errorMessage(requestError, fallbackMessage);
         showFormError(error, message);
       } finally {
-        setBusy(button, false);
+        if (!succeeded) { pending = false; setFormFieldsBusy(form, false); setBusy(button, false); }
       }
     });
   }
@@ -1112,7 +1126,7 @@
       errorBox.hidden = true;
       const [profileResult, billsResult] = await Promise.allSettled([api('/api/resident/profile'), api('/api/resident/bills')]);
       if (request !== state.loadRequest) return;
-      if (profileResult.status === 'fulfilled' && profileRevision === state.profileRevision) {
+      if (profileResult.status === 'fulfilled' && profileRevision === state.profileRevision && !state.profileSaving) {
         const draft = profileForm.dataset.dirty === 'true' ? { full_name: profileForm.elements.full_name.value, email: profileForm.elements.email.value } : null;
         state.profile = objectFrom(profileResult.value, 'profile'); fillProfile();
         if (draft) Object.entries(draft).forEach(([name, value]) => { profileForm.elements[name].value = value; });
@@ -1308,12 +1322,14 @@
     profileForm.addEventListener('input', () => { profileForm.dataset.dirty = 'true'; });
     profileForm.addEventListener('submit', async (event) => {
       event.preventDefault();
+      if (state.profileSaving) return;
       const error = $('#resident-profile-error');
       showFormError(error);
       if ($('#resident-profile-fields').disabled || !profileForm.reportValidity()) return;
       const button = profileForm.querySelector('[type="submit"]');
       const values = Object.fromEntries(new FormData(profileForm).entries());
       const profileRevision = ++state.profileRevision;
+      state.profileSaving = true;
       setFormFieldsBusy(profileForm, true);
       setBusy(button, true, 'กำลังบันทึก…');
       try {
@@ -1327,7 +1343,7 @@
         $('#resident-dashboard-title').textContent = `สวัสดี ${text(state.profile.full_name)}`;
         toast('บันทึกข้อมูลแล้ว');
       } catch (errorValue) { showFormError(error, errorValue); }
-      finally { setFormFieldsBusy(profileForm, false); setBusy(button, false); }
+      finally { state.profileSaving = false; ++state.profileRevision; setFormFieldsBusy(profileForm, false); setBusy(button, false); }
     });
     lineStartForm.addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -1783,6 +1799,7 @@
       meterPeriod: '', billPeriod: '', billingSettingsAvailable: false, billPreview: null,
       bookingOffset: 0, bookingHasMore: false, bookingPendingCount: 0, bookingListReady: false, paymentOffset: 0, paymentHasMore: false,
       paymentPendingCount: 0, paymentListReady: false, paymentActionBusy: false, userListReady: false, userController: null, overviewController: null,
+      roomListReady: false, roomActionBusy: false, residentListReady: false, residentLoadGeneration: 0, residentCreateOpenGeneration: 0,
     };
     const role = body.dataset.userRole || 'admin';
     const titles = { overview: 'ภาพรวม', rooms: 'ห้องพัก', bookings: 'การจอง', residents: 'ผู้พักอาศัย', meters: 'จดมิเตอร์', bills: 'ใบแจ้งหนี้', payments: 'การชำระเงิน', users: 'ผู้ดูแลระบบ', settings: 'ตั้งค่า', 'line-oas': 'บัญชี LINE OA', 'line-bindings': 'การผูก LINE ผู้พัก' };
@@ -1971,12 +1988,12 @@
 
     async function loadRooms() {
       state.roomController?.abort(); const controller = new AbortController(); state.roomController = controller;
-      state.roomListReady = false; invalidateBillPreview(); const rows = $('#admin-room-rows'); rows.setAttribute('inert', '');
+      state.roomListReady = false; state.rooms = []; invalidateBillPreview(); const rows = $('#admin-room-rows'); rows.replaceChildren(); rows.setAttribute('inert', '');
       setTableState($('#admin-room-state'), 'loading', 'กำลังโหลดห้องพัก…');
       try {
         const data = await api('/api/admin/rooms', { signal: controller.signal });
         if (state.roomController !== controller) return;
-        state.rooms = listFrom(data, 'rooms'); state.roomListReady = true;
+        state.rooms = requiredEntityList(data, 'rooms'); state.roomListReady = true;
         state.loaded.add('rooms'); state.loaded.delete('meters'); renderRooms();
         if (state.loaded.has('bills')) fillBillRooms();
       } catch (error) {
@@ -2008,13 +2025,21 @@
     $('#admin-room-status').addEventListener('change', renderRooms);
     $('[data-open-room-dialog]').addEventListener('click', () => openRoomForm());
     $('#admin-room-rows').addEventListener('click', async (event) => {
-      if (state.roomListReady !== true || state.roomController) return;
-      const button = event.target.closest('[data-action]'); if (!button) return;
+      if (state.roomListReady !== true || state.roomController || state.roomActionBusy) return;
+      const button = event.target.closest('[data-action]'); if (!button || button.disabled) return;
       const room = state.rooms.find((item) => String(item.id) === button.dataset.id); if (!room) return;
       if (button.dataset.action === 'add-resident-to-room') { await openResidentCreateForm(room); return; }
       if (button.dataset.action === 'edit-room') openRoomForm(room);
-      if (button.dataset.action === 'delete-room' && await confirmAction('ลบห้องพัก', `ต้องการลบห้อง ${text(room.room_code)} หรือไม่? ระบบจะปฏิเสธหากมีข้อมูลผูกพัน`)) {
-        try { await api(`/api/admin/rooms/${encodeURIComponent(room.id)}`, { method: 'DELETE', body: {} }); toast('ลบห้องแล้ว'); loadRooms(); } catch (error) { toast(errorMessage(error), 'error'); }
+      if (button.dataset.action === 'delete-room') {
+        state.roomActionBusy = true;
+        try {
+          if (!await confirmAction('ลบห้องพัก', `ต้องการลบห้อง ${text(room.room_code)} หรือไม่? ระบบจะปฏิเสธหากมีข้อมูลผูกพัน`)) return;
+          if (!state.roomListReady || state.roomController || !state.rooms.includes(room)) return;
+          setBusy(button, true, 'กำลังลบ…');
+          await api(`/api/admin/rooms/${encodeURIComponent(room.id)}`, { method: 'DELETE', body: {} });
+          toast('ลบห้องแล้ว'); await loadRooms();
+        } catch (error) { toast(`${errorMessage(error)} ตรวจสถานะห้องล่าสุดก่อนทำซ้ำ`, 'error'); await loadRooms(); }
+        finally { state.roomActionBusy = false; setBusy(button, false); }
       }
     });
     $('#room-form').addEventListener('submit', async (event) => {
@@ -2226,7 +2251,7 @@
     function populateResidentCreateRooms(selectedRoomId = '') {
       const form = $('#resident-create-form');
       const select = form.elements.room_id;
-      const rooms = state.rooms.filter((room) => room.status === 'available');
+      const rooms = state.roomListReady && !state.roomController ? state.rooms.filter((room) => room.status === 'available') : [];
       const prompt = create('option', '', rooms.length ? 'เลือกห้องว่าง' : 'ไม่มีห้องว่างในขณะนี้');
       prompt.value = '';
       select.replaceChildren(prompt);
@@ -2244,8 +2269,13 @@
       form.querySelector('[type="submit"]').disabled = rooms.length === 0;
     }
     async function openResidentCreateForm(room = null) {
-      if (!state.loaded.has('rooms')) await loadRooms();
       const form = $('#resident-create-form');
+      const dialog = $('#resident-create-dialog');
+      if (dialog.open || dialogCloseBlocked(dialog) || form.dataset.submitting === 'true') return;
+      const generation = ++state.residentCreateOpenGeneration;
+      await loadRooms();
+      if (generation !== state.residentCreateOpenGeneration || dialog.open || dialogCloseBlocked(dialog)) return;
+      if (!state.roomListReady || state.roomController) { toast('ยังโหลดห้องล่าสุดไม่ได้ กรุณาลองเปิดฟอร์มอีกครั้ง', 'error'); return; }
       form.reset(); showFormError($('#resident-create-error')); resetResidentCreateReuse(form);
       form.elements.idempotency_key.value = window.crypto?.randomUUID?.()
         || `${Date.now()}-${Math.random().toString(16).slice(2)}-${Math.random().toString(16).slice(2)}`;
@@ -2258,6 +2288,7 @@
     }
 
     function renderResidents() {
+      if (!state.residentListReady) return;
       const rows = $('#resident-rows'); rows.replaceChildren(); const query = $('#resident-search').value.trim().toLocaleLowerCase('th');
       const visible = state.residents.filter((resident) => !query || `${resident.full_name} ${resident.phone} ${resident.room_code || resident.room?.room_code} ${resident.line_user_id_hint || ''}`.toLocaleLowerCase('th').includes(query));
       visible.forEach((resident) => {
@@ -2298,28 +2329,40 @@
       setTableState($('#resident-state'), visible.length ? 'ready' : 'empty', 'ไม่พบผู้พัก');
     }
     async function loadResidents() {
-      const generation=state.residentLoadGeneration=(state.residentLoadGeneration||0)+1;state.residentListReady=false;setTableState($('#resident-state'),'loading');
-      try{const data=await api('/api/admin/residents');if(generation!==state.residentLoadGeneration)return;state.residents=listFrom(data,'residents');state.residentListReady=true;state.loaded.add('residents');renderResidents();}
-      catch(error){if(generation!==state.residentLoadGeneration)return;state.residents=[];$('#resident-rows').replaceChildren();setTableState($('#resident-state'),'error',errorMessage(error));}
+      const generation = ++state.residentLoadGeneration;
+      const rows = $('#resident-rows');
+      state.residentListReady = false; state.residents = []; rows.replaceChildren(); rows.setAttribute('inert', '');
+      $('#resident-opening-note').hidden = true;
+      ['all','line','activation','noline'].forEach(key => setStat(`[data-resident-stat="${key}"]`, '—'));
+      setTableState($('#resident-state'), 'loading');
+      try {
+        const data = await api('/api/admin/residents'); if (generation !== state.residentLoadGeneration) return;
+        state.residents = requiredEntityList(data, 'residents'); state.residentListReady = true; state.loaded.add('residents'); renderResidents(); rows.removeAttribute('inert');
+      } catch (error) {
+        if (generation !== state.residentLoadGeneration) return;
+        setTableState($('#resident-state'), 'error', errorMessage(error));
+      }
     }
     loaders.residents = loadResidents; $('#resident-search').addEventListener('input', renderResidents);
     $('[data-open-resident-create]')?.addEventListener('click', () => openResidentCreateForm());
     $('#resident-create-form').addEventListener('submit', async (event) => {
       event.preventDefault();
       const form = event.currentTarget; const error = $('#resident-create-error'); showFormError(error);
+      if (form.dataset.submitting === 'true') return;
       if (!form.reportValidity()) return;
+      if (!state.roomListReady || state.roomController) { showFormError(error, 'กรุณารอรายการห้องล่าสุดก่อนบันทึก ข้อมูลที่กรอกยังอยู่'); return; }
       const values = Object.fromEntries(new FormData(form).entries());
       values.room_id = Number(values.room_id);
       const room = state.rooms.find((item) => String(item.id) === String(values.room_id));
       const summary = `${text(values.full_name)} · ห้อง ${text(room?.room_code)}`;
       const dialog = $('#resident-create-dialog');
+      if (!beginDialogSave(form)) return;
       const button = form.querySelector('[type="submit"]'); setBusy(button, true, 'กำลังรับเข้าพัก…');
-      setDialogBusy(dialog, true);
       let busyReleased = false;
       const releaseBusy = () => {
         if (busyReleased) return;
         busyReleased = true;
-        setDialogBusy(dialog, false); setBusy(button, false);
+        finishDialogSave(form); setBusy(button, false);
         button.disabled = state.rooms.every((room) => room.status !== 'available');
       };
       try {
@@ -2330,6 +2373,10 @@
         toast(result?.idempotent_replay ? 'พบรายการรับเข้าพักเดิมและแสดงผลเดิมแล้ว' : 'เพิ่มผู้พักหลักและเปิดบัญชีห้องแล้ว');
         await Promise.all([loadResidents(), loadRooms(), loadBookings()]);
       } catch (requestError) {
+        const roomConflict = ['ROOM_NOT_AVAILABLE', 'ROOM_OCCUPIED', 'ROOM_DELETED'].includes(requestError?.details?.code);
+        if (roomConflict) await loadRooms();
+        // Release once before changing disabled states for recovery controls.
+        releaseBusy();
         if (requestError?.details?.code === 'RESIDENT_REUSE_CONFIRMATION_REQUIRED') {
           const reuseInput = form.elements.reuse_resident_id;
           reuseInput.value = String(requestError.details.resident_id || ''); reuseInput.checked = false;
@@ -2338,16 +2385,15 @@
           $('#resident-create-reuse-field').hidden = false; $('#resident-create-reuse-help').hidden = false;
           reuseInput.focus();
         }
-        if (['ROOM_NOT_AVAILABLE', 'ROOM_OCCUPIED', 'ROOM_DELETED'].includes(requestError?.details?.code)) {
-          await loadRooms(); populateResidentCreateRooms(values.room_id);
-        }
+        if (roomConflict) populateResidentCreateRooms(values.room_id);
         showFormError(error, requestError);
       } finally {
         releaseBusy();
       }
     });
     $('#resident-rows').addEventListener('click', async (event) => {
-      const button = event.target.closest('[data-action]'); if (!button) return;
+      if (!state.residentListReady) return;
+      const button = event.target.closest('[data-action]'); if (!button || button.disabled) return;
       const resident = state.residents.find((item) => String(item.id) === button.dataset.id); if (!resident) return;
       const summary = `${text(resident.full_name)} · ห้อง ${text(resident.room_code || resident.room?.room_code)}`;
       if (button.dataset.action === 'opening-readings') {
@@ -2383,11 +2429,14 @@
         return;
       }
       if (button.dataset.action === 'edit-resident') {
+        if (dialogCloseBlocked($('#resident-edit-dialog'))) return;
         const form = $('#resident-edit-form'); form.reset(); form.elements.resident_id.value = resident.id;
+        form.dataset.originalPhone = String(resident.phone || '');
         ['full_name', 'phone', 'email'].forEach((name) => { form.elements[name].value = resident[name] || ''; });
         $('#resident-edit-summary').textContent = summary; showFormError($('#resident-edit-error')); openDialog($('#resident-edit-dialog'));
       }
       if (button.dataset.action === 'move-out-resident') {
+        if (dialogCloseBlocked($('#resident-move-out-dialog'))) return;
         const form = $('#resident-move-out-form'); form.reset(); form.elements.resident_id.value = resident.id;
         form.elements.move_out_date.value = isoToday(); form.elements.move_out_date.max = isoToday(); form.elements.move_out_date.min = String(resident.move_in_date || '');
         $('#resident-move-out-summary').textContent = summary; showFormError($('#resident-move-out-error')); openDialog($('#resident-move-out-dialog'));
@@ -2421,22 +2470,25 @@
       } finally { releaseBusy(); }
     });
     $('#resident-edit-form').addEventListener('submit', async (event) => {
-      event.preventDefault(); const form = event.currentTarget; const error = $('#resident-edit-error'); showFormError(error); if (!form.reportValidity()) return;
+      event.preventDefault(); const form = event.currentTarget;
+      if (form.dataset.submitting === 'true') return;
+      const error = $('#resident-edit-error'); showFormError(error); if (!form.reportValidity()) return;
       const values = Object.fromEntries(new FormData(form).entries()); const id = values.resident_id; delete values.resident_id;
       const original = state.residents.find((item) => String(item.id) === String(id));
-      if (original && String(values.phone).replace(/[^0-9+]/g, '') !== String(original.phone).replace(/[^0-9+]/g, '')) {
-        if (!await confirmAction('เปลี่ยนเบอร์เข้าสู่ระบบ', 'ยืนยันว่าได้ตรวจสอบตัวตนผู้พักแล้วหรือไม่? เซสชันเดิมจะถูกยกเลิกทันที และลูกบ้านต้องใช้เบอร์ใหม่ที่บันทึกเพื่อเข้าใช้งาน', 'ยืนยันและบันทึก', false)) return;
-      }
+      const originalPhone = form.dataset.originalPhone ?? original?.phone;
       const dialog = $('#resident-edit-dialog');
+      if (!beginDialogSave(form)) return;
       const button = form.querySelector('[type="submit"]'); setBusy(button, true, 'กำลังบันทึก…');
-      setDialogBusy(dialog, true);
       let busyReleased = false;
       const releaseBusy = () => {
         if (busyReleased) return;
         busyReleased = true;
-        setDialogBusy(dialog, false); setBusy(button, false);
+        finishDialogSave(form); setBusy(button, false);
       };
       try {
+        if (originalPhone === undefined || String(values.phone).replace(/[^0-9+]/g, '') !== String(originalPhone).replace(/[^0-9+]/g, '')) {
+          if (!await confirmAction('เปลี่ยนเบอร์เข้าสู่ระบบ', 'ยืนยันว่าได้ตรวจสอบตัวตนผู้พักแล้วหรือไม่? เซสชันเดิมและการผูก LINE จะถูกยกเลิก ลูกบ้านต้องใช้เบอร์ใหม่และผูก LINE ใหม่', 'ยืนยันและบันทึก', false)) return;
+        }
         const updated = await api(`/api/admin/residents/${encodeURIComponent(id)}`, { method: 'PUT', body: values });
         const summary = `${text(updated?.full_name || values.full_name)} · ห้อง ${text(updated?.room_code || original?.room_code || original?.room?.room_code)}`;
         releaseBusy();

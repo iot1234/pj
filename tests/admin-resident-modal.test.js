@@ -39,15 +39,17 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function harness(flow, { deferReload = false } = {}) {
+function harness(flow, { deferReload = false, changedPhone = false } = {}) {
   const requests = [];
   const reload = deferred();
+  const confirmation = deferred();
   const effects = { resets: 0, access: [], errors: [] };
   const submitButton = node();
   const closeButton = node();
   const dialog = { ...node(), open: true, close() { this.open = false; } };
   const summary = { textContent: 'Alice · ห้อง A101' };
   const reuseInput = { ...node(), disabled: true, required: false, value: '', focus() {} };
+  const nameInput = { ...node(), value: 'Alice' };
   const form = {
     ...node(),
     closest: () => dialog,
@@ -59,7 +61,7 @@ function harness(flow, { deferReload = false } = {}) {
   };
   const values = {
     booking_id: '11', resident_id: '21', room_id: '1',
-    full_name: 'Alice', phone: '0811111111', email: '',
+    full_name: 'Alice', phone: changedPhone ? '0822222222' : '0811111111', email: '',
   };
   const otherNodes = new Map();
   const context = {
@@ -71,13 +73,15 @@ function harness(flow, { deferReload = false } = {}) {
       if (!otherNodes.has(selector)) otherNodes.set(selector, node());
       return otherNodes.get(selector);
     },
-    $$: (selector, root) => selector === '[data-close-dialog]' ? [closeButton] : root === form ? [reuseInput] : [],
+    $$: (selector, root) => selector === '[data-close-dialog]' ? [closeButton] : root === form ? [reuseInput, nameInput] : [],
     state: {
       rooms: [{ id: 1, room_code: 'A101', status: 'available' }],
+      roomListReady: true,
       residents: [{ id: 21, full_name: 'Alice', phone: '0811111111', room_code: 'A101' }],
       loaded: new Set(['residents']),
     },
     api: () => { const request = deferred(); requests.push(request); return request.promise; },
+    confirmAction: () => confirmation.promise,
     text: (value, fallback = '—') => value == null || value === '' ? fallback : String(value),
     errorMessage: (error) => error.message,
     showFormError: (_node, message) => { if (message) effects.errors.push(message.message || message); },
@@ -91,7 +95,7 @@ function harness(flow, { deferReload = false } = {}) {
   const listener = between(`$('#${flow.form}').addEventListener('submit'`, flow.end);
   vm.runInContext(`${helpers}\n${listener}`, context);
   return {
-    effects, dialog, closeButton, submitButton, summary, reuseInput,
+    effects, dialog, closeButton, submitButton, summary, reuseInput, nameInput, requests, confirmation, form, state: context.state,
     submit: () => form.submit({ preventDefault() {}, currentTarget: form }),
     close: () => context.closeDialog(dialog, closeButton),
     resolve: (value, request = 0) => requests[request].resolve(value),
@@ -102,6 +106,14 @@ function harness(flow, { deferReload = false } = {}) {
 }
 
 for (const flow of flows) {
+  test(`${flow.form}: fields lock and a second submit cannot dispatch or unlock the first`, async () => {
+    const ui = harness(flow), work = ui.submit();
+    await ui.submit();
+    assert.equal(ui.requests.length, 1); assert.equal(ui.nameInput.disabled, true);
+    assert.equal(ui.dialog.dataset.dialogBusy, 'true');
+    ui.resolve({}); await work;
+    assert.equal(ui.nameInput.disabled, false); assert.equal(ui.reuseInput.disabled, true);
+  });
   test(`${flow.form}: pending save blocks close and releases the modal after success`, async () => {
     const ui = harness(flow);
     const work = ui.submit();
@@ -183,4 +195,29 @@ test('move-in reuse confirmation remains enabled after the failed save unlocks f
   assert.equal(ui.reuseInput.required, true);
   assert.equal(ui.reuseInput.value, '21');
   assert.equal(ui.dialog.open, true);
+});
+
+test('phone-change confirmation locks the submitted resident until accept or cancel', async () => {
+  for (const accept of [true, false]) {
+    const ui = harness(flows[2], { changedPhone: true }), work = ui.submit();
+    await ui.submit(); assert.equal(ui.requests.length, 0); assert.equal(ui.nameInput.disabled, true); assert.equal(ui.close(), false);
+    ui.confirmation.resolve(accept); await new Promise(setImmediate);
+    assert.equal(ui.requests.length, accept ? 1 : 0);
+    if (accept) ui.resolve({});
+    await work; assert.equal(ui.nameInput.disabled, false);
+    if (!accept) { assert.equal(ui.effects.resets, 0); assert.equal(ui.dialog.open, true); }
+  }
+});
+
+test('phone-change warning uses the opened form snapshot even if a list reload cleared the cache', async () => {
+  const ui = harness(flows[2], { changedPhone: true });
+  ui.form.dataset.originalPhone = '0811111111'; ui.state.residents = [];
+  const work = ui.submit(); assert.equal(ui.requests.length, 0);
+  ui.confirmation.resolve(false); await work; assert.equal(ui.requests.length, 0);
+});
+
+test('direct resident reuse remains actionable after fields unlock', async () => {
+  const ui = harness(flows[1]), work = ui.submit();
+  ui.reject(Object.assign(new Error('Confirm reuse'), { details: { code: 'RESIDENT_REUSE_CONFIRMATION_REQUIRED', resident_id: 21 } }));
+  await work; assert.equal(ui.reuseInput.disabled, false); assert.equal(ui.reuseInput.required, true);
 });

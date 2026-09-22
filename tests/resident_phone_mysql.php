@@ -59,8 +59,11 @@ $test('phone access still scopes bill reads to the matched resident',function()u
  $assert($own->status===200&&$other->status===404,'Cross-resident bill visibility changed');
 });
 $test('a session cannot silently switch occupancy or room even with the same account version',function()use($app,$request,$assert):void{
- $actor=$app->actor(true);$actor['room_id']+=100;$app->session()->login($actor);$app->clearActorCache();$assert($app->actor(true)===null,'Mismatched room retained access');
- $actor=$app->auth()->residentLogin($request(),['phone'=>'0817900001']);$actor['occupancy_id']+=100;$app->session()->login($actor);$app->clearActorCache();$assert($app->actor(true)===null,'Mismatched occupancy retained access');
+ // Previous HTTP probes release their session; start from a proved valid
+ // resident actor so this cannot pass merely because its identity was absent.
+ $actor=$app->auth()->residentLogin($request(),['phone'=>'0817900001']);$assert(($actor['room_id']??0)>0&&($actor['occupancy_id']??0)>0,'Valid resident scope required before tampering');
+ $actor['room_id']+=100;$app->session()->login($actor);$app->clearActorCache();$assert($app->actor(true)===null,'Mismatched room retained access');
+ $actor=$app->auth()->residentLogin($request(),['phone'=>'0817900001']);$assert(($actor['occupancy_id']??0)>0,'Valid occupancy required before tampering');$actor['occupancy_id']+=100;$app->session()->login($actor);$app->clearActorCache();$assert($app->actor(true)===null,'Mismatched occupancy retained access');
 });
 $test('changing a phone invalidates the old session and old number',function()use($app,$request,$firstId,$expect,$assert):void{
  $app->auth()->residentLogin($request(),['phone'=>'0817900001']);$app->residents()->updateByAdmin($firstId,['phone'=>'0817900003']);

@@ -22,6 +22,12 @@
     METER_CHANGED:['ค่าที่กรอกยังอยู่ ตรวจข้อมูลล่าสุดและเปรียบเทียบก่อนบันทึกอีกครั้ง','meters'],
     ROOM_NOT_AVAILABLE:['โหลดรายการห้องล่าสุดแล้วเลือกห้องว่างใหม่ การจองเดิมยังไม่สำเร็จ','rooms'],
     ROOM_OCCUPIED:['ตรวจห้องและผู้พักเดิมก่อน ไม่รับเข้าพักซ้ำในห้องเดียวกัน','residents'],
+    ROOM_IN_USE:['ห้องยังมีผู้พักหรือการจอง ตรวจรายการปัจจุบันก่อน ระบบไม่ลบห้องที่ยังใช้งานอยู่','rooms'],
+    BOOKING_BAD_STATE:['สถานะการจองเปลี่ยนแล้ว เปิดรายการล่าสุดก่อนเลือกขั้นตอนต่อไป ไม่ยืนยันหรือยกเลิกซ้ำ','bookings'],
+    BOOKING_PHONE_ACTIVE:['ตรวจคำขอเดิมของเบอร์นี้ให้เสร็จหรือยกเลิกตามเหตุผลจริงก่อน ห้ามใช้เบอร์ผู้อื่นแทน','bookings'],
+    RESIDENT_IDENTITY_IN_USE:['เบอร์นี้เป็นของผู้พักอื่น ตรวจตัวตนและเบอร์ที่ถูกต้องก่อน ห้ามเชื่อมประวัติของคนละคน','residents'],
+    BILL_PREVIEW_CHANGED:['ข้อมูลเปลี่ยนหลังตรวจยอด ให้ตรวจตัวอย่างบิลใหม่ก่อนออกบิล ไม่ใช้ยอดจากหน้าที่เปิดค้าง','bills'],
+    BILL_PREVIEW_EXPIRED:['ตรวจตัวอย่างยอดล่าสุดอีกครั้งก่อนยืนยันออกบิล','bills'],
     BOOKING_EXPIRED:['ตรวจสถานะการจองล่าสุด การจองที่หมดอายุต้องเริ่มคำขอใหม่','bookings'],
     BILLING_SETTINGS_UNCONFIRMED:['ตรวจราคาน้ำ ไฟ และวันครบกำหนด แล้วบันทึกยืนยันค่าก่อนออกบิล','settings'],
     PROMPTPAY_NOT_CONFIGURED:['ให้เจ้าของตั้งบัญชี PromptPay ก่อนสร้าง QR ไม่ต้องเปิดตรวจสลิปก็สร้าง QR ได้','settings'],
@@ -36,6 +42,8 @@
   function explain(error, {role='',page=''}={}) {
     const details=error?.details||{},code=typeof details.code==='string'?details.code:'';
     const admin=page==='admin-console';
+    if(code==='ROOM_CODE_EXISTS')return {detail:'เลขห้องนี้ถูกใช้แล้ว ตรวจห้องเดิมหรือแก้เป็นเลขห้องใหม่ที่ไม่ซ้ำ',field:'room_code',action:'ไปแก้เลขห้อง'};
+    if(['SELF_DELETE','SELF_OWNER_CHANGE','LAST_OWNER'].includes(code))return {detail:'คงบัญชีเจ้าของที่ใช้งานได้ไว้อย่างน้อยหนึ่งบัญชี ไม่ปิดหรือลดสิทธิ์บัญชีที่กำลังใช้ หากต้องเปลี่ยนผู้ดูแลให้เจ้าของอีกบัญชีดำเนินการ'};
     if(code==='VALIDATION_ERROR'&&Object.hasOwn(fields,details.field))return {detail:`ตรวจช่อง “${fields[details.field]}” ตามรูปแบบที่กำหนด ข้อมูลอื่นที่กรอกยังอยู่`,field:details.field,action:'ไปแก้ช่องนี้'};
     if(code==='MUTATION_OUTCOME_UNKNOWN')return {detail:'ยังไม่ทราบว่าบันทึกสำเร็จหรือไม่ ตรวจรายการล่าสุดก่อนทำซ้ำ เก็บข้อมูลที่กรอกไว้ ระบบจะไม่ส่งคำขอซ้ำให้อัตโนมัติ'};
     if(code==='RATE_LIMITED')return {detail:'รอตามเวลาที่แจ้งก่อนลองใหม่ ไม่ต้องกดซ้ำระหว่างรอ'};

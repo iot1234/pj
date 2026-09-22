@@ -967,7 +967,9 @@ $test('direct resident UI keeps one idempotency key, lists only available rooms,
     $same(true,str_contains($populate,"state.rooms.filter((room) => room.status === 'available')"));
     $same(true,str_contains($populate,'select.replaceChildren(prompt)'));
     $same(true,str_contains($open,"room?.status === 'available' ? room.id : ''"));
-    $same(true,str_contains($open,"if (!state.loaded.has('rooms')) await loadRooms()"));
+    $same(true,str_contains($open,'await loadRooms()'));
+    $same(true,str_contains($open,'generation !== state.residentCreateOpenGeneration'));
+    $same(true,str_contains($open,'if (!state.roomListReady || state.roomController)'));
     $same(true,str_contains($open,'resetResidentCreateReuse(form)'));
     $same(true,str_contains($open,'form.elements.idempotency_key.value = window.crypto?.randomUUID?.()'));
     $same(1,substr_count($open,'form.elements.idempotency_key.value ='));
