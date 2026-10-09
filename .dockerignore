@@ -7,6 +7,7 @@
 .agents
 .idea
 .vscode
+.codex-tmp/
 
 storage/cache/
 storage/logs/
