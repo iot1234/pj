@@ -27,12 +27,14 @@ final class LineAdminRecipientService
         Validator::only($input,['oa_id','label','is_owner']);
         $oaId=$this->oaId($input['oa_id']??$this->app->lineOfficialAccounts()->defaultId());
         $label=Validator::string($input['label']??'ผู้รับแจ้งเตือน','label',1,120);
-        $owner=$input['is_owner']??false;if(!is_bool($owner))throw new HttpException(422,'is_owner ต้องเป็น boolean','VALIDATION_ERROR');
+        $owner=$input['is_owner']??true;
+        if($owner!==true)throw new HttpException(422,'ผู้รับแจ้งเตือนหลังบ้านต้องเป็นเจ้าของระบบเท่านั้น','OWNER_ONLY');
         return $this->app->lineOfficialAccounts()->withRegistryLock(function()use($oaId,$label,$owner,$adminId):array{
             $this->app->lineOfficialAccounts()->credentials($oaId);
             return $this->app->database()->transaction(function(PDO $pdo)use($oaId,$label,$owner,$adminId):array{
+                if(!$this->activeOwner($adminId))throw new HttpException(403,'ต้องใช้บัญชีเจ้าของระบบที่ยังใช้งานอยู่','OWNER_ONLY');
                 if($owner)$pdo->prepare('UPDATE line_admin_recipients SET revoked_at=UTC_TIMESTAMP(6),enabled=0,code_enc=NULL,updated_at=UTC_TIMESTAMP(6) WHERE oa_id=? AND is_owner=1 AND claimed_at IS NULL AND revoked_at IS NULL')->execute([$oaId]);
-                $code=($owner?'OWNER-':'ADMIN-').strtoupper(bin2hex(random_bytes(16)));
+                $code='OWNER-'.strtoupper(bin2hex(random_bytes(16)));
                 $ttl=$owner?300:600;
                 $pdo->prepare("INSERT INTO line_admin_recipients(oa_id,label,is_owner,enabled,muted_categories,code_hash,expires_at,created_by,created_at,updated_at)
                     VALUES(?,?,?,1,JSON_ARRAY(),?,DATE_ADD(UTC_TIMESTAMP(6),INTERVAL {$ttl} SECOND),?,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))")
@@ -50,7 +52,9 @@ final class LineAdminRecipientService
     {
         Validator::only($input,['label','enabled','muted_categories']);
         return $this->app->lineOfficialAccounts()->withRegistryLock(fn()=>$this->app->database()->transaction(function(PDO $pdo)use($id,$input,$adminId):array{
+            if(!$this->activeOwner($adminId))throw new HttpException(403,'ต้องใช้บัญชีเจ้าของระบบที่ยังใช้งานอยู่','OWNER_ONLY');
             $row=$this->row($id,true);if($row['revoked_at']!==null)throw new HttpException(409,'ผู้รับนี้ถูกยกเลิกแล้ว กรุณาออกคีย์ใหม่','LINE_RECIPIENT_REVOKED');
+            if(!(bool)$row['is_owner'])throw new HttpException(409,'ผู้รับแอดมินเดิมถูกยกเลิกแล้ว กรุณาออกคีย์เจ้าของระบบใหม่','LINE_RECIPIENT_REVOKED');
             $label=array_key_exists('label',$input)?Validator::string($input['label'],'label',1,120):$row['label'];
             $enabled=array_key_exists('enabled',$input)?$input['enabled']:(bool)$row['enabled'];if(!is_bool($enabled))throw new HttpException(422,'enabled ต้องเป็น boolean','VALIDATION_ERROR');
             $mutes=array_key_exists('muted_categories',$input)?$input['muted_categories']:json_decode($row['muted_categories'],true);
@@ -65,6 +69,7 @@ final class LineAdminRecipientService
     public function revoke(int $id,int $adminId): array
     {
         return $this->app->lineOfficialAccounts()->withRegistryLock(fn()=>$this->app->database()->transaction(function(PDO $pdo)use($id,$adminId):array{
+            if(!$this->activeOwner($adminId))throw new HttpException(403,'ต้องใช้บัญชีเจ้าของระบบที่ยังใช้งานอยู่','OWNER_ONLY');
             $this->row($id,true);
             $pdo->prepare('UPDATE line_admin_recipients SET enabled=0,revoked_at=COALESCE(revoked_at,UTC_TIMESTAMP(6)),code_enc=NULL,updated_at=UTC_TIMESTAMP(6) WHERE id=?')->execute([$id]);
             $this->audit($adminId,'line.admin_recipient.revoked',$id,[]);return $this->get($id);
@@ -73,20 +78,19 @@ final class LineAdminRecipientService
 
     public function consume(string $code,string $lineUserId,int $oaId): array
     {
-        if(!preg_match('/^(OWNER|ADMIN)-[A-F0-9]{32}$/D',$code)||!preg_match('/^U[0-9a-f]{32}$/D',$lineUserId))throw new HttpException(422,'คีย์ผู้รับแจ้งเตือนไม่ถูกต้อง','LINE_ADMIN_CODE_INVALID');
+        if(!preg_match('/^OWNER-[A-F0-9]{32}$/D',$code)||!preg_match('/^U[0-9a-f]{32}$/D',$lineUserId))throw new HttpException(422,'คีย์ผู้รับแจ้งเตือนไม่ถูกต้อง','LINE_ADMIN_CODE_INVALID');
         // Reentrant when called by the signed webhook; direct service callers
         // must obey the same OA/owner replacement serialization boundary.
         return $this->app->lineOfficialAccounts()->withRegistryLock(function()use($code,$lineUserId,$oaId):array{
           $this->app->lineOfficialAccounts()->credentials($oaId);
           return $this->app->database()->transaction(function(PDO $pdo)use($code,$lineUserId,$oaId):array{
             $q=$pdo->prepare('SELECT *,expires_at>UTC_TIMESTAMP(6) AS valid FROM line_admin_recipients WHERE code_hash=? FOR UPDATE');$q->execute([$this->hash($code)]);$row=$q->fetch();
-            if(!$row||$row['revoked_at']!==null||(int)$row['oa_id']!==$oaId)throw new HttpException(422,'คีย์ไม่ถูกต้องหรือส่งผิด LINE OA กรุณาขอคีย์ใหม่','LINE_ADMIN_CODE_INVALID');
+            if(!$row||!(bool)$row['is_owner']||!$this->activeOwner((int)$row['created_by'])||$row['revoked_at']!==null||(int)$row['oa_id']!==$oaId)throw new HttpException(422,'คีย์ไม่ถูกต้องหรือส่งผิด LINE OA กรุณาขอคีย์ใหม่','LINE_ADMIN_CODE_INVALID');
             if(!(bool)$row['enabled'])throw new HttpException(409,'คีย์ผู้รับแจ้งเตือนนี้ถูกปิดใช้งาน กรุณาติดต่อผู้ดูแล','LINE_RECIPIENT_DISABLED');
             if($row['claimed_at']!==null){if(hash_equals((string)$row['line_user_id'],$lineUserId))return ['id'=>(int)$row['id'],'newly_claimed'=>false];throw new HttpException(409,'คีย์ถูกใช้แล้ว','LINE_ADMIN_CODE_USED');}
             if(!(bool)$row['valid'])throw new HttpException(422,'คีย์หมดอายุ กรุณาขอคีย์ใหม่','LINE_ADMIN_CODE_EXPIRED');
             if((bool)$row['is_owner'])$pdo->prepare('UPDATE line_admin_recipients SET enabled=0,revoked_at=UTC_TIMESTAMP(6),code_enc=NULL,updated_at=UTC_TIMESTAMP(6) WHERE oa_id=? AND is_owner=1 AND claimed_at IS NOT NULL AND revoked_at IS NULL')->execute([$oaId]);
-            // The same user can be represented by both an owner and a staff
-            // claim, but delivery deduplicates by OA + recipient.
+            // Only the current owner claim can receive management notices.
             $pdo->prepare('UPDATE line_admin_recipients SET line_user_id=?,claimed_at=UTC_TIMESTAMP(6),code_enc=NULL,updated_at=UTC_TIMESTAMP(6) WHERE id=?')->execute([$lineUserId,$row['id']]);
             $this->audit(0,'line.admin_recipient.claimed',(int)$row['id'],['oa_id'=>$oaId,'recipient_hash'=>hash_hmac('sha256',$lineUserId,$this->app->config->appKey())]);
             return ['id'=>(int)$row['id'],'newly_claimed'=>true];
@@ -97,7 +101,7 @@ final class LineAdminRecipientService
     public function eligible(string $category,?int $oaId=null): array
     {
         if(!in_array($category,self::CATEGORIES,true))throw new \InvalidArgumentException('Invalid notice category');
-        $q=$this->app->database()->pdo()->prepare('SELECT * FROM line_admin_recipients WHERE enabled=1 AND revoked_at IS NULL AND claimed_at IS NOT NULL'.($oaId!==null?' AND oa_id=?':'').' ORDER BY id');$q->execute($oaId!==null?[$oaId]:[]);
+        $q=$this->app->database()->pdo()->prepare("SELECT * FROM line_admin_recipients WHERE is_owner=1 AND enabled=1 AND revoked_at IS NULL AND claimed_at IS NOT NULL AND EXISTS(SELECT 1 FROM admin_users creator WHERE creator.id=line_admin_recipients.created_by AND creator.role='owner' AND creator.active=1 AND creator.retired_at IS NULL)".($oaId!==null?' AND oa_id=?':'').' ORDER BY id');$q->execute($oaId!==null?[$oaId]:[]);
         $rows=[];$seen=[];
         foreach($q->fetchAll()as$row){$key=$row['oa_id'].':'.$row['line_user_id'];if(isset($seen[$key])||in_array($category,json_decode($row['muted_categories'],true)??[],true))continue;$seen[$key]=true;$rows[]=$row;}
         return $rows;
@@ -105,7 +109,7 @@ final class LineAdminRecipientService
 
     public function mayDeliver(int $id,string $user,int $oaId,string $category): bool
     {
-        $row=$this->row($id);return (int)$row['oa_id']===$oaId&&(bool)$row['enabled']&&$row['revoked_at']===null&&$row['claimed_at']!==null&&hash_equals((string)$row['line_user_id'],$user)&&!in_array($category,json_decode($row['muted_categories'],true)??[],true);
+        $row=$this->row($id);return (bool)$row['is_owner']&&$this->activeOwner((int)$row['created_by'])&&(int)$row['oa_id']===$oaId&&(bool)$row['enabled']&&$row['revoked_at']===null&&$row['claimed_at']!==null&&hash_equals((string)$row['line_user_id'],$user)&&!in_array($category,json_decode($row['muted_categories'],true)??[],true);
     }
 
     private function row(int $id,bool $lock=false): array
@@ -115,7 +119,7 @@ final class LineAdminRecipientService
     private function safe(array $row,bool $showCode): array
     {
         $oa=$this->app->lineOfficialAccounts()->get((int)$row['oa_id']);
-        $pending=$row['claimed_at']===null&&$row['revoked_at']===null&&(isset($row['valid'])?(bool)$row['valid']:strtotime($row['expires_at'].' UTC')>time());
+        $pending=(bool)$row['is_owner']&&$this->activeOwner((int)$row['created_by'])&&$row['claimed_at']===null&&$row['revoked_at']===null&&(isset($row['valid'])?(bool)$row['valid']:strtotime($row['expires_at'].' UTC')>time());
         $result=['id'=>(int)$row['id'],'oa_id'=>(int)$row['oa_id'],'oa_name'=>$oa['name'],'label'=>$row['label'],'is_owner'=>(bool)$row['is_owner'],'enabled'=>(bool)$row['enabled'],'muted_categories'=>json_decode($row['muted_categories'],true),'line_user_id_hint'=>$row['line_user_id']?'•••'.substr($row['line_user_id'],-6):null,'expires_at'=>$row['expires_at'],'claimed_at'=>$row['claimed_at'],'status'=>$row['revoked_at']!==null?'revoked':($row['claimed_at']!==null?'claimed':($pending?'pending':'expired'))];
         if($pending&&$showCode&&is_string($row['code_enc'])){
             $code=(new SecretCipher($this->app->config))->decrypt($row['code_enc'],'line_admin_code_'.$row['id']);
@@ -125,6 +129,14 @@ final class LineAdminRecipientService
         return $result;
     }
     private function hash(string $code): string{return hash_hmac('sha256',"line-admin-claim\0".$code,$this->app->config->appKey());}
+    private function activeOwner(int $id): bool
+    {
+        $pdo=$this->app->database()->pdo();
+        // Claims and deliveries hold the creator's account stable until their
+        // transaction commits. Outside a transaction this is a read-only check.
+        $q=$pdo->prepare("SELECT id FROM admin_users WHERE id=? AND role='owner' AND active=1 AND retired_at IS NULL".($pdo->inTransaction()?' FOR SHARE':''));
+        $q->execute([$id]);return $q->fetchColumn()!==false;
+    }
     private function oaId(mixed $id): int{if(!is_int($id)||$id<0)throw new HttpException(422,'oa_id ไม่ถูกต้อง','VALIDATION_ERROR');return $id;}
     private function audit(int $adminId,string $action,int $id,array $details): void
     {

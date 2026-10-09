@@ -20,10 +20,8 @@ try{
     $role=strtolower(trim((string)($options['role']??$app->config->get('ADMIN_ROLE','owner'))));
     if(!preg_match('/^[a-z0-9_.-]{3,64}$/',$username))throw new InvalidArgumentException('username must be 3-64 characters using a-z, 0-9, _, ., or -');
     Password::assertAdmin($password, $username);
-    if(!in_array($role,['owner','admin'],true))throw new InvalidArgumentException('role must be owner or admin');
+    if($role!=='owner')throw new InvalidArgumentException('role must be owner; the intermediary admin role has been removed');
     $pdo=$app->database()->pdo();
-    $count=(int)$pdo->query('SELECT COUNT(*) FROM admin_users')->fetchColumn();
-    if($count===0)$role='owner';
     $statement=$pdo->prepare('INSERT INTO admin_users (username,password_hash,role,auth_version,active,created_by,created_at,updated_at) VALUES (?,?,?,1,1,NULL,UTC_TIMESTAMP(),UTC_TIMESTAMP())');
     $statement->execute([$username,Password::hash($password),$role]);
     fwrite(STDOUT,json_encode(['ok'=>true,'id'=>(int)$pdo->lastInsertId(),'username'=>$username,'role'=>$role],JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR).PHP_EOL);

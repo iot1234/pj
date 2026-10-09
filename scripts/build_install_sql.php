@@ -36,6 +36,29 @@ $migration=$root.'/database/migrations/016_unique_transfer_instructions.sql';
 if($checkOnly){if(str_replace(["\r\n","\r"],"\n",(string)file_get_contents($migration))!==$transfer){fwrite(STDERR,"Migration 016 out of date\n");exit(1);}}
 else file_put_contents($migration,$transfer,LOCK_EX);
 $generatedSchema = rtrim($base) . "\n\n{$marker}\n{$platform}-- END GENERATED LINE PLATFORM\n";
+foreach(['daily_bookings','daily_payments']as$dailySource){
+    $dailySql=file_get_contents($root.'/database/'.$dailySource.'.sql');
+    if(!is_string($dailySql)){fwrite(STDERR,"Missing daily schema source\n");exit(1);}
+    $dailySql=rtrim(str_replace(["\r\n","\r"],"\n",$dailySql))."\n";
+    $generatedSchema.="\n-- BEGIN GENERATED ".strtoupper($dailySource)."\n".$dailySql.'-- END GENERATED '.strtoupper($dailySource)."\n";
+}
+// Existing 018/019 installations need the same reviewed guards as a fresh install.
+// Keep the completion marker last so an interrupted migration fails readiness.
+$reviewFinance=str_replace(["\r\n","\r"],"\n",(string)file_get_contents($root.'/database/daily_review_fixes_finance.sql'));
+$reviewMarker='-- Completion marker for recoverable closed evidence; installed after every review guard.';
+$reviewOffset=strpos($reviewFinance,$reviewMarker);
+$reviewBooking=(string)file_get_contents($root.'/database/daily_bookings.sql');
+if($reviewOffset===false||!preg_match('/CREATE TRIGGER trg_daily_room_mode_guard.*?\bEND\$\$/s',$reviewBooking,$reviewGuard)){
+    fwrite(STDERR,"Cannot compose daily review migration\n");exit(1);
+}
+$reviewSql="-- AUTO-GENERATED FROM daily_review_fixes_finance.sql AND daily_bookings.sql.\n"
+    ."-- Existing daily installations only: apply after 018/019 with web and workers stopped.\n"
+    .substr($reviewFinance,0,$reviewOffset)."\nDROP TRIGGER IF EXISTS trg_daily_room_mode_guard;\nDELIMITER $$\n".$reviewGuard[0]."\nDELIMITER ;\n\n".substr($reviewFinance,$reviewOffset);
+$reviewPath=$root.'/database/migrations/020_daily_review_fixes.sql';
+if($checkOnly){
+    if(!is_file($reviewPath)||str_replace(["\r\n","\r"],"\n",(string)file_get_contents($reviewPath))!==$reviewSql){fwrite(STDERR,"Migration 020 out of date\n");exit(1);}
+}elseif(file_put_contents($reviewPath,$reviewSql,LOCK_EX)!==strlen($reviewSql)){fwrite(STDERR,"Cannot write migration 020\n");exit(1);}
+require __DIR__.'/build_daily_deployment.php';
 $generatedMigration = "-- AUTO-GENERATED FROM database/line_platform.sql. DO NOT EDIT.\n"
     . "-- Apply after migrations 001-013 with web and worker stopped.\n"
     . "-- Existing LINE credentials, verified residents and deliveries stay on OA 0.\n"

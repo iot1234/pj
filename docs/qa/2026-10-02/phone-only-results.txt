@@ -1,0 +1,69 @@
+Phone-only completion verification — 2026-10-02
+Project: php-mysql; baseline commit 705c745
+Runtime: PHP 8.5, MySQL 8.4.10, Node 24.16.0, Edge/Playwright
+Isolated MySQL port 33502; disposable data1 and data2 directories
+All HTTP/browser tests loopback-only; browser external requests blocked
+No live database, deployment, provider request, LINE delivery or transfer
+Deprecated RESIDENT_ACTIVATION_TTL_SECONDS deliberately set to unused-invalid-value
+
+Local PHP unit/contract: 139 passed, 0 failed
+Real CLI phone-only configuration preflight: 2 groups passed
+Node interaction tests: 254 passed, 0 failed
+
+Full MySQL run — data1 (19 suites):
+owner_migration: exit=0, PASS lines=7
+line_qr: exit=0, PASS lines=23
+operations: exit=0, PASS lines=14
+pending_migration: exit=0, PASS lines=4
+pending: exit=0, PASS lines=1
+binding: exit=0, PASS lines=1
+bot: exit=0, PASS lines=18
+room_binding: exit=0, PASS lines=20
+oa: exit=0, PASS lines=25
+platform: exit=0, PASS lines=14
+billing_defaults: exit=0, PASS lines=7
+guide: exit=0, PASS lines=17
+meter: exit=0, PASS lines=16
+phone: exit=0, PASS lines=22
+payment: exit=0, PASS lines=19
+transfer: exit=0, PASS lines=16
+billing: exit=0, PASS lines=33
+healthz: exit=0, PASS lines=14
+lifecycle: exit=0, PASS lines=1
+schema-audit: exit=0, 55 passed, 0 failed; 2 expected payment-provider setup warnings
+
+Browser payment — data1: exit=0
+PASS real PHP/MySQL resident 1: QR without verifier, exact 100.17, LINE bill reference, stable reload
+PASS real QR layout at 320, 390, 768 and 1366px
+PASS real PHP/MySQL resident 2: QR without verifier, exact 100.78, LINE bill reference, stable reload
+PASS real PHP/MySQL resident 3: QR without verifier, exact 100.68, LINE bill reference, stable reload
+PASS three equal-principal rooms have distinct locked amounts: 100.17, 100.78, 100.68
+PASS incomplete verifier configuration is rejected without disabling resident QR or LINE
+PASS LINE identity cannot be overwritten via payment settings
+PASS real move-out guard explains unpaid bills and guides back to billing without moving the resident or marking paid
+PASS all 11 admin views load against real PHP/MySQL without API read errors
+PASS simulated user-list outage clears stale actions and one-click reload restores the real list
+PASS zero browser JavaScript errors; no provider requests, LINE messages or transfers
+
+Browser phone-only — data2: exit=0
+operations: exit=0, PASS lines=14
+browser: exit=0
+PASS check-in and explicit replay return phone access without any activation code or expiry
+PASS single-field phone login opens the correct room, edits own profile and denies owner APIs/identity edits
+PASS owner reset revokes the existing session; resident signs in again with the same phone and no key
+PASS phone change revokes old sessions and number; normalized new phone works immediately on another device
+PASS all resident login requests contain only phone, with zero browser errors or external requests
+MySQL suites: 0 failures
+
+Test correction: first phone browser attempt waited for a hidden profile tab.
+The test now opens the actual profile tab, waits for loaded fields, and edits via the real form.
+Product login completed successfully before that initial test-selector timeout.
+
+PHP lint: 100 files passed
+JavaScript syntax: app.js and browser-phone-only.mjs passed
+Installer consistency: current; SHA-256 4a2fcb61ecf952d7cae1ed13026e8399e52f52312b6baabd7d0577a633b61aac
+Shell syntax: bootstrap_database.sh and ci-line-mysql-tests.sh passed
+Diff whitespace: passed
+Test PHP/MySQL processes stopped; both MySQL shutdown-complete logs confirmed
+Raw local logs: ../tmp/phone-only-finish-20261002
+Docker Compose rendering/build not executed locally; config checks wired into CI

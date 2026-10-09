@@ -13,6 +13,9 @@ require_once $root . '/src/Security/SecretCipher.php';
 require_once $root . '/src/Support/SchemaGuard.php';
 require_once $root . '/src/Support/LinePlatformSchema.php';
 require_once $root . '/src/Support/PendingOpeningSchema.php';
+require_once $root . '/src/Support/OwnerAccessSchema.php';
+require_once $root . '/src/Support/ResidentAccessReadiness.php';
+require_once $root . '/src/Support/DailyBookingSchema.php';
 
 $arguments = array_slice($argv, 1);
 $productionMode = in_array('--production', $arguments, true);
@@ -397,15 +400,6 @@ $bookingHold = filter_var(envValue($env, 'BOOKING_HOLD_SECONDS', '86400'), FILTE
 if ($bookingHold === false) {
     addResult($errors, 'BOOKING_HOLD_SECONDS ต้องเป็นเลข 900-604800');
 }
-$residentActivationTtl = filter_var(
-    envValue($env, 'RESIDENT_ACTIVATION_TTL_SECONDS', '604800'),
-    FILTER_VALIDATE_INT,
-    ['options' => ['min_range' => 900, 'max_range' => 2592000]],
-);
-if ($residentActivationTtl === false) {
-    addResult($errors, 'RESIDENT_ACTIVATION_TTL_SECONDS ต้องเป็นเลข 900-2592000');
-}
-
 foreach (['DB_DATABASE', 'DB_USERNAME'] as $key) {
     if (trim((string) envValue($env, $key, '')) === '') {
         addResult($errors, $key . ' ยังว่างอยู่');
@@ -442,8 +436,8 @@ if ($adminUsername !== '' && !preg_match('/^[A-Za-z0-9_.-]{3,64}$/', $adminUsern
 if ($adminPassword !== '' && (strlen($adminPassword) < 12 || strlen($adminPassword) > 200)) {
     addResult($errors, 'ADMIN_PASSWORD ต้องยาว 12-200 ตัวอักษร');
 }
-if (!in_array($adminRole, ['owner', 'admin'], true)) {
-    addResult($errors, 'ADMIN_ROLE ต้องเป็น owner หรือ admin');
+if ($adminRole !== 'owner') {
+    addResult($errors, 'ADMIN_ROLE ต้องเป็น owner เท่านั้น; ระบบยกเลิกบทบาท admin แล้ว');
 }
 if ($adminPassword === '' && !$checkDatabase) {
     addResult($warnings, 'ADMIN_PASSWORD ว่าง: หากยังไม่มี owner ให้กำหนดชั่วคราวแล้วรัน scripts/create_admin.php');
@@ -540,6 +534,8 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
             'meter_readings', 'billing_settings', 'integration_settings', 'bills', 'bill_items', 'payments',
             'notification_outbox', 'notification_worker_heartbeats', 'audit_logs', 'rate_limits', 'transfer_instructions',
             'line_official_accounts','line_room_bindings','line_room_policies','line_admin_recipients','line_notice_outbox',
+            'daily_bookings','daily_booking_nights','daily_room_blocks','daily_booking_actions','daily_housekeeping_actions',
+            'payment_evidence_registry','payment_amount_registry','daily_transfer_instructions','daily_payments','daily_refunds','daily_deposit_settlements',
         ];
         $statement = $pdo->prepare(
             'SELECT table_name FROM information_schema.tables WHERE table_schema=? AND table_name IN ('
@@ -551,13 +547,19 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
         }, $statement->fetchAll());
         $missing = array_values(array_diff($expectedTables, $found));
         if ($missing === []) {
-            addResult($successes, 'พบตารางระบบครบ 21 ตาราง รวม LINE OA และผู้รับหลายบัญชี');
+            addResult($successes, 'พบตารางระบบครบ '.count($expectedTables).' ตาราง รวมการจองและการเงินรายวัน');
+            $dailySchemaErrors=\Dormitory\Support\DailyBookingSchema::errors($pdo);
+            if($dailySchemaErrors===[])addResult($successes,'การจองรายวันและการเงินผ่านข้อกำหนด migrations 018/019/020');
+            else foreach($dailySchemaErrors as$dailySchemaError)addResult($errors,$dailySchemaError);
             $lineSchemaErrors=\Dormitory\Support\LinePlatformSchema::errors($pdo);
             if($lineSchemaErrors===[])addResult($successes,'LINE platform columns, generated guards, indexes, foreign keys, CHECK constraints และ legacy OA ถูกต้อง');
             else foreach($lineSchemaErrors as$lineSchemaError)addResult($errors,$lineSchemaError);
             $openingSchemaErrors=\Dormitory\Support\PendingOpeningSchema::errors($pdo);
             if($openingSchemaErrors===[])addResult($successes,'migration 015 enforced opening-reading CHECK ตรง canonical');
             else foreach($openingSchemaErrors as$openingSchemaError)addResult($errors,$openingSchemaError);
+            $ownerSchemaErrors=\Dormitory\Support\OwnerAccessSchema::errors($pdo);
+            if($ownerSchemaErrors===[])addResult($successes,'migration 017 จำกัดบทบาท owner และปิดบัญชี admin เดิมถาวร');
+            else foreach($ownerSchemaErrors as$ownerSchemaError)addResult($errors,$ownerSchemaError);
         } else {
             addResult($errors, 'schema ไม่ครบ; ขาดตาราง: ' . implode(', ', $missing));
         }
@@ -570,7 +572,7 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
         if($retiredResidentCredentialColumns===0){
             addResult($successes,'schema ไม่มีคอลัมน์ credential ของ Resident ที่เลิกใช้แล้ว');
         }else{
-            addResult($errors,'schema ยังมี residents.pin_hash ซึ่งไม่รองรับกับ source ปัจจุบัน; ใช้ transitional commit a52bc33 ให้ทุก replica พร้อม รัน migration 006 ตรวจว่าคอลัมน์หาย แล้วดำเนิน migrations 007–015 ตาม maintenance guide ก่อน deploy source ปัจจุบัน');
+            addResult($errors,'schema ยังมี residents.pin_hash ซึ่งไม่รองรับกับ source ปัจจุบัน; ใช้ transitional commit a52bc33 ให้ทุก replica พร้อม รัน migration 006 ตรวจว่าคอลัมน์หาย แล้วดำเนิน migrations 007–017 ตาม maintenance guide ก่อน deploy source ปัจจุบัน');
         }
 
         $grantRows = $pdo->query('SHOW GRANTS')->fetchAll(PDO::FETCH_NUM);
@@ -590,6 +592,7 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
         }
 
         $expectedTriggers = [
+            'trg_admin_users_retirement_immutable'=>['UPDATE','BEFORE','admin_users'],
             'trg_transfer_insert_guard'=>['INSERT','BEFORE','transfer_instructions'],
             'trg_transfer_update_guard'=>['UPDATE','BEFORE','transfer_instructions'],
             'trg_transfer_no_delete'=>['DELETE','BEFORE','transfer_instructions'],
@@ -617,6 +620,9 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
             'trg_line_notice_relationship_guard' => ['INSERT','BEFORE','line_notice_outbox'],
             'trg_line_notice_relationship_guard_update' => ['UPDATE','BEFORE','line_notice_outbox'],
         ];
+        $canonicalSchema=(string)file_get_contents($root.'/database/schema.sql');
+        preg_match_all('/CREATE TRIGGER\s+([a-z0-9_]+)\s+(BEFORE|AFTER)\s+(INSERT|UPDATE|DELETE)\s+ON\s+([a-z0-9_]+)/i',$canonicalSchema,$canonicalTriggerRows,PREG_SET_ORDER);
+        foreach($canonicalTriggerRows as$canonicalTrigger)$expectedTriggers[$canonicalTrigger[1]]=[strtoupper($canonicalTrigger[3]),strtoupper($canonicalTrigger[2]),$canonicalTrigger[4]];
         $expectedTriggerBodies=expectedTriggerActions($root.'/database/schema.sql');
         $triggerStatement = $pdo->prepare('SELECT trigger_name,event_manipulation,action_timing,event_object_table,action_statement FROM information_schema.triggers WHERE trigger_schema=?');
         $triggerStatement->execute([$database]);
@@ -647,12 +653,12 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
         if(count($expectedTriggerBodies)!==count($expectedTriggers)){
             addResult($errors,'อ่าน canonical trigger bodies จาก database/schema.sql ไม่ครบ');
         }elseif ($invalidTriggers === []&&$invalidTriggerBodies===[]) {
-            addResult($successes, 'พบ integrity triggers พร้อม event/timing/body ตรง canonical ครบ 26 รายการ');
+            addResult($successes, 'พบ integrity triggers พร้อม event/timing/body ตรง canonical ครบ '.count($expectedTriggers).' รายการ');
         } elseif ($schemaAudit || $grantInspection['can_read_all_triggers']) {
             $invalid=array_values(array_unique(array_merge($invalidTriggers,$invalidTriggerBodies)));
             addResult($errors, 'schema ขาด trigger หรือ event/timing/body ไม่ตรง canonical: ' . implode(', ', $invalid));
         } else {
-            addResult($skips, 'MySQL ซ่อน trigger metadata/body จากบัญชี runtime-only; รัน --schema-audit ด้วยบัญชี DBA เพื่อรับรอง triggers 26 รายการ');
+            addResult($skips, 'MySQL ซ่อน trigger metadata/body จากบัญชี runtime-only; รัน --schema-audit ด้วยบัญชี DBA เพื่อรับรอง triggers '.count($expectedTriggers).' รายการ');
         }
 
         $indexStatement = $pdo->prepare(
@@ -747,8 +753,8 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
         $checkStatement=$pdo->prepare("SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema=? AND constraint_type='CHECK'");
         $checkStatement->execute([$database]);
         $checkCount=(int)$checkStatement->fetchColumn();
-        if($checkCount>=119)addResult($successes,'พบ CHECK constraints ครบอย่างน้อย 119 รายการ');
-        else addResult($errors,'schema มี CHECK constraints ไม่ครบ; พบ '.$checkCount.' จากอย่างน้อย 119');
+        if($checkCount>=121)addResult($successes,'พบ CHECK constraints ครบอย่างน้อย 121 รายการ');
+        else addResult($errors,'schema มี CHECK constraints ไม่ครบ; พบ '.$checkCount.' จากอย่างน้อย 121');
 
         // A generated UNIQUE guard is ineffective when its expression has been
         // changed to always return NULL. Verify the complete definition of all
@@ -783,6 +789,8 @@ if ($checkDatabase && extension_loaded('pdo_mysql')) {
                     "casewhenstatusin'verified','pending'thenbill_idelsenullend",
                 ],
             ],
+            'payments.active_slip_hmac' => ['type'=>'char(64)','expressions'=>["casewhenstatusin'pending','verified'thenslip_hmacelsenullend"]],
+            'payments.credited_txn_ref' => ['type'=>'varchar(191)','expressions'=>["casewhenstatus='verified'thentransaction_refelsenullend"]],
             'line_link_codes.pending_resident_id' => [
                 'type' => 'bigint unsigned',
                 'expressions' => ["casewhenstatus='pending'thenresident_idelsenullend"],
@@ -1406,32 +1414,20 @@ SQL
                     .' แถว; ต้องกระทบยอดและซ่อมด้วย DBA ระหว่าง maintenance ก่อนเปิด billing');
             }
 
-            $activeResidentsWithoutCredential=(int)$pdo->query(
-                "SELECT COUNT(*) FROM residents
-                  WHERE active=1
-                    AND NOT (
-                        access_password_hash IS NOT NULL
-                        OR (
-                            activation_code_hash IS NOT NULL
-                            AND activation_consumed_at IS NULL
-                            AND activation_expires_at>UTC_TIMESTAMP(6)
-                        )
-                    )"
-            )->fetchColumn();
-            if($activeResidentsWithoutCredential===0){
-                addResult($successes,'active residents มี password หรือ activation key ที่ยังใช้ได้ครบทุกแถว');
+            $activeResidentsWithoutPhoneAccess=\Dormitory\Support\ResidentAccessReadiness::countInvalid($pdo);
+            if($activeResidentsWithoutPhoneAccess===0){
+                addResult($successes,'active residents มีเบอร์โทรและห้อง active ที่ผูกตรงหนึ่งรายการครบทุกแถว');
             }else{
-                addResult($errors,'data readiness ไม่ผ่าน: active residents ไม่มี password หรือ activation key ที่ยังใช้ได้ '
-                    .$activeResidentsWithoutCredential
-                    .' แถว; deploy ใน maintenance, ให้ผู้ดูแล reissue access key '
-                    .'และยืนยันการส่งมอบผ่านช่องทางส่วนตัวก่อนเปิด traffic');
+                addResult($errors,'data readiness ไม่ผ่าน: active residents ไม่มีเบอร์โทรหรือห้อง active ที่ผูกตรงหนึ่งรายการ '
+                    .$activeResidentsWithoutPhoneAccess
+                    .' แถว; ให้เจ้าของตรวจเบอร์โทรและข้อมูลย้ายเข้า/ย้ายออกให้ตรงก่อนเปิด traffic');
             }
         }else{
             addResult($skips,'ข้าม data-readiness ของ resident/occupancy/meter เพราะ schema migrations 007–009 ยังไม่ครบ');
         }
 
         if ($missing === [] && $invalidLineColumns === []) {
-            $ownerCount = (int) $pdo->query("SELECT COUNT(*) FROM admin_users WHERE role='owner' AND active=1")->fetchColumn();
+            $ownerCount = (int) $pdo->query("SELECT COUNT(*) FROM admin_users WHERE role='owner' AND active=1 AND retired_at IS NULL")->fetchColumn();
             if ($ownerCount < 1) {
                 addResult($warnings, 'ฐานข้อมูลยังไม่มี owner ที่ active');
             } else {

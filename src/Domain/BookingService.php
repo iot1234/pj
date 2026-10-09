@@ -5,7 +5,6 @@ namespace Dormitory\Domain;
 
 use Dormitory\Application;
 use Dormitory\Http\HttpException;
-use Dormitory\Security\ResidentAccessCredential;
 use Dormitory\Support\Validator;
 use PDO;
 
@@ -66,7 +65,7 @@ final class BookingService
             // Every workflow that mutates a booking locks its physical room
             // first. Include soft-deleted rooms so an idempotent retry can
             // still report the original booking's terminal state accurately.
-            $room = $pdo->prepare('SELECT id,monthly_rent,deleted_at FROM rooms WHERE id=? FOR UPDATE');
+            $room = $pdo->prepare('SELECT id,monthly_rent,deleted_at,rental_mode FROM rooms WHERE id=? FOR UPDATE');
             $room->execute([$roomId]);
             $roomRow=$room->fetch();if (!$roomRow) throw new HttpException(404, 'ไม่พบห้อง', 'ROOM_NOT_FOUND');
 
@@ -82,6 +81,7 @@ final class BookingService
                 return $this->replay($pdo,$row,$roomId,$fullName,$phone);
             }
             if($roomRow['deleted_at']!==null)throw new HttpException(404, 'ไม่พบห้อง', 'ROOM_NOT_FOUND');
+            if($roomRow['rental_mode']!=='monthly')throw new HttpException(409,'ห้องนี้เปิดให้จองรายวัน กรุณาเลือกวันที่เข้าพัก','ROOM_RENTAL_MODE');
 
             $this->expirePending($roomId);
 
@@ -291,10 +291,12 @@ final class BookingService
             $adminId,$roomId,$fullName,$phone,$email,$emailProvided,$moveIn,
             $idempotency,$reuseResidentId,$reuseResidentIdProvided,$reference,$openingWater,$openingElectric
         ):array{
-            $room=$pdo->prepare('SELECT id,monthly_rent,deleted_at FROM rooms WHERE id=? FOR UPDATE');
+            $room=$pdo->prepare('SELECT id,monthly_rent,deleted_at,rental_mode FROM rooms WHERE id=? FOR UPDATE');
             $room->execute([$roomId]);
             $roomRow=$room->fetch();
             if(!$roomRow)throw new HttpException(404,'ไม่พบห้อง','ROOM_NOT_FOUND');
+
+            if($roomRow['rental_mode']!=='monthly')throw new HttpException(409,'ห้องรายวันต้องรับเข้าพักจากเมนูจองรายวัน','ROOM_RENTAL_MODE');
 
             // Lock the requested room first, matching all booking mutations.
             // The following non-locking unique-key lookup avoids a missing-key
@@ -367,7 +369,7 @@ final class BookingService
                         'booking_id'=>(int)$booking['id'],'status'=>'moved_in','resident_id'=>(int)$occupancyRow['resident_id'],
                         'occupancy_id'=>(int)$occupancyRow['id'],'room_id'=>$roomId,'move_in_date'=>(string)$occupancyRow['move_in_date'],
                         'idempotent_replay'=>true,
-                    ]+$this->pendingResidentAccess($pdo,(int)$occupancyRow['resident_id']);
+                    ]+$this->phoneResidentAccess($pdo,(int)$occupancyRow['resident_id']);
                 }
                 if($booking['status']!=='confirmed'){
                     throw new HttpException(409,'Administrative check-in is no longer active','ADMIN_CHECK_IN_INACTIVE',['status'=>$booking['status']]);
@@ -482,7 +484,7 @@ final class BookingService
             $roomId=$lookup->fetchColumn();
             if($roomId===false)throw new HttpException(404, 'ไม่พบการจอง', 'BOOKING_NOT_FOUND');
             $roomId=(int)$roomId;
-            $roomLock=$pdo->prepare('SELECT id,deleted_at FROM rooms WHERE id=? FOR UPDATE');
+            $roomLock=$pdo->prepare('SELECT id,deleted_at,rental_mode FROM rooms WHERE id=? FOR UPDATE');
             $roomLock->execute([$roomId]);
             $roomRow=$roomLock->fetch();
             if(!$roomRow)throw new HttpException(404, 'ไม่พบห้อง', 'ROOM_NOT_FOUND');
@@ -550,10 +552,11 @@ final class BookingService
                     'room_id'=>(int)$occupancy['room_id'],
                     'move_in_date'=>(string)$occupancy['move_in_date'],
                     'idempotent_replay'=>true,
-                ]+$this->pendingResidentAccess($pdo,(int)$occupancy['resident_id']);
+                ]+$this->phoneResidentAccess($pdo,(int)$occupancy['resident_id']);
             }
             if ($booking['status'] !== 'confirmed') throw new HttpException(409, 'ต้องยืนยันการจองก่อนย้ายเข้า', 'BOOKING_BAD_STATE', ['status'=>$booking['status']]);
             if ($roomRow['deleted_at'] !== null) throw new HttpException(409, 'ห้องนี้ถูกลบแล้ว', 'ROOM_DELETED');
+            if($roomRow['rental_mode']!=='monthly')throw new HttpException(409,'ห้องรายวันต้องรับเข้าพักจากเมนูจองรายวัน','ROOM_RENTAL_MODE');
             $bookedDate=(new \DateTimeImmutable((string)$booking['created_at'],new \DateTimeZone('UTC')))->setTimezone($timezone)->format('Y-m-d');
             if(!$allowBeforeBookingDate&&$moveIn<$bookedDate)throw new HttpException(422,'move_in_date cannot be before the booking date','VALIDATION_ERROR',['field'=>'move_in_date']);
 
@@ -631,30 +634,18 @@ final class BookingService
                 $residentEmail=$emailProvided?$email:$resident['email'];
                 // A returning resident must prove control of the LINE account
                 // again instead of inheriting a potentially stale binding.
-                $update = $pdo->prepare('UPDATE residents SET full_name=?,email=?,line_user_id=?,active=1,auth_version=auth_version+1,updated_at=UTC_TIMESTAMP() WHERE id=?');
+                $update = $pdo->prepare('UPDATE residents SET full_name=?,email=?,line_user_id=?,active=1,
+                    access_password_hash=NULL,activation_code_hash=NULL,activation_expires_at=NULL,
+                    activation_consumed_at=NULL,auth_version=auth_version+1,updated_at=UTC_TIMESTAMP() WHERE id=?');
                 $update->execute([$booking['full_name'],$residentEmail,null,$residentId]);
-                $residentAuthVersion=(int)$resident['auth_version']+1;
             } else {
                 $insertResident = $pdo->prepare('INSERT INTO residents (full_name,phone_norm,email,line_user_id,auth_version,active,created_at,updated_at) VALUES (?,?,?,?,1,1,UTC_TIMESTAMP(),UTC_TIMESTAMP())');
                 $insertResident->execute([$booking['full_name'],$booking['phone_norm'],$email,null]);
                 $residentId = (int) $pdo->lastInsertId();
-                $residentAuthVersion=1;
             }} catch (\PDOException $error) {
                 if (($error->errorInfo[1] ?? null) === 1062) throw new HttpException(409,'Phone or LINE account is already assigned to another resident','RESIDENT_IDENTITY_CONFLICT');
                 throw $error;
             }
-            $activation=ResidentAccessCredential::issue($this->app->config,$residentId,$residentAuthVersion);
-            $activationTtl=ResidentAccessCredential::ttlSeconds($this->app->config);
-            $credentialUpdate=$pdo->prepare("UPDATE residents
-                SET access_password_hash=NULL,activation_code_hash=?,
-                    activation_expires_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL {$activationTtl} SECOND),
-                    activation_consumed_at=NULL,updated_at=UTC_TIMESTAMP()
-                WHERE id=? AND auth_version=?");
-            $credentialUpdate->execute([$activation['hash'],$residentId,$residentAuthVersion]);
-            if($credentialUpdate->rowCount()!==1)throw new \RuntimeException('Resident activation credential could not be issued');
-            $expiry=$pdo->prepare('SELECT activation_expires_at FROM residents WHERE id=?');
-            $expiry->execute([$residentId]);
-            $activationExpiresAt=$expiry->fetchColumn();
             $updateBooking = $pdo->prepare("UPDATE bookings
                 SET status='moved_in',resident_id=?,moved_in_at=UTC_TIMESTAMP(),
                     move_in_request_hash=?,updated_at=UTC_TIMESTAMP()
@@ -687,29 +678,25 @@ final class BookingService
                 'booking_id'=>$id,'status'=>'moved_in','resident_id'=>$residentId,
                 'occupancy_id'=>$occupancyId,'room_id'=>(int)$booking['room_id'],'move_in_date'=>$moveIn,
                 'resident_access'=>[
-                    'activation_required'=>true,'activation_code'=>$activation['code'],
-                    'expires_at'=>(string)$activationExpiresAt,'single_use'=>true,
+                    'auth_method'=>'phone','activation_required'=>false,'sessions_revoked'=>(bool)$resident,
                 ],
             ];
         });
     }
 
     /** @return array{resident_access:array<string,mixed>} */
-    private function pendingResidentAccess(PDO $pdo,int $residentId): array
+    private function phoneResidentAccess(PDO $pdo,int $residentId): array
     {
-        $statement=$pdo->prepare('SELECT auth_version,activation_code_hash,activation_expires_at,
-                activation_consumed_at,activation_expires_at>UTC_TIMESTAMP(6) AS activation_valid
-            FROM residents WHERE id=? LIMIT 1');
+        // A replay may refer to a tenancy created by an older credential-based
+        // release. Discard its unused secrets without changing phone sessions,
+        // immutable booking values or the idempotent request's result.
+        $statement=$pdo->prepare('UPDATE residents SET access_password_hash=NULL,activation_code_hash=NULL,
+                activation_expires_at=NULL,activation_consumed_at=NULL
+            WHERE id=? AND (access_password_hash IS NOT NULL OR activation_code_hash IS NOT NULL
+                OR activation_expires_at IS NOT NULL OR activation_consumed_at IS NOT NULL)');
         $statement->execute([$residentId]);
-        $row=$statement->fetch();
-        $code=$row&&$row['activation_consumed_at']===null&&(int)$row['activation_valid']===1
-            ?ResidentAccessCredential::restore(
-                $this->app->config,$residentId,(int)$row['auth_version'],
-                is_string($row['activation_code_hash']??null)?$row['activation_code_hash']:null
-            ):null;
         return ['resident_access'=>[
-            'activation_required'=>$code!==null,'activation_code'=>$code,
-            'expires_at'=>$code!==null?(string)$row['activation_expires_at']:null,'single_use'=>true,
+            'auth_method'=>'phone','activation_required'=>false,'sessions_revoked'=>false,
         ]];
     }
 
@@ -897,6 +884,21 @@ final class BookingService
             return $this->errorOutcome(409,$expired?'Booking hold expired; submit a new request':'Booking is no longer active; submit a new request',$expired?'BOOKING_EXPIRED':'BOOKING_INACTIVE');
         }
         $result=$this->map($row);$result['idempotent_replay']=true;return $result;
+    }
+
+    /** Expire the ledger before a room is converted or retired, in that room's transaction. */
+    public function expireRoomHoldsUnderLock(PDO $pdo,int $roomId): void
+    {
+        if(!$pdo->inTransaction()||$pdo!==$this->app->database()->pdo())throw new \LogicException('Room hold expiry requires the application transaction');
+        $room=$pdo->prepare('SELECT id FROM rooms WHERE id=? FOR UPDATE');$room->execute([$roomId]);
+        if($room->fetchColumn()===false)throw new HttpException(404,'ไม่พบห้อง','ROOM_NOT_FOUND');
+        $seconds=$this->bookingHoldSeconds();
+        $candidate=$pdo->prepare("SELECT id FROM bookings WHERE room_id=? AND status='pending' AND created_at<=DATE_SUB(UTC_TIMESTAMP(),INTERVAL {$seconds} SECOND) FOR UPDATE");
+        $candidate->execute([$roomId]);$ids=$candidate->fetchAll(PDO::FETCH_COLUMN);
+        if($ids===[])return;
+        $this->expirePending($roomId);
+        $request=new \Dormitory\Http\Request('POST','/system/monthly-hold-expiry',['user-agent'=>'room-hold-expiry'],[],[],[],['REMOTE_ADDR'=>'127.0.0.1'],'room-expiry-'.bin2hex(random_bytes(12)));
+        foreach($ids as$id)$this->app->audit()->writeStrict($request,['type'=>'system','id'=>null],'booking.expired','booking',(int)$id,['room_id'=>$roomId]);
     }
 
     private function expirePending(?int $roomId=null): void

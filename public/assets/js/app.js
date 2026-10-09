@@ -136,31 +136,31 @@
     ORIGIN_REQUIRED: 'ตรวจสอบแหล่งที่มาของคำขอไม่ได้ กรุณารีเฟรชหน้าแล้วลองใหม่',
     ORIGIN_INVALID: 'คำขอมาจากที่อยู่เว็บที่ไม่ถูกต้อง กรุณาเปิดระบบจาก URL หลัก',
     ORIGIN_MISMATCH: 'ระบบปฏิเสธคำขอจากคนละเว็บไซต์ กรุณาเปิดระบบจาก URL หลัก',
-    HOST_REQUIRED: 'ตั้งค่าที่อยู่เว็บไซต์ไม่ครบ กรุณาติดต่อผู้ดูแลระบบ',
+    HOST_REQUIRED: 'ตั้งค่าที่อยู่เว็บไซต์ไม่ครบ กรุณาติดต่อเจ้าของระบบ',
     REQUEST_TOO_LARGE: 'ข้อมูลหรือไฟล์มีขนาดใหญ่เกินที่ระบบรองรับ',
     INVALID_JSON: 'รูปแบบข้อมูลที่ส่งไม่ถูกต้อง กรุณารีเฟรชแล้วลองใหม่',
     INVALID_JSON_SHAPE: 'รูปแบบข้อมูลที่ส่งไม่ถูกต้อง กรุณารีเฟรชแล้วลองใหม่',
     UNKNOWN_FIELDS: 'มีข้อมูลที่ระบบไม่รองรับ กรุณารีเฟรชแล้วลองใหม่',
-    INVALID_CREDENTIALS: 'ไม่สามารถเข้าใช้งานด้วยเบอร์นี้ได้ กรุณาตรวจเบอร์ที่ผูกห้องหรือติดต่อผู้ดูแล',
+    INVALID_CREDENTIALS: 'ไม่สามารถเข้าใช้งานด้วยเบอร์นี้ได้ กรุณาตรวจเบอร์ที่ผูกห้องหรือติดต่อเจ้าของระบบ',
     IDEMPOTENCY_KEY_REUSED: 'คำขอนี้ถูกใช้กับการจองอื่นแล้ว กรุณาเริ่มรายการใหม่',
     ADMIN_CHECK_IN_RETRY: 'มีการรับเข้าพักพร้อมกัน กรุณากดส่งอีกครั้งโดยไม่เปลี่ยนข้อมูล',
     ADMIN_CHECK_IN_INACTIVE: 'รายการรับเข้าพักนี้สิ้นสุดแล้ว กรุณาปิดฟอร์มและเริ่มรายการใหม่',
     BOOKING_EXPIRED: 'เวลายืนยันการจองเดิมหมดแล้ว กรุณาส่งคำขอใหม่',
     BOOKING_INACTIVE: 'การจองเดิมสิ้นสุดแล้ว กรุณาส่งคำขอใหม่',
     BOOKING_RETRY: 'มีคำขอจองพร้อมกัน กรุณากดส่งอีกครั้งโดยไม่เปลี่ยนข้อมูล',
-    BOOKING_PHONE_ACTIVE: 'เบอร์นี้มีคำขอจองที่ยังดำเนินการอยู่ กรุณาติดต่อผู้ดูแลหากต้องการเปลี่ยนห้อง',
+    BOOKING_PHONE_ACTIVE: 'เบอร์นี้มีคำขอจองที่ยังดำเนินการอยู่ กรุณาติดต่อเจ้าของระบบหากต้องการเปลี่ยนห้อง',
     ROOM_NOT_AVAILABLE: 'ห้องนี้มีผู้จองหรือกำลังถูกดำเนินการแล้ว กรุณาเลือกห้องว่างอื่น',
     ROOM_OCCUPIED: 'ห้องนี้มีผู้พักอยู่แล้ว กรุณารีเฟรชรายการห้อง',
     RESIDENT_ALREADY_OCCUPIED: 'เบอร์นี้เป็นผู้พักที่มีห้องอยู่แล้ว ไม่สามารถผูกซ้ำกับอีกห้องได้',
     RESIDENT_REUSE_CONFIRMATION_REQUIRED: 'เบอร์นี้มีประวัติผู้พักเดิม กรุณาตรวจตัวตนและยืนยันการเชื่อมประวัติก่อนบันทึก',
-    MOVE_IN_METER_PERIOD_CONFLICT: 'ห้องนี้มีเลขมิเตอร์ของเดือนที่เลือกอยู่แล้ว กรุณาเลือกย้ายเข้าเดือนถัดไป หรือติดต่อผู้ดูแลฐานข้อมูลเพื่อกระทบยอดก่อน',
+    MOVE_IN_METER_PERIOD_CONFLICT: 'ห้องนี้มีเลขมิเตอร์ของเดือนที่เลือกอยู่แล้ว กรุณาเลือกย้ายเข้าเดือนถัดไป หรือติดต่อเจ้าของระบบเพื่อกระทบยอดก่อน',
     MOVE_IN_PERIOD_CONFLICT: 'ห้องนี้มีประวัติผู้พักเดิมทับเดือนที่เลือก กรุณารับเข้าพักตั้งแต่เดือนถัดไป',
     RESIDENT_MOVE_IN_PERIOD_CONFLICT: 'ผู้พักรายนี้ย้ายออกในเดือนเดียวกัน ระบบยังไม่รองรับการคิดค่าเช่าแบบแบ่งเดือน กรุณารับเข้าพักในเดือนถัดไป',
     MOVE_OUT_MISSING_BILLS: 'ยังออกบิลไม่ครบทุกรอบเดือนของการเข้าพัก กรุณาออกและชำระบิลที่ขาดก่อนย้ายออก',
-    PROMPTPAY_NOT_CONFIGURED: 'ยังไม่ได้ตั้งค่า PromptPay กรุณาติดต่อผู้ดูแลก่อนโอน',
+    PROMPTPAY_NOT_CONFIGURED: 'ยังไม่ได้ตั้งค่า PromptPay กรุณาติดต่อเจ้าของระบบก่อนโอน',
     PROMPTPAY_TARGET_INVALID: 'เบอร์ PromptPay หรือเลขผู้เสียภาษีไม่ถูกต้อง',
     AMOUNT_INVALID: 'ยอดชำระไม่ถูกต้อง กรุณารีเฟรชรายละเอียดบิล',
-    SLIP_NOT_CONFIGURED: 'ระบบตรวจสลิปยังตั้งค่าไม่ครบ กรุณาติดต่อผู้ดูแล',
+    SLIP_NOT_CONFIGURED: 'ระบบตรวจสลิปยังตั้งค่าไม่ครบ กรุณาติดต่อเจ้าของระบบ',
     LINE_NOT_CONFIGURED: 'กรอก Channel access token และ Channel secret ของ Messaging API บัญชีเดียวกันให้ครบ แล้วบันทึกการเชื่อมต่อ',
     LINE_NOT_VERIFIED: 'บัญชี LINE ยังไม่ผ่านรหัสยืนยัน',
     LINE_LINK_STALE: 'ข้อมูลบัญชีเปลี่ยนหลังขอรหัส LINE กรุณาขอรหัสใหม่',
@@ -175,7 +175,7 @@
     METER_TOO_HIGH: 'เลขมิเตอร์เริ่มต้นต้องไม่เกิน 9,999,999.00',
     CURRENT_BILLING_PERIOD_NOT_FINALIZED: 'การออกบิลเดือนปัจจุบันต้องยืนยันว่าจดมิเตอร์ครบและต้องการปิดยอดเดือนนี้แล้ว',
     RESIDENT_CHANGED: 'ข้อมูลผู้พักถูกแก้ไขพร้อมกัน กรุณารีเฟรชแล้วลองใหม่',
-    ADMIN_NOT_FOUND: 'ไม่พบบัญชีผู้ดูแล',
+    ADMIN_NOT_FOUND: 'ไม่พบบัญชีเจ้าของระบบ',
     USERNAME_EXISTS: 'ชื่อผู้ใช้นี้มีอยู่แล้ว',
     LAST_OWNER: 'ระบบต้องมีเจ้าของที่ใช้งานได้อย่างน้อย 1 บัญชี',
     SELF_OWNER_CHANGE: 'ไม่สามารถลดสิทธิ์หรือปิดบัญชีเจ้าของของตนเองได้',
@@ -184,7 +184,7 @@
     BILL_ALREADY_PAID: 'บิลนี้ชำระแล้ว',
     PAYMENT_ALREADY_PENDING: 'บิลนี้มีรายการชำระที่กำลังดำเนินการอยู่แล้ว',
     BILL_PREVIEW_INVALID: 'บางห้องยังมีข้อมูลไม่พร้อมออกบิล กรุณาตรวจรายการที่แจ้ง',
-    INTERNAL_ERROR: 'ระบบทำรายการไม่สำเร็จ กรุณาตรวจสถานะล่าสุดก่อนลองใหม่ หากยังพบปัญหาให้ติดต่อผู้ดูแล',
+    INTERNAL_ERROR: 'ระบบทำรายการไม่สำเร็จ กรุณาตรวจสถานะล่าสุดก่อนลองใหม่ หากยังพบปัญหาให้ติดต่อเจ้าของระบบ',
   });
   const errorMessage = (error, fallback = 'เกิดข้อผิดพลาด กรุณาลองใหม่') => {
     const code = error?.details?.code;
@@ -301,7 +301,7 @@
     }
 
     if (!response.ok || envelope?.ok === false) {
-      if (response.status === 401 && !$('#admin-login-form') && !$('#resident-login-form')) {
+      if (response.status === 401 && !url.startsWith('/api/public/daily/') && !$('#admin-login-form') && !$('#resident-login-form')) {
         const destination = location.pathname.startsWith('/admin') ? '/admin/login' : '/resident/login';
         location.assign(destination);
       }
@@ -386,7 +386,7 @@
       element.append(button);
     }
     const code=failure.details?.code;
-    if(typeof code==='string'&&/^[A-Z][A-Z0-9_]{2,80}$/.test(code))element.append(create('small','recovery-detail',`รหัสสำหรับแจ้งผู้ดูแล: ${code}`));
+    if(typeof code==='string'&&/^[A-Z][A-Z0-9_]{2,80}$/.test(code))element.append(create('small','recovery-detail',`รหัสสำหรับแจ้งเจ้าของระบบ: ${code}`));
   }
 
   function toast(message, type = 'success') {
@@ -399,12 +399,13 @@
     if(type==='error'){
       if(message instanceof Error)showFormError(item,message);
       const dismiss=create('button','button button-secondary button-small','ปิดข้อความ');dismiss.type='button';dismiss.addEventListener('click',()=>item.remove());item.append(dismiss);
-      return;
+      return item;
     }
     window.setTimeout(() => {
       item.classList.remove('is-visible');
       window.setTimeout(() => item.remove(), 250);
     }, 4200);
+    return item;
   }
 
   function openDialog(dialog) {
@@ -658,7 +659,7 @@
       links.forEach((link) => {
         link.href = url;
         link.hidden = false;
-        link.setAttribute('aria-label', `ติดต่อผู้ดูแลผ่าน LINE ${text(contact.line_basic_id, '')}`.trim());
+        link.setAttribute('aria-label', `ติดต่อเจ้าของระบบผ่าน LINE ${text(contact.line_basic_id, '')}`.trim());
       });
     } catch (_) { /* Keep the optional contact action hidden if settings are unavailable. */ }
   }
@@ -763,7 +764,7 @@
       try {
         const data = await api('/api/public/rooms');
         if (request !== roomLoadRequest) return;
-        rooms = listFrom(data, 'rooms').filter((room) => !room.status || room.status === 'available');
+        rooms = requiredEntityList(data, 'rooms').filter((room) => room.status === 'available');
         count.textContent = String(rooms.length);
         populateSelect(typeFilter, rooms.map((room) => room.room_type));
         populateSelect(floorFilter, rooms.map((room) => room.floor));
@@ -808,14 +809,17 @@
           body: { room_id: Number(form.get('room_id')), full_name: form.get('full_name'), phone: form.get('phone'), idempotency_key: form.get('idempotency_key') },
         });
         const booking = objectFrom(data, 'booking');
+        if (!Number.isSafeInteger(booking.id) || booking.id <= 0 || booking.room_id !== Number(form.get('room_id')) || !['pending', 'confirmed'].includes(booking.status) || typeof booking.reference_no !== 'string' || !booking.reference_no.trim()) {
+          throw new ApiError('ยังยืนยันผลการจองไม่ได้ ข้อมูลที่กรอกยังอยู่ กรุณาส่งคำขอเดิมอีกครั้งเพื่ออ่านผล หรือติดต่อเจ้าของระบบก่อนเริ่มการจองใหม่', 0, { code: 'INVALID_RESPONSE' });
+        }
         $('#booking-success-room').textContent = `ห้อง ${text(bookingForm.dataset.roomCode)}`;
         $('#booking-success-phone').textContent = `ติดต่อที่เบอร์ ${maskBookingPhone(form.get('phone'))}`;
         $('#booking-reference').textContent = text(booking.reference_no || booking.reference || booking.booking_reference || booking.id || data?.reference_no || data?.reference);
         $('#booking-expiry').textContent = booking.status === 'confirmed'
-          ? 'คำขอนี้ได้รับการยืนยันแล้ว กรุณารอผู้ดูแลติดต่อเรื่องวันเข้าพัก'
+          ? 'คำขอนี้ได้รับการยืนยันแล้ว กรุณารอเจ้าของระบบติดต่อเรื่องวันเข้าพัก'
           : (booking.expires_at
             ? `ระบบกันห้องไว้ถึง ${formatDateTime(booking.expires_at)} น. หากเลยเวลานี้กรุณาส่งคำขอใหม่`
-            : 'กรุณารอผู้ดูแลติดต่อกลับเพื่อยืนยันการจอง');
+            : 'กรุณารอเจ้าของระบบติดต่อกลับเพื่อยืนยันการจอง');
         bookingForm.hidden = true;
         const success = $('#public-booking-success');
         success.hidden = false;
@@ -852,7 +856,10 @@
       setBusy(button, true, 'กำลังตรวจสอบ…');
       let succeeded = false;
       try {
-        await api(endpoint, { method: 'POST', body: values });
+        const result = await api(endpoint, { method: 'POST', body: values });
+        if (result?.user?.type !== 'admin' || result?.user?.role !== 'owner') {
+          throw new ApiError('ข้อมูลบัญชีเจ้าของระบบไม่ครบ กรุณาลองเข้าสู่ระบบใหม่');
+        }
         succeeded = true;
         location.assign(destination);
       } catch (requestError) {
@@ -901,7 +908,7 @@
     const state = {
       profile: {}, bills: [], filter: 'all', currentBillId: null, billDetailRequest: 0, qrRequest: 0,
       loadRequest: 0, lineCodeExpiresAt: 0, lineStatusRequest: false, billRefreshRequest: false,
-      profileRevision: 0, lineStateRevision: 0, lineIssueRequest: false,
+      profileRevision: 0, lineStateRevision: 0, lineIssueRequest: false, lineUnlinkRequest: false,
       slipMaxBytes: 4 * 1024 * 1024, slipReady: false, paymentReady: false,
     };
     const profileForm = $('#resident-profile-form');
@@ -997,7 +1004,7 @@
         const data = await api('/api/resident/profile');
         if (profileRevision !== state.profileRevision) return false;
         if (lineRevision !== state.lineStateRevision) return false;
-        const latestProfile = objectFrom(data, 'profile');
+        const latestProfile = requiredResidentLineProfile(data);
         const wasLinked = state.profile.line_verified === true && state.profile.line_blocked !== true;
         state.profile = {
           ...state.profile,
@@ -1011,7 +1018,7 @@
         const linked = state.profile.line_verified === true && state.profile.line_blocked !== true;
         renderLineStatus();
         if (linked && !wasLinked) toast('ผูกบัญชี LINE สำเร็จแล้ว');
-        else if (!linked && !silent) toast(state.profile.line_blocked === true ? 'บัญชีนี้ถูกระงับการผูก LINE กรุณาติดต่อผู้ดูแล' : 'ยังไม่พบการยืนยัน กรุณาส่งรหัสให้ LINE Bot แล้วลองอีกครั้ง', 'error');
+        else if (!linked && !silent) toast(state.profile.line_blocked === true ? 'บัญชีนี้ถูกระงับการผูก LINE กรุณาติดต่อเจ้าของระบบ' : 'ยังไม่พบการยืนยัน กรุณาส่งรหัสให้ LINE Bot แล้วลองอีกครั้ง', 'error');
         return linked;
       } catch (errorValue) {
         if (!silent) showFormError($('#resident-line-error'), errorValue);
@@ -1062,14 +1069,14 @@
         || (state.filter === 'unpaid' ? payableStatuses.has(billStatus(bill)) : billStatus(bill) === state.filter));
       list.replaceChildren(...filtered.map(createBillRow));
       recent.replaceChildren(...state.bills.slice(0, 3).map(createBillRow));
-      if (state.bills.length === 0) recent.append(create('p', 'empty-inline', 'ยังไม่มีบิล เมื่อผู้ดูแลออกบิลแล้วจะแสดงที่นี่'));
+      if (state.bills.length === 0) recent.append(create('p', 'empty-inline', 'ยังไม่มีบิล เมื่อเจ้าของระบบออกบิลแล้วจะแสดงที่นี่'));
       list.setAttribute('aria-busy', 'false');
       recent.setAttribute('aria-busy', 'false');
       const emptyState = $('#resident-bills-empty');
       emptyState.hidden = filtered.length > 0;
       if (!emptyState.hidden) {
         const messages = {
-          all: ['ยังไม่มีบิล', 'เมื่อผู้ดูแลออกบิล รายการจะแสดงที่นี่'],
+          all: ['ยังไม่มีบิล', 'เมื่อเจ้าของระบบออกบิล รายการจะแสดงที่นี่'],
           unpaid: ['ไม่มีบิลรอชำระ', 'ขณะนี้ไม่มีบิลที่ต้องชำระในรายการนี้'],
           paid: ['ยังไม่มีบิลที่ชำระแล้ว', 'เมื่อการชำระได้รับการยืนยัน รายการจะแสดงที่นี่'],
         };
@@ -1102,7 +1109,7 @@
       lineAddFriendLink.hidden = addFriendUrl === '' || hasLine || blocked;
       if (addFriendUrl) lineAddFriendLink.href = addFriendUrl;
       else lineAddFriendLink.removeAttribute('href');
-      $('#resident-line-status').textContent = blocked ? 'ผู้ดูแลระงับการผูก LINE กรุณาติดต่อผู้ดูแล' : linked ? `ยืนยันแล้ว ${lineLabel}`
+      $('#resident-line-status').textContent = blocked ? 'เจ้าของระบบระงับการผูก LINE กรุณาติดต่อเจ้าของระบบ' : linked ? `ยืนยันแล้ว ${lineLabel}`
         : (hasLine ? `บัญชี ${lineHint} ยังไม่ผ่านการยืนยัน กรุณายกเลิกแล้วผูกใหม่` : (state.lineCodeExpiresAt ? 'สร้างรหัสแล้ว รอส่งรหัสให้ LINE Bot' : 'ยังไม่ได้ผูกบัญชี LINE'));
       const hasActiveCode = state.lineCodeExpiresAt > Date.now() && /^BIND-[A-F0-9]{32}$/.test(lineCodeInput.value);
       lineStartForm.hidden = hasLine || hasActiveCode || blocked;
@@ -1111,7 +1118,7 @@
       lineCodeRenewButton.disabled = !ready || state.lineIssueRequest;
       [lineStartForm.querySelector('[type="submit"]'),lineCodeRenewButton].forEach(button=>globalThis.DormActionGuide?.set(button,state.lineIssueRequest?'BUSY':blocked?'LINE_BLOCKED':'LINE_NOT_READY'));
       $('#resident-line-readiness').hidden = ready || hasLine;
-      $('#resident-line-readiness').textContent = blocked ? 'บัญชีนี้ถูกระงับการผูก LINE กรุณาติดต่อผู้ดูแลเพื่อปลดระงับ' : 'ระบบยังตั้งค่า LINE ไม่ครบ กรุณาติดต่อผู้ดูแลก่อนสร้างรหัส';
+      $('#resident-line-readiness').textContent = blocked ? 'บัญชีนี้ถูกระงับการผูก LINE กรุณาติดต่อเจ้าของระบบเพื่อปลดระงับ' : 'ระบบยังตั้งค่า LINE ไม่ครบ กรุณาติดต่อเจ้าของระบบก่อนสร้างรหัส';
       lineUnlinkButton.hidden = !hasLine;
       if (hasLine || blocked) {
         stopLineCodeTracking(true);
@@ -1128,14 +1135,26 @@
       $('#resident-profile-load-state').hidden = true;
     }
 
+    function requiredResidentProfile(data) {
+      const profile = objectFrom(data, 'profile');
+      if (!profile || Array.isArray(profile) || typeof profile.full_name !== 'string' || !profile.full_name.trim()) throw new ApiError('ข้อมูลส่วนตัวตอบกลับไม่ครบ กรุณาโหลดใหม่ก่อนแก้ไข', 0, { code: 'INVALID_RESPONSE' });
+      return profile;
+    }
+
+    function requiredResidentLineProfile(data) {
+      const profile = requiredResidentProfile(data);
+      if (typeof profile.line_verified !== 'boolean' || typeof profile.line_binding_ready !== 'boolean') throw new ApiError('ข้อมูลสถานะ LINE ตอบกลับไม่ครบ กรุณาตรวจสถานะอีกครั้ง', 0, { code: 'INVALID_RESPONSE' });
+      return profile;
+    }
+
     async function loadAll() {
       const request = ++state.loadRequest;
       const profileRevision = state.profileRevision;
       const errorBox = $('#resident-global-error');
       errorBox.hidden = true;
-      const [profileResult, billsResult] = await Promise.allSettled([api('/api/resident/profile'), api('/api/resident/bills')]);
+      const [profileResult, billsResult] = await Promise.allSettled([api('/api/resident/profile').then(requiredResidentProfile), api('/api/resident/bills').then((data) => requiredEntityList(data, 'bills'))]);
       if (request !== state.loadRequest) return;
-      if (profileResult.status === 'fulfilled' && profileRevision === state.profileRevision && !state.profileSaving) {
+      if (profileResult.status === 'fulfilled' && profileRevision === state.profileRevision && !state.profileSaving && !state.lineUnlinkRequest) {
         const draft = profileForm.dataset.dirty === 'true' ? { full_name: profileForm.elements.full_name.value, email: profileForm.elements.email.value } : null;
         state.profile = objectFrom(profileResult.value, 'profile'); fillProfile();
         if (draft) Object.entries(draft).forEach(([name, value]) => { profileForm.elements[name].value = value; });
@@ -1162,7 +1181,7 @@
       try {
         const result = await api('/api/resident/bills');
         if (loadGeneration !== state.loadRequest || billDialog.dataset.dialogBusy === 'true') return;
-        const nextBills = listFrom(result, 'bills');
+        const nextBills = requiredEntityList(result, 'bills');
         if (JSON.stringify(nextBills) === JSON.stringify(state.bills)) return;
         state.bills = nextBills;
         renderBills();
@@ -1219,6 +1238,7 @@
         const data = await api(`/api/resident/bills/${encodeURIComponent(id)}`);
         if (request !== state.billDetailRequest || String(state.currentBillId) !== String(id)) return;
         const bill = objectFrom(data, 'bill');
+        if (!Number.isSafeInteger(bill.id) || bill.id <= 0 || String(bill.id) !== String(id) || finiteNumber(bill.total_amount ?? bill.total) === null || number(bill.total_amount ?? bill.total) < 0) throw new ApiError('ข้อมูลบิลตอบกลับไม่ครบหรือไม่ตรงกับบิลที่เลือก กรุณาโหลดบิลใหม่', 0, { code: 'INVALID_RESPONSE' });
         $('#resident-bill-number').textContent = text(bill.bill_no || bill.number || `#${bill.id}`);
         $('#resident-bill-due').textContent = `ครบกำหนด ${formatDate(bill.due_date)}`;
         $('#resident-bill-total').textContent = money(bill.total_amount ?? bill.total);
@@ -1253,17 +1273,17 @@
         const notices = [];
         if (payment) {
           notices.push(payment.status === 'rejected'
-            ? `สลิปถูกปฏิเสธ: ${text(payment.rejection_reason, 'ข้อมูลในสลิปไม่ตรงกับบิล')} หากโอนเงินจริงแล้ว กรุณาติดต่อผู้ดูแลเพื่อตรวจยอดก่อนโอนซ้ำ การส่งไฟล์เดิมจะได้ผลเดิม`
-            : payment.status === 'verified' ? 'สลิปผ่านการตรวจสอบแล้ว ไม่ต้องชำระซ้ำ' : 'สลิปอยู่ระหว่างตรวจสอบ กรุณารอผลและอย่าโอนซ้ำ หากตรวจอัตโนมัติยังไม่สำเร็จ ส่งหลักฐานเดิมให้ผู้ดูแลทาง LINE Bot ด้านล่างได้');
+            ? `สลิปถูกปฏิเสธ: ${text(payment.rejection_reason, 'ข้อมูลในสลิปไม่ตรงกับบิล')} หากโอนเงินจริงแล้ว กรุณาติดต่อเจ้าของระบบเพื่อตรวจยอดก่อนโอนซ้ำ การส่งไฟล์เดิมจะได้ผลเดิม`
+            : payment.status === 'verified' ? 'สลิปผ่านการตรวจสอบแล้ว ไม่ต้องชำระซ้ำ' : 'สลิปอยู่ระหว่างตรวจสอบ กรุณารอผลและอย่าโอนซ้ำ หากตรวจอัตโนมัติยังไม่สำเร็จ ส่งหลักฐานเดิมให้เจ้าของระบบทาง LINE Bot ด้านล่างได้');
         }
         if (paymentBlocked) {
-          if (transferConflict) notices.push(text(capabilities.transfer_instruction_error, 'ข้อมูลบัญชีรับเงินเปลี่ยน กรุณาติดต่อผู้ดูแลก่อนโอน'));
-          else if (capabilities.transfer_reservation_ready !== true) notices.push('ยังสร้าง QR ไม่ได้ กรุณาติดต่อผู้ดูแลให้เปิดระบบจองยอด หากโอนแล้วให้ส่งสลิปทาง LINE ไม่ต้องโอนซ้ำ');
-          else if (!promptPayReady) notices.push('ยังชำระผ่านระบบไม่ได้: ยังไม่ได้ตั้งค่า PromptPay กรุณาติดต่อผู้ดูแลก่อนโอน');
+          if (transferConflict) notices.push(text(capabilities.transfer_instruction_error, 'ข้อมูลบัญชีรับเงินเปลี่ยน กรุณาติดต่อเจ้าของระบบก่อนโอน'));
+          else if (capabilities.transfer_reservation_ready !== true) notices.push('ยังสร้าง QR ไม่ได้ กรุณาติดต่อเจ้าของระบบให้เปิดระบบจองยอด หากโอนแล้วให้ส่งสลิปทาง LINE ไม่ต้องโอนซ้ำ');
+          else if (!promptPayReady) notices.push('ยังชำระผ่านระบบไม่ได้: ยังไม่ได้ตั้งค่า PromptPay กรุณาติดต่อเจ้าของระบบก่อนโอน');
           else notices.push('กรุณาตรวจสถานะบิลก่อนชำระ');
         }
         if (outcomeUnknown) notices.push('ยังยืนยันผลการส่งสลิปครั้งก่อนไม่ได้ กดตรวจสถานะอีกครั้ง หรือส่งไฟล์เดิมเพื่อตรวจรายการเดิม ห้ามโอนซ้ำ');
-        if(state.paymentReady && !slipReady && status !== 'paid')notices.push('ชำระด้วย QR ได้ตามยอดที่ระบุ หลังโอนให้ส่งสลิปทาง LINE Bot เพื่อให้ผู้ดูแลตรวจ ไม่ต้องแนบสลิปในเว็บหรือโอนซ้ำ');
+        if(state.paymentReady && !slipReady && status !== 'paid')notices.push('ชำระด้วย QR ได้ตามยอดที่ระบุ หลังโอนให้ส่งสลิปทาง LINE Bot เพื่อให้เจ้าของระบบตรวจ ไม่ต้องแนบสลิปในเว็บหรือโอนซ้ำ');
         paymentNotice.hidden = notices.length === 0;
         paymentNotice.className = `payment-notice${payment ? ` payment-notice-${text(payment.status, 'pending')}` : ''}${paymentBlocked ? ' payment-notice-blocked' : ''}`;
         paymentNotice.setAttribute('role', paymentBlocked ? 'alert' : 'status');
@@ -1344,7 +1364,7 @@
       try {
         const data = await api('/api/resident/profile', { method: 'PUT', body: { full_name: values.full_name, email: values.email } });
         if (profileRevision !== state.profileRevision) return;
-        state.profile = objectFrom(data, 'profile');
+        state.profile = requiredResidentProfile(data);
         profileForm.dataset.dirty = 'false';
         fillProfile();
         $('#resident-sidebar-name').textContent = text(state.profile.full_name);
@@ -1430,16 +1450,20 @@
     lineStatusRefreshButton.addEventListener('click', () => refreshLineStatus(false));
 
     lineUnlinkButton.addEventListener('click', async () => {
-      if (!await confirmAction('ยกเลิกการผูก LINE', 'หลังยกเลิก ระบบจะไม่ส่งบิลใหม่ไปยัง LINE จนกว่าจะยืนยันอีกครั้ง')) return;
+      if (state.lineUnlinkRequest) return;
+      state.lineUnlinkRequest = true;
       const error = $('#resident-line-error');
       showFormError(error);
-      const profileRevision = ++state.profileRevision;
-      state.lineStateRevision += 1;
       setBusy(lineUnlinkButton, true, 'กำลังยกเลิก…');
+      let unlinkStarted = false;
       try {
+        if (!await confirmAction('ยกเลิกการผูก LINE', 'หลังยกเลิก ระบบจะไม่ส่งบิลใหม่ไปยัง LINE จนกว่าจะยืนยันอีกครั้ง')) return;
+        unlinkStarted = true;
+        const profileRevision = ++state.profileRevision;
+        state.lineStateRevision += 1;
         const data = await api('/api/resident/profile/line/unlink', { method: 'POST', body: {} });
         if (profileRevision !== state.profileRevision) return;
-        const latestProfile = objectFrom(data, 'profile');
+        const latestProfile = requiredResidentLineProfile(data);
         state.profile = {
           ...state.profile,
           line_verified: latestProfile.line_verified,
@@ -1453,7 +1477,7 @@
         renderLineStatus();
         toast('ยกเลิกการผูก LINE แล้ว');
       } catch (errorValue) { showFormError(error, errorValue); }
-      finally { setBusy(lineUnlinkButton, false); }
+      finally { if (unlinkStarted) ++state.profileRevision; state.lineUnlinkRequest = false; setBusy(lineUnlinkButton, false); }
     });
     $('#resident-payment-refresh').addEventListener('click', () => {
       if (billDialog.dataset.dialogBusy !== 'true' && state.currentBillId !== null) openBill(state.currentBillId, { preserveSlip: true });
@@ -1512,7 +1536,7 @@
       if (!state.slipReady) { showFormError(error, 'แนบสลิปในเว็บไม่ได้ กรุณาส่งภาพใน LINE ตามคำแนะนำด้านบน');showSlipLineFallback(state.lineFallback); return; }
       const file = slipInput.files?.[0];
       if (!file) { showFormError(error, 'กรุณาเลือกไฟล์สลิป'); return; }
-      if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size <= 0 || file.size > state.slipMaxBytes) { showFormError(error, `รองรับเฉพาะไฟล์ JPG, PNG หรือ WebP ที่ไม่ว่างและไม่เกินขนาดสูงสุดที่ผู้ดูแลตั้งไว้`); return; }
+      if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size <= 0 || file.size > state.slipMaxBytes) { showFormError(error, `รองรับเฉพาะไฟล์ JPG, PNG หรือ WebP ที่ไม่ว่างและไม่เกินขนาดสูงสุดที่เจ้าของระบบตั้งไว้`); return; }
       const button = form.querySelector('[type="submit"]');
       const billId = state.currentBillId;
       const wasUncertain = uncertainPaymentBills.has(String(billId));
@@ -1535,7 +1559,7 @@
         if (String(result?.bill_id) !== String(billId) || !['pending', 'verified', 'rejected'].includes(result?.status)) throw new ApiError('ยังยืนยันผลการส่งสลิปไม่ได้', 0, { code: 'MUTATION_OUTCOME_UNKNOWN' });
         uncertainPaymentBills.delete(String(billId));
         form.reset();
-        toast(result.status === 'verified' ? 'ชำระสำเร็จแล้ว ไม่ต้องโอนซ้ำ' : result.status === 'rejected' ? 'สลิปไม่ผ่าน กรุณาดูเหตุผลและติดต่อผู้ดูแลก่อนโอนซ้ำ' : 'รับสลิปแล้ว รอผลตรวจ ไม่ต้องส่งหรือโอนซ้ำ', result.status === 'rejected' ? 'error' : 'success');
+        toast(result.status === 'verified' ? 'ชำระสำเร็จแล้ว ไม่ต้องโอนซ้ำ' : result.status === 'rejected' ? 'สลิปไม่ผ่าน กรุณาดูเหตุผลและติดต่อเจ้าของระบบก่อนโอนซ้ำ' : 'รับสลิปแล้ว รอผลตรวจ ไม่ต้องส่งหรือโอนซ้ำ', result.status === 'rejected' ? 'error' : 'success');
         if (String(state.currentBillId) === String(billId)) await Promise.all([openBill(billId), loadAll()]);
         else await loadAll();
       } catch (errorValue) {
@@ -1800,6 +1824,14 @@
     };
   }
 
+  function overviewRoomCounts(rooms) {
+    return {
+      occupied: rooms.filter(room => room.status === 'occupied').length,
+      available: rooms.filter(room => room.status === 'available' && (room.rental_mode !== 'daily' || room.housekeeping_status === 'ready')).length,
+      monthlyOccupied: rooms.filter(room => room.status === 'occupied' && room.rental_mode !== 'daily').length,
+    };
+  }
+
   function initAdminConsole() {
     const app = $('[data-admin-app]');
     if (!app) return;
@@ -1813,8 +1845,8 @@
       paymentPendingCount: 0, paymentListReady: false, paymentActionBusy: false, userListReady: false, userController: null, overviewController: null,
       roomListReady: false, roomActionBusy: false, residentListReady: false, residentLoadGeneration: 0, residentCreateOpenGeneration: 0,
     };
-    const role = body.dataset.userRole || 'admin';
-    const titles = { overview: 'ภาพรวม', rooms: 'ห้องพัก', bookings: 'การจอง', residents: 'ผู้พักอาศัย', meters: 'จดมิเตอร์', bills: 'ใบแจ้งหนี้', payments: 'การชำระเงิน', users: 'ผู้ดูแลระบบ', settings: 'ตั้งค่า', 'line-oas': 'บัญชี LINE OA', 'line-bindings': 'การผูก LINE ผู้พัก' };
+    const role = body.dataset.userRole || '';
+    const titles = { overview: 'ภาพรวม', rooms: 'ห้องพัก', bookings: 'การจอง', daily: 'จองรายวัน', residents: 'ผู้พักอาศัย', meters: 'จดมิเตอร์', bills: 'ใบแจ้งหนี้', payments: 'การชำระเงิน', users: 'เจ้าของระบบ', settings: 'ตั้งค่า', 'line-oas': 'บัญชี LINE OA', 'line-bindings': 'การผูก LINE ผู้พัก' };
     const homeView = 'overview';
     const loaders = {};
     const menuToggles = $$('[data-admin-menu-toggle]');
@@ -1822,10 +1854,8 @@
     let lastMenuOpener = null;
     const adminSidebar = $('.admin-sidebar', app);
     const mobileMenu = window.matchMedia('(max-width: 860px)');
-    const residentAccessDialog = $('#resident-access-dialog');
     const billingSettingsForm = $('#settings-form');
     const integrationSettingsForm = $('#integration-settings-form');
-    let residentActivationSecret = '';
     let adminLogoutInProgress = false;
     let settingsSaveInProgress = false;
     let settingsLoadGeneration = 0;
@@ -1843,59 +1873,12 @@
     const linePlatform = window.DormLinePlatform?.init({ $, $$, create, api, toast, errorMessage, showFormError, formatDateTime, openDialog, closeDialog, setDialogBusy, setFormFieldsBusy, confirmAction, getQrLibrary, renderQrCanvas });
     loaders['line-oas'] = () => linePlatform?.loadOas();
     loaders['line-bindings'] = () => linePlatform?.loadBindings();
+    const daily = window.DormDaily?.initAdmin({ $, $$, create, api, toast, errorMessage, showFormError, money, formatDate, formatDateTime, isoToday, isoDateOffsetDays, openDialog, closeDialog, setDialogBusy, setFormFieldsBusy, setBusy, confirmAction, rememberDialogDraft, getQrLibrary, renderQrCanvas });
+    loaders.daily = () => daily?.load();
 
-    function clearResidentAccess() {
-      residentActivationSecret = '';
-      const code = $('#resident-access-code');
-      if (code) code.textContent = '•••••-•••••-•••••-•••••';
-      const expiry = $('#resident-access-expiry');
-      if (expiry) expiry.textContent = '';
-      const summary = $('#resident-access-summary');
-      if (summary) summary.textContent = '';
-      showFormError($('#resident-access-error'));
+    function notifyResidentPhoneAccess(summary, action) {
+      toast(`${action} · ${summary} · ผู้พักใช้เบอร์ที่ผูกกับห้องเข้าใช้งานได้ทันที`);
     }
-
-    function showResidentAccess(data, summary) {
-      clearResidentAccess();
-      toast('ลูกบ้านใช้เบอร์ที่ผูกกับห้องเข้าใช้งานได้ทันที ไม่ต้องใช้รหัสผ่านหรือรหัสเปิดใช้งาน');
-      return true;
-    }
-
-    async function copyResidentAccess() {
-      if (!residentActivationSecret) {
-        showFormError($('#resident-access-error'), 'รหัสถูกล้างแล้ว กรุณาออกคีย์ใหม่หากยังไม่ได้ส่งมอบ');
-        return;
-      }
-      try {
-        if (navigator.clipboard?.writeText && window.isSecureContext) {
-          await navigator.clipboard.writeText(residentActivationSecret);
-        } else {
-          const temporary = create('textarea');
-          temporary.value = residentActivationSecret;
-          temporary.setAttribute('readonly', '');
-          temporary.setAttribute('aria-hidden', 'true');
-          temporary.style.position = 'fixed';
-          temporary.style.opacity = '0';
-          body.append(temporary);
-          temporary.select();
-          let copied = false;
-          try {
-            copied = doc.execCommand('copy');
-          } finally {
-            temporary.value = '';
-            temporary.remove();
-          }
-          if (!copied) throw new Error('Clipboard copy failed');
-        }
-        showFormError($('#resident-access-error'));
-        toast('คัดลอก activation code แล้ว กรุณาส่งให้ผู้พักโดยตรง');
-      } catch (_) {
-        showFormError($('#resident-access-error'), 'คัดลอกอัตโนมัติไม่ได้ กรุณาจดและส่งมอบรหัสโดยไม่บันทึกในพื้นที่สาธารณะ');
-      }
-    }
-
-    residentAccessDialog?.addEventListener('close', clearResidentAccess);
-    $('#resident-access-copy')?.addEventListener('click', copyResidentAccess);
 
     function setAdminMenu(open) {
       const active = mobileMenu.matches && open;
@@ -1933,6 +1916,7 @@
     function switchView(name, force = false, updateHash = true) {
       if (!titles[name] || (name === 'users' && role !== 'owner')) return false;
       const activeView = $('[data-admin-view].is-active', app)?.dataset.adminView;
+      if (typeof daily !== 'undefined' && daily?.busy() && !(name === 'daily' && !daily.inFlight?.())) { toast('มีรายการรายวันที่กำลังบันทึกหรือยังไม่ทราบผล กรุณาตรวจผลรายการเดิมก่อนเปลี่ยนหน้า', 'error'); return false; }
       if (state.billWorking) { toast('กำลังตรวจยอดหรือออกบิล กรุณารอผลก่อนเปลี่ยนหน้า', 'error'); return false; }
       if (activeView === 'bills' && name !== 'bills') { rememberBillDraft(); invalidateBillPreview(); }
       if (activeView === 'meters' && state.meterSaving) { toast('กำลังบันทึกมิเตอร์ กรุณารอผลก่อนเปลี่ยนหน้า', 'error'); return false; }
@@ -1961,7 +1945,7 @@
       if (updateHash && location.hash !== targetHash) location.hash = targetHash;
       setAdminMenu(false);
       if (menuWasOpen) $('#main-content')?.focus({ preventScroll: true });
-      const volatileViews = ['overview', 'rooms', 'bookings', 'residents', 'meters', 'bills', 'payments'];
+      const volatileViews = ['overview', 'rooms', 'bookings', 'daily', 'residents', 'meters', 'bills', 'payments'];
       if (force || volatileViews.includes(name) || !state.loaded.has(name)) state.viewLoad = Promise.resolve(loaders[name]?.());
       return true;
     }
@@ -1985,10 +1969,10 @@
         roomCell.append(image, label);
         const actions = [];
         const roomCode = text(room.room_code);
-        if (room.status === 'available') actions.push(actionButton('เพิ่มผู้พัก', 'add-resident-to-room', room.id, 'button-primary', `เพิ่มผู้พักเข้าห้อง ${roomCode}`));
+        if (room.status === 'available' && room.rental_mode !== 'daily') actions.push(actionButton('เพิ่มผู้พัก', 'add-resident-to-room', room.id, 'button-primary', `เพิ่มผู้พักเข้าห้อง ${roomCode}`));
         actions.push(actionButton('แก้ไข', 'edit-room', room.id, 'button-ghost', `แก้ไขห้อง ${roomCode}`));
-        if (room.status === 'available') actions.push(actionButton('ลบ', 'delete-room', room.id, 'button-danger-text', `ลบห้อง ${roomCode}`));
-        tr.append(td(roomCell), td(text(room.floor)), td(text(room.room_type)), td(money(room.monthly_rent)), td(pill(room.status)), td(rowActions(...actions), 'align-right'));
+        if (room.can_delete === true) actions.push(actionButton('ลบ', 'delete-room', room.id, 'button-danger-text', `ลบห้อง ${roomCode}`));
+        tr.append(td(roomCell), td(text(room.floor)), td(text(room.room_type)), td(room.rental_mode === 'daily' ? `${money(room.daily_rate)}/คืน` : `${money(room.monthly_rent)}/เดือน`), td(pill(room.status)), td(rowActions(...actions), 'align-right'));
         rows.append(tr);
       });
       ['all', 'available', 'reserved', 'occupied'].forEach((key) => { const node = $(`[data-room-stat="${key}"]`); node.textContent = String(key === 'all' ? state.rooms.length : state.rooms.filter((room) => room.status === key).length); });
@@ -2024,8 +2008,13 @@
     function openRoomForm(room = null) {
       const form = $('#room-form'); if (form.dataset.submitting === 'true') return; form.reset(); showFormError($('#room-form-error'));
       form.elements.id.value = room?.id || '';
+      if (form.elements.expected_version) {
+        form.elements.expected_version.value = room?.room_version || '';
+        if (room && (typeof room.room_version !== 'string' || !room.room_version)) { showFormError($('#room-form-error'), 'ข้อมูลเวอร์ชันห้องไม่ครบ กรุณารีเฟรชรายการก่อนแก้ไข'); openDialog($('#room-dialog')); return; }
+      }
       $('#room-dialog-title').textContent = room ? `แก้ไขห้อง ${text(room.room_code)}` : 'เพิ่มห้องพัก';
-      if (room) ['room_code', 'floor', 'room_type', 'monthly_rent', 'description', 'image_key'].forEach((key) => { form.elements[key].value = room[key] ?? ''; });
+      if (room) ['room_code', 'floor', 'room_type', 'monthly_rent', 'description', 'image_key', 'rental_mode', 'daily_rate', 'max_guests', 'daily_deposit'].forEach((key) => { if (form.elements[key]) form.elements[key].value = room[key] ?? ''; });
+      syncRoomRentalFields(form);
       form.elements.amenities.value = Array.isArray(room?.amenities) ? room.amenities.join(', ') : '';
       $$('details', form).forEach((section) => { section.open = false; });
       rememberDialogDraft(form);
@@ -2033,6 +2022,16 @@
     }
 
     loaders.rooms = loadRooms;
+    function syncRoomRentalFields(form) {
+      if (!form.elements.rental_mode) return;
+      const isDaily = form.elements.rental_mode.value === 'daily';
+      form.elements.monthly_rent.required = !isDaily;
+      form.elements.monthly_rent.disabled = isDaily;
+      if (form.elements.daily_rate) { form.elements.daily_rate.required = isDaily; form.elements.daily_rate.disabled = !isDaily; }
+      ['max_guests', 'daily_deposit'].forEach((key) => { if (form.elements[key]) form.elements[key].disabled = !isDaily; });
+      $$('#room-form [data-rental-fields]').forEach((node) => { node.hidden = node.dataset.rentalFields !== (isDaily ? 'daily' : 'monthly'); });
+    }
+    $('#room-form').elements.rental_mode?.addEventListener('change', () => syncRoomRentalFields($('#room-form')));
     $('#admin-room-search').addEventListener('input', renderRooms);
     $('#admin-room-status').addEventListener('change', renderRooms);
     $('[data-open-room-dialog]').addEventListener('click', () => openRoomForm());
@@ -2057,7 +2056,10 @@
     $('#room-form').addEventListener('submit', async (event) => {
       event.preventDefault(); const form = event.currentTarget; if (form.dataset.submitting === 'true') return; const error = $('#room-form-error'); showFormError(error); if (!form.reportValidity()) return;
       const values = Object.fromEntries(new FormData(form).entries()); const id = values.id; delete values.id;
+      if (!id) delete values.expected_version;
+      else if (form.elements.expected_version && !values.expected_version) { showFormError(error, 'ยังอ่านเวอร์ชันห้องล่าสุดไม่ได้ กรุณาปิดหน้าต่างและรีเฟรชรายการก่อนแก้ไข'); return; }
       values.monthly_rent = number(values.monthly_rent); values.amenities = String(values.amenities || '').split(',').map((item) => item.trim()).filter(Boolean);
+      if (values.rental_mode === 'daily') { values.monthly_rent = 0; values.daily_rate = String(values.daily_rate); values.max_guests = Number(values.max_guests); values.daily_deposit = String(values.daily_deposit || '0.00'); }
       const button = form.querySelector('[type="submit"]'); if (!beginDialogSave(form)) return; setBusy(button, true, 'กำลังบันทึก…');
       try { await api(id ? `/api/admin/rooms/${encodeURIComponent(id)}` : '/api/admin/rooms', { method: id ? 'PUT' : 'POST', body: values }); finishDialogSave(form); form.reset(); closeDialog($('#room-dialog')); toast('บันทึกห้องแล้ว'); loadRooms(); }
       catch (requestError) { showFormError(error, requestError); } finally { finishDialogSave(form); setBusy(button, false); }
@@ -2238,8 +2240,7 @@
         const result = await api(`/api/admin/bookings/${encodeURIComponent(id)}/move-in`, { method: 'POST', body: values });
         releaseBusy();
         closeDialog(dialog); form.reset();
-        showResidentAccess(result, summary);
-        toast(result?.idempotent_replay ? 'พบรายการรับเข้าพักเดิมและคืนผลเดิมแล้ว' : 'รับเข้าพักและสร้างบัญชีแล้ว');
+        notifyResidentPhoneAccess(summary, result?.idempotent_replay ? 'พบรายการรับเข้าพักเดิมแล้ว' : 'รับเข้าพักและสร้างบัญชีแล้ว');
         state.loaded.delete('residents');
         await Promise.all([loadBookings(), loadRooms()]);
       }
@@ -2263,7 +2264,7 @@
     function populateResidentCreateRooms(selectedRoomId = '') {
       const form = $('#resident-create-form');
       const select = form.elements.room_id;
-      const rooms = state.roomListReady && !state.roomController ? state.rooms.filter((room) => room.status === 'available') : [];
+      const rooms = state.roomListReady && !state.roomController ? state.rooms.filter((room) => room.status === 'available' && room.rental_mode !== 'daily') : [];
       const prompt = create('option', '', rooms.length ? 'เลือกห้องว่าง' : 'ไม่มีห้องว่างในขณะนี้');
       prompt.value = '';
       select.replaceChildren(prompt);
@@ -2323,6 +2324,7 @@
             : null,
           actionButton(resident.line_verified || resident.line_user_id_hint || resident.line_blocked ? 'สถานะ LINE' : 'ผูก LINE', 'resident-line', resident.id, 'button-secondary', `จัดการ LINE ของ ${text(resident.full_name)}`),
           actionButton('แก้ข้อมูล', 'edit-resident', resident.id, 'button-ghost', `แก้ข้อมูลผู้พัก ${text(resident.full_name)}`),
+          actionButton('ยกเลิกเซสชันและ LINE', 'revoke-resident-sessions', resident.id, 'button-danger-text', `ยกเลิกเซสชันและการผูก LINE ของ ${text(resident.full_name)}`),
           actionButton('ย้ายออก', 'move-out-resident', resident.id, 'button-danger-text', `ย้าย ${text(resident.full_name)} ออกจากห้อง`),
         ) : rowActions();
         tr.append(td(person), td(text(resident.room_code || resident.room?.room_code)), td(text(resident.phone)), td(line), td(formatDate(resident.move_in_date)), td(status), td(actions, 'align-right'));
@@ -2380,8 +2382,7 @@
         const result = await api('/api/admin/residents', { method: 'POST', body: values });
         releaseBusy();
         closeDialog(dialog); form.reset();
-        showResidentAccess(result, summary);
-        toast(result?.idempotent_replay ? 'พบรายการรับเข้าพักเดิมและแสดงผลเดิมแล้ว' : 'เพิ่มผู้พักหลักและเปิดบัญชีห้องแล้ว');
+        notifyResidentPhoneAccess(summary, result?.idempotent_replay ? 'พบรายการรับเข้าพักเดิมแล้ว' : 'เพิ่มผู้พักหลักและเปิดบัญชีห้องแล้ว');
         await Promise.all([loadResidents(), loadRooms(), loadBookings()]);
       } catch (requestError) {
         const roomConflict = ['ROOM_NOT_AVAILABLE', 'ROOM_OCCUPIED', 'ROOM_DELETED'].includes(requestError?.details?.code);
@@ -2419,18 +2420,20 @@
         return;
       }
       if (button.dataset.action === 'resident-line') { adminLineBinding.open(resident); return; }
-      if (button.dataset.action === 'reissue-resident-access') {
-        if (!await confirmAction(
-          'ยกเลิกเซสชันและการผูก LINE เดิม',
-          `ยกเลิกเซสชันและการผูก LINE ของ ${summary} หรือไม่? ผู้พักยังเข้าใช้งานด้วยเบอร์เดิมได้ทันที และต้องผูก LINE ใหม่ การดำเนินการนี้ไม่ใช่การปิดบัญชี`,
-          'ยกเลิกเซสชันและ LINE เดิม',
-          true,
-        )) return;
-        setBusy(button, true, 'กำลังยกเลิกสิทธิ์เดิม…');
+      if (button.dataset.action === 'revoke-resident-sessions') {
+        if (resident.active === false || resident.active === 0) return;
+        setBusy(button, true, 'กำลังยกเลิกเซสชัน…');
         try {
+          if (!await confirmAction(
+            'ยกเลิกเซสชันและการผูก LINE เดิม',
+            `ยกเลิกเซสชันและการผูก LINE ของ ${summary} หรือไม่? ผู้พักยังเข้าใช้งานด้วยเบอร์เดิมได้ทันที และต้องผูก LINE ใหม่ การดำเนินการนี้ไม่ใช่การปิดบัญชี`,
+            'ยกเลิกเซสชันและ LINE เดิม',
+            true,
+          )) return;
+          if (!state.residentListReady || !state.residents.includes(resident)) return;
           const result = await api(`/api/admin/residents/${encodeURIComponent(resident.id)}/access/reissue`, { method: 'POST', body: {} });
-          showResidentAccess(result, summary);
-          toast('ยกเลิกเซสชันและการผูก LINE เดิมแล้ว ผู้พักเข้าใช้งานด้วยเบอร์เดิมได้');
+          if (String(result?.resident_id) !== String(resident.id) || result?.sessions_revoked !== true) throw new ApiError('ยังยืนยันผลการยกเลิกเซสชันไม่ได้ กรุณาตรวจสถานะล่าสุดก่อนลองใหม่', 0, { code: 'MUTATION_OUTCOME_UNKNOWN' });
+          notifyResidentPhoneAccess(summary, 'ยกเลิกเซสชันและการผูก LINE เดิมแล้ว');
           await loadResidents();
         } catch (requestError) {
           toast(requestError, 'error');
@@ -2504,8 +2507,8 @@
         const summary = `${text(updated?.full_name || values.full_name)} · ห้อง ${text(updated?.room_code || original?.room_code || original?.room?.room_code)}`;
         releaseBusy();
         closeDialog(dialog); form.reset();
-        if (updated?.resident_access) showResidentAccess(updated, summary);
-        toast(updated?.sessions_revoked ? 'บันทึกแล้ว ยกเลิกเซสชันเดิม ลูกบ้านเข้าใช้งานด้วยเบอร์ใหม่' : 'บันทึกข้อมูลผู้พักแล้ว');
+        if (updated?.sessions_revoked === true) notifyResidentPhoneAccess(summary, 'บันทึกเบอร์ใหม่แล้ว ยกเลิกเซสชันและการผูก LINE เดิม');
+        else toast('บันทึกข้อมูลผู้พักแล้ว');
         await loadResidents();
       } catch (requestError) { showFormError(error, requestError); } finally { releaseBusy(); }
     });
@@ -2574,11 +2577,12 @@
           if(issue?.message) issues.push(`${label}: ${issue.message}`);
           if(issue?.code==='METER_HISTORY_GAP' && /^\d{4}-\d{2}$/.test(issue.recovery_period||issue.required_previous_period||'')) recovery.add(issue.recovery_period||issue.required_previous_period);
         });
-        if(meterHasPendingOpening(meter)) actions.append(actionButton('เติมเลขเริ่มต้น','meter-opening-readings',roomId,'button-secondary'));
-        for(const period of recovery){const button=actionButton(`เติมงวด ${formatPeriod(period)}`,'meter-missing-period',roomId,'button-secondary');button.dataset.period=period;actions.append(button);}
-        const editable=$$('input[data-meter-type]',tr).some(i=>!i.disabled);
+        const historical=meter.rental_mode==='daily';
+        if(!historical&&meterHasPendingOpening(meter)) actions.append(actionButton('เติมเลขเริ่มต้น','meter-opening-readings',roomId,'button-secondary'));
+        if(!historical)for(const period of recovery){const button=actionButton(`เติมงวด ${formatPeriod(period)}`,'meter-missing-period',roomId,'button-secondary');button.dataset.period=period;actions.append(button);}
+        const editable=!historical&&$$('input[data-meter-type]',tr).some(i=>!i.disabled);
         if(editable) actions.append(actionButton(['water','electric'].some(t=>meter[`${t}_current`]!=null)?'บันทึกการแก้ไข':'บันทึก','save-meter',roomId,'button-primary',`บันทึกเลขมิเตอร์ห้อง ${roomCode}`));
-        else if(!recovery.size&&!meterHasPendingOpening(meter)) actions.append(create('span','status-badge status-neutral',meter.is_billed?'ออกบิลแล้ว':'ตรวจประวัติก่อน'));
+        else if(historical||(!recovery.size&&!meterHasPendingOpening(meter))) actions.append(create('span','status-badge status-neutral',historical?'ประวัติรายเดือน (อ่านอย่างเดียว)':meter.is_billed?'ออกบิลแล้ว':'ตรวจประวัติก่อน'));
         const reload=actionButton('ใช้ค่าล่าสุดของห้องนี้','meter-read-latest',roomId,'button-secondary'); reload.dataset.meterReload=''; reload.hidden=true; actions.append(reload);
         const message=create('p','meter-row-feedback');message.dataset.meterFeedback='';message.hidden=true;actions.append(message);
         const cell=td(actions,'align-right');cell.dataset.label='จัดการ';tr.append(cell);rows.append(tr);
@@ -2640,6 +2644,18 @@
         }
       });
     }
+    function requiredMeterRows(payload, period) {
+      const rows = Array.isArray(payload) ? payload : payload?.meters;
+      const ids = new Set();
+      if (!Array.isArray(rows) || !rows.every(row => {
+        if (!row || !Number.isSafeInteger(row.room_id) || row.room_id < 1 || ids.has(row.room_id) || row.period !== period || typeof row.room_code !== 'string' || !row.room_code.trim()) return false;
+        ids.add(row.room_id);
+        if(row.rental_mode==='daily'&&(row.water_locked!==true||row.electric_locked!==true))return false;
+        return ['water', 'electric'].every(type => typeof row[`${type}_locked`] === 'boolean' && typeof row[`${type}_version`] === 'string' && !!row[`${type}_version`]
+          && ['previous', 'current'].every(kind => row[`${type}_${kind}`] === null || /^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/.test(String(row[`${type}_${kind}`]))));
+      })) throw new Error('ข้อมูลมิเตอร์ไม่ครบหรือไม่ตรงงวด กรุณาโหลดข้อมูลล่าสุดก่อนบันทึก');
+      return rows;
+    }
     async function loadMeters() {
       if (state.meterSaving) { $('#meter-period').value = state.meterPeriod; toast('กำลังบันทึกมิเตอร์ กรุณารอผลก่อน', 'error'); return; }
       rememberMeterDrafts(); state.meterListReady = false;
@@ -2651,11 +2667,11 @@
       try {
         const data = await api(`/api/admin/meters?period=${encodeURIComponent(period)}`, { signal: controller.signal });
         if (state.meterController !== controller || $('#meter-period').value !== period) return;
-        if (!Array.isArray(data) && !Array.isArray(data?.meters)) throw new Error('ข้อมูลมิเตอร์ตอบกลับไม่ครบ กรุณาลองโหลดใหม่');
-        state.meterPeriod = period; state.meters = listFrom(data, 'meters'); state.meterListReady = true; state.loaded.add('meters'); renderMeters();
+        const meters = requiredMeterRows(data, period);
+        state.meterPeriod = period; state.meters = meters; state.meterListReady = true; state.loaded.add('meters'); renderMeters();
       } catch (error) {
         if (state.meterController === controller && $('#meter-period').value === period && error?.name !== 'AbortError') {
-          state.meters = []; $('#meter-rows').replaceChildren(); setStat('#meter-progress', 'ยังโหลดมิเตอร์ไม่สำเร็จ · เก็บร่างที่กรอกไว้แล้ว');
+          state.meterListReady = false; state.meters = []; $('#meter-rows').replaceChildren(); setStat('#meter-progress', 'ยังโหลดมิเตอร์ไม่สำเร็จ · เก็บร่างที่กรอกไว้แล้ว');
           setTableState($('#meter-state'), 'error', errorMessage(error));
         }
       } finally {
@@ -2821,7 +2837,7 @@
         }else if(target==='residents'){
           if(!state.residentListReady)throw new Error('โหลดผู้พักไม่สำเร็จ กรุณาลองใหม่');
           const person=state.residents.find(row=>item.occupancy_id?Number(row.occupancy_id)===item.occupancy_id:Number(row.room_id)===item.room_id);
-          if(!person)throw new Error('ไม่พบผู้พักรอบที่เกี่ยวข้องในรายการที่ยังเข้าอยู่ ตรวจงวดที่เลือกหรือให้ผู้ดูแลตรวจประวัติเดิม ห้ามใช้ผู้พักคนปัจจุบันแทน');
+          if(!person)throw new Error('ไม่พบผู้พักรอบที่เกี่ยวข้องในรายการที่ยังเข้าอยู่ ตรวจงวดที่เลือกหรือให้เจ้าของระบบตรวจประวัติเดิม ห้ามใช้ผู้พักคนปัจจุบันแทน');
           $('#resident-search').value=String(person.room_code||'');renderResidents();
           const row=$$('#resident-rows tr').find(row=>Number(row.dataset.residentId)===Number(person.id));focusBillingNode(row);
           if(item.focus==='opening'&&person.opening_readings_pending===true)$('[data-action="opening-readings"]',row)?.click();
@@ -3004,7 +3020,7 @@
       const requestOptions={signal:controller.signal};
       try{
         const [billResult,roomResult]=await Promise.allSettled([
-          api(`/api/admin/bills?period=${encodeURIComponent(period)}`,requestOptions),
+          api(`/api/admin/bills?period=${encodeURIComponent(period)}`,requestOptions).then(data=>requiredEntityList(data,'bills')),
           api(`/api/admin/bills/candidates?period=${encodeURIComponent(period)}`,requestOptions),
         ]);
         if(state.billController!==controller||$('#bill-period').value!==period)return;
@@ -3012,7 +3028,7 @@
         const candidates=roomResult.status==='fulfilled'?roomResult.value:null;
         state.billPeriod=period;state.bills=Array.isArray(bills)?bills:[];
         state.billListAvailable=Array.isArray(bills);
-        state.billCandidatesReady=candidates?.period===period&&Array.isArray(candidates.rooms)&&candidates.rooms.every(room=>Number.isSafeInteger(room.id)&&room.id>0&&typeof room.room_code==='string'&&typeof room.is_billed==='boolean');
+        state.billCandidatesReady=candidates?.period===period&&Array.isArray(candidates.rooms)&&candidates.rooms.every(room=>Number.isSafeInteger(room.id)&&room.id>0&&typeof room.room_code==='string'&&typeof room.is_billed==='boolean')&&new Set(candidates.rooms.map(room=>room.id)).size===candidates.rooms.length;
         state.billCandidates=state.billCandidatesReady?candidates.rooms:[];
         fillBillRooms(preserveSelection);
         if(state.billListAvailable){state.loaded.add('bills');renderAdminBills();}
@@ -3431,7 +3447,19 @@
         release(); closeDialog($('#payment-close-dialog')); form.reset(); toast('ปิดรายการถาวรแล้ว หากผู้พักโอนเงินจริงแล้ว ให้ตรวจยอดก่อนโอนซ้ำ'); await Promise.all([loadPayments(), loadBills()]);
       } catch (requestError) { showFormError(error, requestError); await loadPayments(); } finally { release(); }
     });
-    function renderUsers() { const rows = $('#user-rows'); rows.replaceChildren(); state.users.forEach((user) => { const tr = create('tr'); const status = user.is_active === false || user.is_active === 0 ? 'inactive' : 'active'; const actions = [actionButton('แก้ไข', 'edit-user', user.id, 'button-ghost', `แก้ไขผู้ดูแล ${text(user.username)}`)]; if (status === 'active') actions.push(actionButton('ปิดใช้งาน', 'delete-user', user.id, 'button-danger-text', `ปิดใช้งานผู้ดูแล ${text(user.username)}`)); tr.append(td(text(user.username)), td(text(user.role === 'owner' ? 'เจ้าของ' : 'ผู้ดูแล')), td(pill(status)), td(formatDate(user.updated_at)), td(rowActions(...actions), 'align-right')); rows.append(tr); }); setTableState($('#user-state'), state.users.length ? 'ready' : 'empty', 'ยังไม่มีบัญชีผู้ดูแล'); }
+    function isRetiredAccount(user) { return user.retired === true || user.role !== 'owner'; }
+    function renderUsers() {
+      const rows = $('#user-rows'); rows.replaceChildren();
+      state.users.forEach((user) => {
+        const tr = create('tr'), retired = isRetiredAccount(user);
+        const status = retired || user.is_active === false || user.is_active === 0 ? 'inactive' : 'active';
+        const actions = retired ? [] : [actionButton('แก้ไข', 'edit-user', user.id, 'button-ghost', `แก้ไขเจ้าของระบบ ${text(user.username)}`)];
+        if (status === 'active') actions.push(actionButton('ปิดใช้งาน', 'delete-user', user.id, 'button-danger-text', `ปิดใช้งานเจ้าของระบบ ${text(user.username)}`));
+        tr.append(td(text(user.username)), td(retired ? 'บัญชีแอดมินเดิม (ยกเลิกแล้ว)' : 'เจ้าของระบบ'), td(pill(status)), td(formatDate(user.updated_at)), td(retired ? create('span', 'muted', 'ใช้และเปิดบัญชีนี้อีกไม่ได้') : rowActions(...actions), 'align-right'));
+        rows.append(tr);
+      });
+      setTableState($('#user-state'), state.users.length ? 'ready' : 'empty', 'ยังไม่มีบัญชีเจ้าของระบบ');
+    }
     async function loadUsers() {
       if (role !== 'owner') return;
       state.userController?.abort(); const controller = new AbortController(); state.userController = controller;
@@ -3440,13 +3468,12 @@
       try {
         const data = await api('/api/admin/users', {signal:controller.signal});
         if (state.userController !== controller) return;
-        if (!Array.isArray(data) && !Array.isArray(data?.users) && !Array.isArray(data?.items)) throw new ApiError('ข้อมูลผู้ดูแลไม่ครบ กรุณาโหลดรายการใหม่');
-        state.users = listFrom(data, 'users'); state.userListReady = true; state.loaded.add('users'); renderUsers(); rows.removeAttribute('inert');
+        state.users = requiredEntityList(data, 'users'); state.userListReady = true; state.loaded.add('users'); renderUsers(); rows.removeAttribute('inert');
       } catch (error) { if (state.userController === controller && error?.name !== 'AbortError') setTableState($('#user-state'), 'error', errorMessage(error)); }
       finally { if (state.userController === controller) state.userController = null; }
     }
     loaders.users = loadUsers;
-    function openUserForm(user = null) { const form = $('#user-form'); if (form.dataset.submitting === 'true') return; form.reset(); showFormError($('#user-form-error')); form.elements.id.value = user?.id || ''; form.elements.username.value = user?.username || ''; form.elements.role.value = user?.role || 'admin'; form.elements.is_active.checked = user ? !(user.is_active === false || user.is_active === 0) : true; form.elements.password.required = !user; $('#user-dialog-title').textContent = user ? `แก้ไข ${text(user.username)}` : 'เพิ่มผู้ดูแล'; $('#user-password-help').textContent = user ? 'เว้นว่างหากไม่ต้องการเปลี่ยนรหัสผ่าน' : 'อย่างน้อย 12 ตัวอักษร'; rememberDialogDraft(form); openDialog($('#user-dialog')); }
+    function openUserForm(user = null) { const form = $('#user-form'); if (role !== 'owner' || (user && isRetiredAccount(user)) || form.dataset.submitting === 'true') return; form.reset(); showFormError($('#user-form-error')); form.elements.id.value = user?.id || ''; form.elements.username.value = user?.username || ''; form.elements.role.value = 'owner'; form.elements.is_active.checked = user ? !(user.is_active === false || user.is_active === 0) : true; form.elements.password.required = !user; $('#user-dialog-title').textContent = user ? `แก้ไข ${text(user.username)}` : 'เพิ่มเจ้าของระบบ'; $('#user-password-help').textContent = user ? 'เว้นว่างหากไม่ต้องการเปลี่ยนรหัสผ่าน' : 'อย่างน้อย 12 ตัวอักษร'; rememberDialogDraft(form); openDialog($('#user-dialog')); }
     $('[data-open-user-dialog]')?.addEventListener('click', () => openUserForm());
     $('#user-rows').addEventListener('click', async (event) => {
       const button = event.target.closest('[data-action]');
@@ -3456,27 +3483,27 @@
       if (button.dataset.action !== 'delete-user') return;
       state.userActionBusy = true;
       try {
-        if (!await confirmAction('ปิดใช้งานผู้ดูแล', `ปิดบัญชี ${text(user.username)} ไม่ให้เข้าสู่ระบบอีกหรือไม่?`)) return;
+        if (!await confirmAction('ปิดใช้งานเจ้าของระบบ', `ปิดบัญชี ${text(user.username)} ไม่ให้เข้าสู่ระบบอีกหรือไม่?`)) return;
         if (!state.userListReady || state.userController || !state.users.includes(user)) return;
         setBusy(button, true, 'กำลังปิดบัญชี…');
         await api(`/api/admin/users/${encodeURIComponent(user.id)}`, { method: 'DELETE', body: {} });
-        toast('ปิดใช้งานผู้ดูแลแล้ว'); await loadUsers();
+        toast('ปิดใช้งานเจ้าของระบบแล้ว'); await loadUsers();
       } catch (error) { toast(error, 'error'); await loadUsers(); }
       finally { state.userActionBusy = false; setBusy(button, false); }
     });
     $('#user-form').addEventListener('submit', async (event) => {
       event.preventDefault(); const form = event.currentTarget;
-      if (form.dataset.submitting === 'true') return;
+      if (role !== 'owner' || form.dataset.submitting === 'true') return;
       const error = $('#user-form-error'); showFormError(error);
       if (!form.reportValidity()) return;
       const values = Object.fromEntries(new FormData(form).entries()); const id = values.id; delete values.id;
-      values.is_active = form.elements.is_active.checked; if (!values.password) delete values.password;
+      values.role = 'owner'; values.is_active = form.elements.is_active.checked; if (!values.password) delete values.password;
       const button = form.querySelector('[type="submit"]');
       if (!beginDialogSave(form)) return; setBusy(button, true, 'กำลังบันทึก…');
       try {
         await api(id ? `/api/admin/users/${encodeURIComponent(id)}` : '/api/admin/users', { method: id ? 'PUT' : 'POST', body: values });
         finishDialogSave(form); form.reset(); closeDialog($('#user-dialog'));
-        toast('บันทึกผู้ดูแลแล้ว'); loadUsers();
+        toast('บันทึกเจ้าของระบบแล้ว'); loadUsers();
       } catch (requestError) { showFormError(error, requestError); }
       finally { finishDialogSave(form); setBusy(button, false); }
     });
@@ -3501,7 +3528,7 @@
       markIntegrationSettingsDirty();
     });
     window.addEventListener('beforeunload', (event) => {
-      if (adminLogoutInProgress || (!residentActivationSecret && !hasDirtySettings() && !hasDirtyMeterRows() && !hasDirtyDialogDrafts())) return;
+      if (adminLogoutInProgress || (!state.billWorking && !state.billDraftEdited && !hasDirtySettings() && !hasDirtyMeterRows() && !hasDirtyDialogDrafts())) return;
       event.preventDefault(); event.returnValue = '';
     });
     integrationSettingsForm?.addEventListener('submit', async (event) => {
@@ -3626,11 +3653,11 @@
       setStat('#overview-period', formatPeriod(period));
       const options = { signal: controller.signal };
       const requests = [
-        api('/api/admin/rooms', options),
-        api('/api/admin/bookings?status=pending&offset=0&limit=1', options),
-        api('/api/admin/payments?status=pending&offset=0&limit=1', options),
-        api(`/api/admin/bills?period=${encodeURIComponent(period)}`, options),
-        api(`/api/admin/meters?period=${encodeURIComponent(period)}`, options),
+        api('/api/admin/rooms', options).then(data=>requiredEntityList(data,'rooms')),
+        api('/api/admin/bookings?status=pending&offset=0&limit=1', options).then(data=>{if(!Number.isSafeInteger(data?.pending_count)||data.pending_count<0)throw new Error('ข้อมูลจำนวนการจองไม่ครบ');return data;}),
+        api('/api/admin/payments?status=pending&offset=0&limit=1', options).then(data=>{if(!Number.isSafeInteger(data?.pending_count)||data.pending_count<0)throw new Error('ข้อมูลจำนวนสลิปไม่ครบ');return data;}),
+        api(`/api/admin/bills?period=${encodeURIComponent(period)}`, options).then(data=>requiredEntityList(data,'bills')),
+        api(`/api/admin/meters?period=${encodeURIComponent(period)}`, options).then(data=>requiredMeterRows(data,period)),
       ];
       if (role === 'owner') requests.push(api('/api/admin/operations/health', options));
       let results;
@@ -3647,10 +3674,11 @@
       let occupiedRooms = 0;
       if (roomsResult.status === 'fulfilled') {
         const rooms = listFrom(roomsResult.value, 'rooms');
-        occupiedRooms = rooms.filter((room) => room.status === 'occupied').length;
-        const available = rooms.filter((room) => room.status === 'available').length;
+        const counts = overviewRoomCounts(rooms);
+        occupiedRooms = counts.monthlyOccupied;
+        const available = counts.available;
         setStat('[data-overview-stat="rooms"]', available);
-        setStat('[data-overview-note="rooms"]', `จาก ${rooms.length} ห้อง · มีผู้พัก ${occupiedRooms} ห้อง`);
+        setStat('[data-overview-note="rooms"]', `จาก ${rooms.length} ห้อง · มีผู้พัก ${counts.occupied} ห้อง`);
       } else {
         failures.push('ห้องพัก');
         setStat('[data-overview-stat="rooms"]', '—');
@@ -3661,7 +3689,7 @@
         state.bookingPendingCount = Math.max(0, Number(bookingsResult.value?.pending_count) || 0);
         renderBookingPendingBadge();
         setStat('[data-overview-stat="bookings"]', state.bookingPendingCount);
-        setStat('[data-overview-note="bookings"]', state.bookingPendingCount === 0 ? 'ไม่มีคำขอค้าง' : 'รอผู้ดูแลกดยืนยันหรือยกเลิก');
+        setStat('[data-overview-note="bookings"]', state.bookingPendingCount === 0 ? 'ไม่มีคำขอค้าง' : 'รอเจ้าของระบบกดยืนยันหรือยกเลิก');
       } else {
         failures.push('การจอง');
         setStat('[data-overview-stat="bookings"]', '—');
@@ -3768,16 +3796,14 @@
     const adminLogoutButtons = $$('[data-admin-logout]');
     adminLogoutButtons.forEach((button) => button.addEventListener('click', async () => {
       if (adminLogoutInProgress) return;
+      if (typeof daily !== 'undefined' && daily?.busy()) { toast('กรุณาตรวจผลรายการรายวันที่กำลังบันทึกก่อนออกจากระบบ', 'error'); return; }
       adminLogoutInProgress = true;
       const hasUnsavedChanges = state.billWorking || state.billDraftEdited || hasDirtySettings() || hasDirtyMeterRows() || hasDirtyDialogDrafts();
-      const hasUncopiedAccess = Boolean(residentActivationSecret);
-      if ((hasUnsavedChanges || hasUncopiedAccess)
+      if (hasUnsavedChanges
         && !await confirmAction(
-          hasUncopiedAccess ? 'ยังมี activation code แสดงอยู่' : 'ออกจากระบบทั้งที่ยังไม่บันทึก',
-          hasUncopiedAccess
-            ? 'รหัสเปิดใช้งานจะแสดงได้ครั้งเดียวและจะถูกล้างเมื่อออกจากระบบ ยืนยันว่าได้ส่งมอบให้ผู้พักแล้วและต้องการออกหรือไม่?'
-            : 'มีการตั้งค่าหรือเลขมิเตอร์ที่ยังไม่บันทึก ต้องการทิ้งข้อมูลเหล่านี้และออกจากระบบหรือไม่?',
-          hasUncopiedAccess ? 'ยืนยันว่าได้ส่งมอบแล้ว' : 'ทิ้งข้อมูลและออก',
+          'ออกจากระบบทั้งที่ยังไม่บันทึก',
+          'มีข้อมูลบิล การตั้งค่า เลขมิเตอร์ หรือแบบฟอร์มที่ยังไม่บันทึก ต้องการทิ้งข้อมูลเหล่านี้และออกจากระบบหรือไม่?',
+          'ทิ้งข้อมูลและออก',
           true,
         )) {
         adminLogoutInProgress = false;
@@ -3806,6 +3832,7 @@
       const active = $('[data-admin-view].is-active', app)?.dataset.adminView;
       if (active === 'rooms') loadRooms();
       if (active === 'overview') loadOverview();
+      if (active === 'daily') daily?.load();
     });
     if (initialHash !== (initialView === homeView ? '' : initialView)) replaceAdminHash(initialView);
     window.addEventListener('hashchange', () => {
@@ -3826,6 +3853,7 @@
   setupCommonInteractions();
   loadPublicSupport();
   initPublicRooms();
+  window.DormDaily?.initPublic({ $, $$, create, api, errorMessage, showFormError, money, formatDate, formatDateTime, isoToday, isoDateOffsetDays, setBusy, setFormFieldsBusy, setDialogBusy, openDialog, closeDialog, getQrLibrary, renderQrCanvas });
   initLogin('#admin-login-form', '/api/auth/admin/login', '/admin', 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง');
   initResidentLogin();
   initResidentPortal();

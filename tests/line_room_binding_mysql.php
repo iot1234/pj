@@ -252,7 +252,7 @@ $pass('disabled OA delivery, masked accounts, safe history and secret-free audit
 $oaService->update(0,['enabled'=>true],$ownerId);
 // Exercise the real domain transitions with an explicitly claimed administrator.
 $adminUser = 'U' . str_repeat('6',32);
-$adminRecipient = $app->lineAdminRecipients()->issue(['oa_id'=>$oa2,'label'=>'Event test administrator','is_owner'=>false],$ownerId);
+$adminRecipient = $app->lineAdminRecipients()->issue(['oa_id'=>$oa2,'label'=>'Event test owner','is_owner'=>true],$ownerId);
 $app->lineOfficialAccounts()->withRegistryLock(fn() => $app->lineAdminRecipients()->consume($adminRecipient['code'],$adminUser,$oa2));
 $adminCount = static function (?string $category = null) use ($pdo): int {
     $q = $pdo->prepare('SELECT COUNT(*) FROM line_notice_outbox WHERE admin_recipient_id IS NOT NULL' . ($category === null ? '' : ' AND category=?'));

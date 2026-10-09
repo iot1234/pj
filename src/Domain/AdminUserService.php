@@ -18,8 +18,13 @@ final class AdminUserService
     /** @return list<array<string,mixed>> */
     public function list(): array
     {
-        $rows = $this->app->database()->pdo()->query('SELECT id,username,role,active,created_at,updated_at FROM admin_users ORDER BY username')->fetchAll();
-        foreach ($rows as &$row) { $row['id']=(int)$row['id']; $row['active']=(bool)$row['active']; $row['is_active']=$row['active']; }
+        $rows = $this->app->database()->pdo()->query('SELECT id,username,role,active,retired_at,created_at,updated_at FROM admin_users ORDER BY username')->fetchAll();
+        foreach ($rows as &$row) {
+            $row['id']=(int)$row['id'];
+            $row['retired']=$row['role'] !== 'owner' || $row['retired_at'] !== null;
+            $row['active']=!$row['retired'] && (bool)$row['active'];
+            $row['is_active']=$row['active'];
+        }
         return $rows;
     }
 
@@ -32,7 +37,7 @@ final class AdminUserService
         $password=$input['password']??null;
         if(!is_string($password))throw new HttpException(422,'Invalid password','VALIDATION_ERROR',['field'=>'password']);
         Password::assertAdmin($password,$username);
-        $role=Validator::enum($input['role']??'admin','role',['owner','admin']);
+        $role=Validator::enum($input['role']??'owner','role',['owner']);
         $active = self::requestedActive($input) ?? true;
         try {
             $statement=$this->app->database()->pdo()->prepare('INSERT INTO admin_users (username,password_hash,role,auth_version,active,created_by,created_at,updated_at) VALUES (?,?,?,1,?,?,UTC_TIMESTAMP(),UTC_TIMESTAMP())');
@@ -41,7 +46,7 @@ final class AdminUserService
             if (MySqlError::isDuplicateKey($e, 'uq_admin_users_username')) throw new HttpException(409,'Username already exists','USERNAME_EXISTS');
             throw $e;
         }
-        return ['id'=>(int)$this->app->database()->pdo()->lastInsertId(),'username'=>$username,'role'=>$role,'active'=>$active,'is_active'=>$active];
+        return ['id'=>(int)$this->app->database()->pdo()->lastInsertId(),'username'=>$username,'role'=>$role,'active'=>$active,'is_active'=>$active,'retired'=>false,'retired_at'=>null];
     }
 
     /** @return array<string,mixed> */
@@ -55,17 +60,24 @@ final class AdminUserService
             throw new HttpException(422,'Invalid password','VALIDATION_ERROR',['field'=>'password']);
         }
         return $this->app->database()->transaction(function(PDO $pdo) use($id,$input,$ownerId,$requestedActive,$requestedPassword): array {
-            $lock=$pdo->query("SELECT id,username,role,active FROM admin_users ORDER BY id FOR UPDATE");
+            $lock=$pdo->query("SELECT id,username,role,active,retired_at FROM admin_users ORDER BY id FOR UPDATE");
             $all=$lock->fetchAll(); $current=null;
             foreach($all as $row) if((int)$row['id']===$id) $current=$row;
             if(!$current) throw new HttpException(404,'Admin user not found','ADMIN_NOT_FOUND');
+            if ($current['role'] !== 'owner' || $current['retired_at'] !== null) {
+                if ($requestedActive !== false || array_diff(array_keys($input), ['active','is_active']) !== []) {
+                    throw new HttpException(409,'Removed administrator accounts cannot be edited or reactivated','ADMIN_ROLE_REMOVED');
+                }
+                $pdo->prepare("UPDATE admin_users SET role='owner',active=0,retired_at=COALESCE(retired_at,UTC_TIMESTAMP(6)),auth_version=auth_version+1,updated_at=UTC_TIMESTAMP() WHERE id=?")->execute([$id]);
+                return ['id'=>$id,'username'=>$current['username'],'role'=>'owner','active'=>false,'is_active'=>false,'retired'=>true];
+            }
             $username=array_key_exists('username',$input)?strtolower(Validator::string($input['username'],'username',3,64)):(string)$current['username'];
             if(!preg_match('/^[a-z0-9_.-]+$/',$username)) throw new HttpException(422,'Invalid username','VALIDATION_ERROR',['field'=>'username']);
-            $role=array_key_exists('role',$input)?Validator::enum($input['role'],'role',['owner','admin']):(string)$current['role'];
+            $role=array_key_exists('role',$input)?Validator::enum($input['role'],'role',['owner']):'owner';
             $active=$requestedActive ?? (bool)$current['active'];
             if($id===$ownerId && (!$active || $role!=='owner')) throw new HttpException(409,'You cannot disable or demote your own owner account','SELF_OWNER_CHANGE');
             if((string)$current['role']==='owner' && (bool)$current['active'] && (!$active || $role!=='owner')) {
-                $count=0; foreach($all as $row) if($row['role']==='owner' && (bool)$row['active']) $count++;
+                $count=0; foreach($all as $row) if($row['role']==='owner' && $row['retired_at']===null && (bool)$row['active']) $count++;
                 if($count<=1) throw new HttpException(409,'At least one active owner is required','LAST_OWNER');
             }
             $passwordHash=null;
@@ -82,7 +94,7 @@ final class AdminUserService
                 $sql.=' WHERE id=?';$params[]=$id;
                 $pdo->prepare($sql)->execute($params);
             } catch(PDOException $e){if(MySqlError::isDuplicateKey($e,'uq_admin_users_username'))throw new HttpException(409,'Username already exists','USERNAME_EXISTS');throw $e;}
-            return ['id'=>$id,'username'=>$username,'role'=>$role,'active'=>$active,'is_active'=>$active];
+            return ['id'=>$id,'username'=>$username,'role'=>$role,'active'=>$active,'is_active'=>$active,'retired'=>false,'retired_at'=>null];
         });
     }
 
@@ -90,9 +102,13 @@ final class AdminUserService
     {
         if($id===$ownerId) throw new HttpException(409,'You cannot disable your own account','SELF_DELETE');
         $this->app->database()->transaction(function(PDO $pdo) use($id): void {
-            $rows=$pdo->query('SELECT id,role,active FROM admin_users ORDER BY id FOR UPDATE')->fetchAll();$target=null;$owners=0;
-            foreach($rows as $row){if((int)$row['id']===$id)$target=$row;if($row['role']==='owner'&&(bool)$row['active'])$owners++;}
+            $rows=$pdo->query('SELECT id,role,active,retired_at FROM admin_users ORDER BY id FOR UPDATE')->fetchAll();$target=null;$owners=0;
+            foreach($rows as $row){if((int)$row['id']===$id)$target=$row;if($row['role']==='owner'&&$row['retired_at']===null&&(bool)$row['active'])$owners++;}
             if(!$target)throw new HttpException(404,'Admin user not found','ADMIN_NOT_FOUND');
+            if ($target['role'] !== 'owner' || $target['retired_at'] !== null) {
+                $pdo->prepare("UPDATE admin_users SET role='owner',active=0,retired_at=COALESCE(retired_at,UTC_TIMESTAMP(6)),auth_version=auth_version+1,updated_at=UTC_TIMESTAMP() WHERE id=?")->execute([$id]);
+                return;
+            }
             if($target['role']==='owner'&&(bool)$target['active']&&$owners<=1)throw new HttpException(409,'At least one active owner is required','LAST_OWNER');
             $pdo->prepare('UPDATE admin_users SET active=0,auth_version=auth_version+1,updated_at=UTC_TIMESTAMP() WHERE id=?')->execute([$id]);
         });

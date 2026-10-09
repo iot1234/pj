@@ -23,6 +23,7 @@
 /coverage/
 
 # Editor and operating-system files
+/.codex-tmp/
 /.idea/
 /.vscode/
 /.railway/

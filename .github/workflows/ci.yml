@@ -86,6 +86,8 @@ jobs:
           docker run --rm --entrypoint bash dormitory-ci:${{ github.sha }} \
             -n scripts/ci-booking-edge-tests.sh
           docker run --rm --entrypoint bash dormitory-ci:${{ github.sha }} \
+            -n scripts/ci-daily-mysql-tests.sh
+          docker run --rm --entrypoint bash dormitory-ci:${{ github.sha }} \
             -n database/03-runtime-grants.sh
           docker run --rm --entrypoint sh dormitory-ci:${{ github.sha }} \
             -n scripts/start-web.sh
@@ -121,6 +123,10 @@ jobs:
             dormitory-ci:${{ github.sha }} tests/run.php
           docker run --rm --entrypoint php dormitory-ci:${{ github.sha }} \
             tests/line_bot.php
+          docker run --rm --entrypoint php dormitory-ci:${{ github.sha }} \
+            tests/phone_config_readiness.php
+          docker run --rm --entrypoint php dormitory-ci:${{ github.sha }} \
+            tests/daily_booking_unit.php
 
       - name: Run worker, billing CLI, and install bundle contract tests
         run: |
@@ -145,7 +151,7 @@ jobs:
           docker compose --env-file /dev/null config --format json |
             docker run --rm --interactive --entrypoint php dormitory-ci:${{ github.sha }} \
               tests/compose_environment.php --defaults
-          export BOOKING_HOLD_SECONDS=1800 RESIDENT_ACTIVATION_TTL_SECONDS=3600 WORKER_INSTANCE_ID=compose-ci-worker
+          export BOOKING_HOLD_SECONDS=1800 RESIDENT_ACTIVATION_TTL_SECONDS=retired-invalid-setting WORKER_INSTANCE_ID=compose-ci-worker
           docker compose --env-file /dev/null config --format json |
             docker run --rm --interactive --entrypoint php dormitory-ci:${{ github.sha }} \
               tests/compose_environment.php
@@ -254,7 +260,7 @@ jobs:
                   WHERE constraint_schema='dormitory'
                     AND constraint_type='CHECK')
               )")"
-          [ "$install_shape" = '22|26|119' ]
+          [ "$install_shape" = '34|63|155' ]
           set +e
           docker exec --interactive \
             --env MYSQL_PWD="$CI_DBA_PASSWORD" \
@@ -270,6 +276,7 @@ jobs:
             /tmp/ci-install-reimport.log
 
           source scripts/ci-line-mysql-tests.sh
+          source scripts/ci-daily-mysql-tests.sh
 
           docker run --detach \
             --name "$web" \

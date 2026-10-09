@@ -1,10 +1,20 @@
 # Implementation contract
 
-This directory is a clean PHP 8.2 / MySQL 8 rewrite of only FR-01 through
-FR-16 from the repository-level `1.txt`. The old Node/PostgreSQL application
+This directory started as a clean PHP 8.2 / MySQL 8 rewrite of FR-01 through
+FR-16 from the repository-level `1.txt`, and now includes dedicated daily stays.
+The old Node/PostgreSQL application
 is reference material only and is not modified.
 
 ## Runtime conventions
+
+- Daily rooms use a separate date-based booking/payment ledger. See
+  [daily booking](docs/DAILY_BOOKING.md). Additive migrations 018/019/020 are required
+  with this source, including global payment evidence and transfer allocation.
+- Daily bookings lock the physical room first and allocate every overnight date
+  under a generated unique room/night key. Checkout is exclusive. Monthly and
+  daily rooms are explicitly separated; a room cannot change mode while in use.
+- Daily guest capabilities authorize only their booking and are sent in a header,
+  never as a query parameter or phone-based resident session.
 
 - Front controller: `public/index.php`; local router: `router.php`.
 - Autoload namespace: `Dormitory\\` mapped to `src/`.
@@ -14,19 +24,22 @@ is reference material only and is not modified.
   login/booking pages use a two-hour signed stateless guest token. The sole
   server-to-server exception is the LINE webhook, which authenticates the raw
   body with `X-Line-Signature` and the encrypted Channel secret.
-- Admin roles are `owner` and `admin`; only `owner` manages admin accounts.
-- Resident authentication requires a normalized Thai phone number belonging to
-  exactly one active resident/occupancy plus either the resident password or an
-  unexpired single-use activation code. First activation atomically consumes
-  the code, installs an Argon2id password hash, increments `auth_version`, and
-  rotates the session. Reissuing access revokes the previous password and
-  sessions. There is no resident trusted-device bypass. Resident sessions
-  expire after 15 minutes idle or one hour absolute. Room and occupancy are
-  never resident-editable; profile name and email remain resident-editable.
-- Admin authentication remains username plus password and is independent from
-  resident credentials.
-- Room status is derived: active occupancy = `occupied`; otherwise active
-  pending/confirmed booking = `reserved`; otherwise `available`.
+- Login roles are owner and resident. All management routes require an active,
+  non-retired owner. Former admin accounts are permanently disabled by migration
+  017 without granting owner access. Legacy admin URLs, table and audit actor
+  names remain compatibility identifiers.
+- Resident login uses only a normalized phone belonging to exactly one active
+  resident and occupancy. It reports auth_method=phone, assurance=low and
+  phone_verified=false. No password, PIN or activation code is requested.
+  Resident sessions expire after 15 minutes idle or one hour absolute. Name and
+  email are editable; identity/room changes belong to the owner and revoke sessions.
+- Owners authenticate with username/password, independently from residents.
+- Room status is derived: active occupancy/daily check-in = `occupied`;
+  pending/confirmed bookings or retained paid nights = `reserved` for their
+  current stay date. Daily housekeeping adds `cleaning` until the owner marks
+  the room ready. Future reservations and blocks also prevent deleting a room.
+- Catalogue edits require the current HMAC room version at the HTTP boundary;
+  housekeeping updates do not invalidate unrelated catalogue drafts.
 - Periods use `YYYY-MM` at the API boundary and the first day of the month in
   MySQL `DATE` columns.
 - Production traffic terminates HTTPS at a reverse proxy. The Compose HTTP
@@ -40,13 +53,17 @@ is reference material only and is not modified.
 `bill_items`, `payments`, `notification_outbox`,
 `notification_worker_heartbeats`, `audit_logs`, `rate_limits`,
 `line_official_accounts`, `line_room_policies`, `line_room_bindings`,
-`line_admin_recipients`, and `line_notice_outbox` (21 tables).
+`line_admin_recipients`, `line_notice_outbox`, and `transfer_instructions`, plus
+`daily_bookings`, `daily_booking_nights`, `daily_room_blocks`,
+`daily_booking_actions`, `daily_housekeeping_actions`, `payment_evidence_registry`,
+`payment_amount_registry`, `daily_transfer_instructions`, `daily_payments`,
+`daily_payment_actions`, `daily_refunds`, and `daily_deposit_settlements` (34 tables).
 
 ## Page routes
 
 - `/` public available rooms and booking form
 - `/resident/login`, `/resident` resident portal
-- `/admin/login`, `/admin` admin console
+- `/admin/login`, `/admin` owner console
 
 ## JSON API contract
 
@@ -60,9 +77,7 @@ is reference material only and is not modified.
 - `POST /api/public/bookings` `{room_id, full_name, phone, idempotency_key}`
 - `POST /api/auth/admin/login` `{username,password}`
 - `POST /api/auth/admin/logout`
-- `POST /api/auth/resident/login` `{phone,credential}` with the current password;
-  first activation uses `{phone,credential,new_password}`, where `credential`
-  contains the one-time activation code.
+- `POST /api/auth/resident/login` `{phone}` for the active resident and room.
 - `POST /api/auth/resident/logout`
 - `GET /api/auth/me`
 
@@ -79,17 +94,23 @@ is reference material only and is not modified.
   current LINE ID; legacy IDs without this proof are treated as unverified.
 - `GET /api/resident/bills`
 - `GET /api/resident/bills/{id}`
-- `GET /api/resident/bills/{id}/promptpay`
+- `POST /api/resident/bills/{id}/promptpay` reserves the unique transfer amount;
+  `GET /api/resident/bills/{id}/promptpay` reads an existing reserved instruction.
 - `POST /api/resident/bills/{id}/slip` multipart field `slip`
 
-### Admin
+### Owner
 
-- `GET|POST /api/admin/users`; `PUT|DELETE /api/admin/users/{id}`
+- `GET|POST /api/admin/users`; `PUT|DELETE /api/admin/users/{id}` manage only
+  owner accounts. Retired historical accounts are read-only and cannot reactivate.
+- `POST /api/admin/residents/{id}/access/reissue` is a compatibility revocation
+  endpoint: it increments `auth_version`, clears legacy credentials and revokes
+  existing resident sessions/LINE bindings. It returns phone access status and
+  `sessions_revoked=true`, with no activation code, password or expiry.
 - `GET|POST /api/admin/rooms`; `PUT|DELETE /api/admin/rooms/{id}`
 - `GET /api/admin/residents` returns current residents, occupancy IDs, and
   their rooms.
 - `PUT /api/admin/residents/{id}` `{full_name,phone,email}` lets an
-  Admin perform an identity-verified correction; changing the login phone
+  owner perform an identity-verified correction; changing the login phone
   increments `auth_version` and revokes existing resident sessions.
 - `POST /api/admin/residents/{id}/move-out` `{move_out_date}` ends the active
   occupancy only after the closing-month bill exists, is paid, and no pending
@@ -99,7 +120,7 @@ is reference material only and is not modified.
 - `POST /api/admin/bookings/{id}/confirm`
 - `POST /api/admin/bookings/{id}/cancel`
 - `POST /api/admin/bookings/{id}/move-in`
-  `{email,move_in_date,reuse_resident_id?}`; LINE is linked later by the
+  `{email?,move_in_date,opening_water_reading,opening_electric_reading,reuse_resident_id?}`; LINE is linked later by the
   resident through the verified flow above.
 - `GET /api/admin/meters?period=YYYY-MM`
 - `POST /api/admin/meters`
@@ -121,7 +142,7 @@ is reference material only and is not modified.
 - `POST /api/admin/payments/{id}/close` `{reason}` closes an expired pending
   verification without marking its bill paid. There is deliberately no manual
   paid/approve endpoint.
-- `GET /api/admin/settings` returns billing settings plus admin-safe integration
+- `GET /api/admin/settings` returns billing settings plus masked integration
   settings/status metadata.
 - `PUT /api/admin/settings` updates billing rates/due days.
 - `PUT /api/admin/settings/integrations` is owner-only and updates PromptPay,
@@ -134,7 +155,10 @@ is reference material only and is not modified.
 Room objects expose `id`, `room_code`, `floor`, `room_type`, `monthly_rent`,
 `description`, `amenities` (array), `image_key`, `image_url`, and derived
 `status`. Bill objects expose immutable meter/rate/amount snapshots and never
-accept a client-provided total. PromptPay amount is always read from the bill.
+accept a client-provided total. PromptPay uses the server-reserved transfer amount:
+the bill snapshot plus a 0.01–0.99 baht adjustment, stable across repeated QR
+requests. QR readiness requires PromptPay and the transfer-allocation schema;
+slip verification readiness is independent.
 
 `integration_settings` is a singleton (`id=1`). Non-secret operational values
 are returned normally, but the LINE Channel access token/Channel secret and
@@ -151,13 +175,20 @@ an application restart.
   for booking, owner management, move-in, bill generation, and payment finalization.
 - Lazy session start, session rotation, strict cookies, session/stateless guest
   CSRF plus same-origin checks, DB-backed IP/account rate limits, generic login
-  errors, admin password hashing, and `auth_version` session revocation.
+  errors, owner password hashing, and `auth_version` session revocation.
   Resident sessions have fixed 15-minute idle and one-hour absolute limits and
-  never use the trusted-device bypass. A phone number alone cannot authenticate
-  a resident; the password or a valid activation code is also required.
+  never use the trusted-device bypass. Phone login matches exactly one active
+  resident/occupancy and a non-deleted room, and every request rechecks the
+  phone, room, occupancy and `auth_version`. It requires no password or activation
+  code and reports low assurance; knowing the phone number permits account access.
+  Legacy activation/password columns remain for database compatibility. Check-in,
+  move-in, historical-resident reuse and reissue do not issue or return credentials.
+  Reissue revokes sessions through `auth_version` and retires existing LINE
+  bindings. `RESIDENT_ACTIVATION_TTL_SECONDS` is ignored and no longer forwarded
+  by Compose or validated by readiness; it does not control resident sessions.
 - Slip files are JPEG/PNG/WebP at most 4 MiB, validated by magic bytes and
   dimensions, stored below `storage/private`, and protected by an APP_KEY-based
-  HMAC. Admin evidence viewing revalidates the canonical path, MIME, size,
+  HMAC. Owner evidence viewing revalidates the canonical path, MIME, size,
   dimensions, and HMAC and writes a strict audit event. External verification
   must match amount to one satang, receiver, and a globally unique transaction
   reference before a bill becomes paid. Missing receiver configuration or a
@@ -178,7 +209,8 @@ an application restart.
 
 Fresh databases import `database/schema.sql` followed by
 `database/defaults.sql`; defaults creates the billing and integration singleton
-rows without credentials, rooms, residents, or admin accounts.
+rows without credentials, rooms, residents, or owner accounts. Fresh schema and
+`database/install.sql` include migrations through 019.
 `database/demo.sql` is optional local-development data and is never imported by
 the production bootstrap.
 
@@ -188,12 +220,12 @@ schema must use transitional commit `a52bc33` for the rolling boundary, wait
 until every replica is healthy, run `006_remove_resident_pin.sql`, verify that
 the column is absent, stop notification workers and run migration 007, then run
 migration 008. Migration 009 requires a maintenance window with public traffic,
-web/worker writes, and scheduled billing stopped; deploy the matching current
-source, reissue credentials for legacy active residents, and pass the strict
-data gate before reopening traffic or restarting worker/cron. Run migrations 010,
-011, and 012 after 009 and before deploying source that issues self-service LINE
-bind codes, exposes the configured LINE Official Account add-friend link, and
-persists immutable move-in replay digests.
+web/worker writes, and scheduled billing stopped. Keep them stopped through
+migration 017, then deploy the matching source, verify resident phone/active-room
+links and pass strict runtime and schema gates before reopening traffic or
+restarting worker/cron. Passwords and activation codes are not required for
+resident phone access. See [the upgrade sequence](docs/SQL_SETUP.md) and
+[owner-only account migration](docs/OWNER_ONLY_MIGRATION.md).
 
 Existing installations must be backed up and upgraded by a schema-owning
 account. Run `database/migrations/001_integration_settings.sql` if the
@@ -218,10 +250,11 @@ destructive schema cleanup, so back up and test restore first; an old
 PIN-dependent application version cannot be rolled back after the column is
 removed. With notification workers stopped, migration 007 adds claim-token
 lease fencing and hashed worker heartbeat storage. Migration 008 adds resident
-activation/password credentials. Migration 009 must run after 008 with all
+legacy activation/password columns, still retained for compatibility but no
+longer required by resident login. Migration 009 must run after 008 with all
 writes stopped; it binds readings to occupancies, installs two meter guards
 and two booking/occupancy insert guards, and hardens bill creation. Deploy the current source only after migrations
-006–015 succeed. Migration 010 is rerunnable for a compatible schema and adds
+006–017 succeed. Migration 010 is rerunnable for a compatible schema and adds
 `line_link_codes`, two unique guards, two lookup indexes, a resident foreign key,
 and four CHECK constraints. Migration 011 adds the public LINE Basic ID, while
 migration 012 adds the nullable move-in request digest, its named CHECK, and the
@@ -229,9 +262,18 @@ matching immutable-evidence trigger body. Migration 013 pins trigger-variable
 collations. Migration 014 adds the multi-OA LINE platform. Migration 015 allows
 both unknown legacy opening readings to remain pending only where no meter or
 bill history exists, and permits an audited one-time completion with real
-readings. Keep web, worker and scheduled writes stopped through 015. Readiness
-must validate the enforced `chk_occupancies_opening_readings_v2` definition;
-schema audit must report 21 tables, 23 triggers and at least 116 CHECK constraints.
+readings. Migration 016 adds immutable unique transfer instructions. Migration
+017 permits only owner account roles and permanently retires former admins,
+preserving their account IDs, hashes, foreign keys and audit history. It also
+revokes staff LINE invitations and invitations created by retired admins, and
+fails their pending/processing notices without changing sent evidence. Existing
+admins are never granted active ownership; an active original owner must exist
+before their retirement. Keep web, worker and scheduled writes stopped through
+017. Readiness must validate the enforced opening-reading and owner/retirement
+guards; the original migration-017 schema contained 22 tables, 27 triggers and 121 CHECK
+constraints. See [migration 017](docs/OWNER_ONLY_MIGRATION.md) for operator steps.
+The current source also requires migrations 018/019/020; its exact deployment shape
+is generated from canonical SQL and checked by the installer and readiness gates.
 The application runtime account has only `SELECT`, `INSERT`, and `UPDATE` on the
 application database and must not run any migration. After upgrade, an owner
 configures integrations in Admin -> Settings.

@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-$adminName = (string) ($user['username'] ?? $user['name'] ?? 'ผู้ดูแลระบบ');
-$adminRole = (string) ($user['role'] ?? 'admin');
-$adminInitial = strtoupper(substr($adminName, 0, 1));
+$adminName = (string) ($user['username'] ?? $user['name'] ?? 'เจ้าของระบบ');
+$adminRole = (string) ($user['role'] ?? '');
+$adminInitial = preg_match('/^./us', $adminName, $initialMatch) === 1 ? $initialMatch[0] : 'O';
 $canManageIntegrations = $adminRole === 'owner';
 $integrationDisabled = ' disabled';
 $businessToday = new DateTimeImmutable('today', new DateTimeZone((string) $appTimezone));
@@ -13,7 +13,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
 ?>
 <div class="admin-shell" data-admin-app>
     <aside class="admin-sidebar" id="admin-sidebar" aria-label="เมนูจัดการ">
-        <a class="admin-brand" href="/admin" aria-label="DormFlow หน้าหลักผู้ดูแล">
+        <a class="admin-brand" href="/admin" aria-label="DormFlow หน้าหลักเจ้าของระบบ">
             <span class="brand-mark" aria-hidden="true">D</span>
             <span><strong>DormFlow</strong><small>ระบบจัดการหอพัก</small></span>
         </a>
@@ -31,6 +31,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
             <button class="admin-nav-item" type="button" data-admin-nav="bookings">
                 <span>การจอง</span><span class="nav-count" id="booking-nav-count" hidden>0</span>
             </button>
+            <button class="admin-nav-item" type="button" data-admin-nav="daily"><span>จองรายวัน</span></button>
             <button class="admin-nav-item" type="button" data-admin-nav="residents">
                 <span>ผู้พักอาศัย</span>
             </button>
@@ -51,7 +52,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
             <button class="admin-nav-item" type="button" data-admin-nav="line-bindings"><span>การผูก LINE ผู้พัก</span></button>
             <p class="admin-nav-label">ระบบ</p>
             <button class="admin-nav-item owner-only" type="button" data-admin-nav="users" <?= $adminRole === 'owner' ? '' : 'hidden' ?>>
-                <span>ผู้ดูแลระบบ</span>
+                <span>เจ้าของระบบ</span>
             </button>
             <button class="admin-nav-item" type="button" data-admin-nav="settings">
                 <span>ตั้งค่า</span>
@@ -60,7 +61,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
 
         <div class="admin-sidebar-profile">
             <span class="avatar" aria-hidden="true"><?= e($adminInitial) ?></span>
-            <span><strong><?= e($adminName) ?></strong><small><?= $adminRole === 'owner' ? 'เจ้าของระบบ' : 'ผู้ดูแลระบบ' ?></small></span>
+            <span><strong><?= e($adminName) ?></strong><small>เจ้าของระบบ</small></span>
         </div>
     </aside>
 
@@ -134,6 +135,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                 </div>
             </section>
 
+            <?php require __DIR__ . '/daily.php'; ?>
             <section class="admin-view" data-admin-view="rooms" aria-labelledby="rooms-title" hidden>
                 <div class="section-heading">
                     <div><p class="eyebrow">สถานะห้องล่าสุด</p><h2 id="rooms-title">ห้องพักทั้งหมด</h2></div>
@@ -150,7 +152,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                     <label><span class="sr-only">สถานะห้อง</span><select id="admin-room-status"><option value="">ทุกสถานะ</option><option value="available">ว่าง</option><option value="reserved">รอเข้าพัก</option><option value="occupied">มีผู้พัก</option></select></label>
                 </div>
                 <div class="panel table-panel">
-                    <div class="table-scroll" role="region" aria-label="ตารางห้องพัก" tabindex="0"><table><thead><tr><th>ห้อง</th><th>ชั้น</th><th>ประเภท</th><th>ราคา/เดือน</th><th>สถานะ</th><th class="align-right">จัดการ</th></tr></thead><tbody id="admin-room-rows"></tbody></table></div>
+                    <div class="table-scroll" role="region" aria-label="ตารางห้องพัก" tabindex="0"><table><thead><tr><th>ห้อง</th><th>ชั้น</th><th>ประเภท</th><th>ราคา / รูปแบบ</th><th>สถานะ</th><th class="align-right">จัดการ</th></tr></thead><tbody id="admin-room-rows"></tbody></table></div>
                     <div class="table-state" id="admin-room-state" data-state="loading"><span class="spinner" aria-hidden="true"></span><p>กำลังโหลดห้องพัก…</p></div>
                 </div>
             </section>
@@ -241,16 +243,16 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
             </section>
 
             <section class="admin-view owner-only" data-admin-view="users" aria-labelledby="users-title" hidden>
-                <div class="section-heading"><div><p class="eyebrow">เฉพาะเจ้าของระบบ</p><h2 id="users-title">ผู้ดูแลระบบ</h2></div><button class="button button-primary" type="button" data-open-user-dialog>เพิ่มผู้ดูแล</button></div>
-                <div class="security-note"><strong>สิทธิ์การเข้าถึง</strong><span>เจ้าของ (Owner) จัดการบัญชีได้ ผู้ดูแล (Admin) ใช้งานโมดูลหอพักและการเงิน</span></div>
-                <div class="panel table-panel"><div class="table-scroll" role="region" aria-label="ตารางผู้ดูแลระบบ" tabindex="0"><table><thead><tr><th>ชื่อผู้ใช้</th><th>บทบาท</th><th>สถานะ</th><th>แก้ไขล่าสุด</th><th class="align-right">จัดการ</th></tr></thead><tbody id="user-rows"></tbody></table></div><div class="table-state" id="user-state" data-state="loading"><span class="spinner" aria-hidden="true"></span><p>กำลังโหลดผู้ดูแล…</p></div></div>
+                <div class="section-heading"><div><p class="eyebrow">เฉพาะเจ้าของระบบ</p><h2 id="users-title">เจ้าของระบบ</h2></div><button class="button button-primary" type="button" data-open-user-dialog>เพิ่มเจ้าของระบบ</button></div>
+                <div class="security-note"><strong>สิทธิ์การเข้าถึง</strong><span>ระบบมีเฉพาะเจ้าของระบบและผู้ใช้งาน เจ้าของระบบจัดการหอพัก การเงิน และบัญชีเจ้าของได้ บัญชีแอดมินเดิมเข้าใช้งานไม่ได้และปิดใช้งานได้จากรายการนี้</span></div>
+                <div class="panel table-panel"><div class="table-scroll" role="region" aria-label="ตารางเจ้าของระบบ" tabindex="0"><table><thead><tr><th>ชื่อผู้ใช้</th><th>บทบาท</th><th>สถานะ</th><th>แก้ไขล่าสุด</th><th class="align-right">จัดการ</th></tr></thead><tbody id="user-rows"></tbody></table></div><div class="table-state" id="user-state" data-state="loading"><span class="spinner" aria-hidden="true"></span><p>กำลังโหลดเจ้าของระบบ…</p></div></div>
             </section>
 
             <section class="admin-view" data-admin-view="line-oas" aria-labelledby="line-oas-title" hidden>
-                <div class="section-heading"><div><p class="eyebrow">การสื่อสารของหอพัก</p><h2 id="line-oas-title">บัญชี LINE Official Account</h2><p>ตั้งค่าบอทหลักของหอพัก แล้วเพิ่มบัญชีผู้พักหรือผู้ดูแลเป็นผู้รับแจ้งเตือนได้</p></div><div class="form-actions"><button class="button button-secondary" type="button" data-refresh="line-oas">รีเฟรช</button><button class="button button-primary" type="button" id="line-oa-configure">ตั้งค่า LINE Bot</button></div></div>
+                <div class="section-heading"><div><p class="eyebrow">การสื่อสารของหอพัก</p><h2 id="line-oas-title">บัญชี LINE Official Account</h2><p>ตั้งค่าบอทหลักของหอพัก แล้วเพิ่มบัญชีผู้พักหรือเจ้าของระบบเป็นผู้รับแจ้งเตือนได้</p></div><div class="form-actions"><button class="button button-secondary" type="button" data-refresh="line-oas">รีเฟรช</button><button class="button button-primary" type="button" id="line-oa-configure">ตั้งค่า LINE Bot</button></div></div>
                 <p class="form-error" id="line-oas-error" role="alert" hidden></p>
                 <div id="line-oa-list" class="line-platform-grid" aria-live="polite"></div>
-                <div class="section-heading"><div><h3>ผู้รับแจ้งเตือนฝ่ายจัดการ</h3><p>สร้างรหัสให้เจ้าของหรือผู้ดูแล แล้วให้เจ้าตัวส่งรหัสจาก LINE ของตนเอง จึงจะเริ่มรับแจ้งเตือน</p></div><button class="button button-primary" type="button" id="line-recipient-create">เพิ่มผู้รับแจ้งเตือน</button></div>
+                <div class="section-heading"><div><h3>ผู้รับแจ้งเตือนฝ่ายจัดการ</h3><p>สร้างรหัสให้เจ้าของระบบ แล้วให้เจ้าตัวส่งรหัสจาก LINE ของตนเอง จึงจะเริ่มรับแจ้งเตือน</p></div><button class="button button-primary" type="button" id="line-recipient-create">เพิ่มผู้รับแจ้งเตือน</button></div>
                 <div id="line-recipient-list" class="line-platform-grid" aria-live="polite"></div>
             </section>
             <section class="admin-view" data-admin-view="line-bindings" aria-labelledby="line-bindings-title" hidden>
@@ -277,7 +279,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
 
                             <fieldset class="integration-fieldset">
                                 <legend> LINE และคิวแจ้งเตือน</legend>
-                                <p>จัดการ OA, Token, Webhook และผู้รับแจ้งเตือนได้ที่หน้า LINE สำหรับเจ้าของและผู้ดูแลทุกคน</p>
+                                <p>จัดการ OA, Token, Webhook และผู้รับแจ้งเตือนได้ที่หน้า LINE สำหรับเจ้าของระบบทุกคน</p>
                                 <button class="button button-secondary" type="button" data-admin-nav="line-oas">เปิดบัญชี LINE OA</button>
                                 <p class="field-hint">ระบบใช้ค่าการส่งซ้ำและขนาดคิวที่บันทึกไว้ให้อัตโนมัติ ไม่ต้องตั้งค่าเพิ่ม</p>
                             </fieldset>
@@ -303,14 +305,14 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                         <?php if ($canManageIntegrations): ?>
                             <div class="form-actions"><button class="button button-primary" type="submit" data-integration-save disabled>บันทึกการเชื่อมต่อ</button></div>
                         <?php else: ?>
-                            <p class="muted">บัญชีผู้ดูแลทั่วไปดูสถานะได้ แต่มีเฉพาะเจ้าของระบบที่เปลี่ยนค่านี้ได้</p>
+                            <p class="muted">ต้องใช้บัญชีเจ้าของระบบที่ใช้งานได้เพื่อเปลี่ยนค่าการเชื่อมต่อ</p>
                         <?php endif; ?>
                     </form>
                 </div>
             </section>
         </main>
 
-        <nav class="mobile-bottom-nav admin-bottom-nav" aria-label="เมนูผู้ดูแลบนมือถือ">
+        <nav class="mobile-bottom-nav admin-bottom-nav" aria-label="เมนูเจ้าของระบบบนมือถือ">
             <button class="is-active" type="button" data-admin-nav="overview">ภาพรวม</button>
             <button type="button" data-admin-nav="bookings">การจอง<span class="nav-count nav-count-dot" id="booking-bottom-count" hidden>0</span></button>
             <button type="button" data-admin-nav="payments">ชำระเงิน<span class="nav-count nav-count-dot" id="payment-bottom-count" hidden>0</span></button>
@@ -332,8 +334,9 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
 <dialog class="modal" id="room-dialog" aria-labelledby="room-dialog-title">
     <form class="modal-card modal-card-wide" id="room-form" data-guard-draft>
         <input type="hidden" name="id">
+        <input type="hidden" name="expected_version">
         <div class="modal-header"><div><p class="eyebrow">จัดการข้อมูลหลัก</p><h2 id="room-dialog-title">เพิ่มห้องพัก</h2></div><button class="text-control" type="button" data-close-dialog aria-label="ปิด">ปิด</button></div>
-        <div class="form-grid form-grid-two"><label class="field"><span>รหัสห้อง</span><input name="room_code" type="text" maxlength="30" required autocomplete="off"></label><label class="field"><span>ชั้น</span><input name="floor" type="number" min="1" max="200" step="1" required></label><label class="field"><span>ประเภทห้อง</span><input name="room_type" type="text" maxlength="50" required></label><label class="field"><span>ค่าเช่ารายเดือน</span><input name="monthly_rent" type="number" min="0.01" step="0.01" required></label></div><details class="optional-fields"><summary>รูปห้องและรายละเอียดเพิ่มเติม</summary><div class="form-grid form-grid-two"><label class="field form-span-two"><span>รูปห้อง</span><select name="image_key" required><option value="room-standard.jpg">ห้องมาตรฐาน</option><option value="room-deluxe.jpg">ห้องดีลักซ์</option><option value="room-suite.jpg">ห้องสวีท</option><option value="room-studio.jpg">ห้องสตูดิโอ</option></select></label><label class="field form-span-two"><span>สิ่งอำนวยความสะดวก</span><input name="amenities" type="text" maxlength="500" placeholder="คั่นด้วยจุลภาค เช่น แอร์, ตู้เย็น, เตียง"></label><label class="field form-span-two"><span>รายละเอียด</span><textarea name="description" rows="3" maxlength="1000"></textarea></label></div></details>
+        <div class="form-grid form-grid-two"><label class="field"><span>รหัสห้อง</span><input name="room_code" type="text" maxlength="30" required autocomplete="off"></label><label class="field"><span>ชั้น</span><input name="floor" type="number" min="1" max="200" step="1" required></label><label class="field"><span>ประเภทห้อง</span><input name="room_type" type="text" maxlength="50" required></label><label class="field"><span>รูปแบบการให้เช่า</span><select name="rental_mode"><option value="monthly">รายเดือน</option><option value="daily">รายวัน</option></select><small>แต่ละห้องใช้รูปแบบเดียว เปลี่ยนได้เมื่อไม่มีรายการที่ผูกพัน</small></label><label class="field" data-rental-fields="monthly"><span>ค่าเช่ารายเดือน</span><input name="monthly_rent" type="number" min="0.01" step="0.01" required></label><label class="field" data-rental-fields="daily" hidden><span>ราคาต่อคืน (รวมน้ำและไฟ)</span><input name="daily_rate" type="number" min="0.01" step="0.01" disabled></label><label class="field" data-rental-fields="daily" hidden><span>ผู้พักสูงสุด (คน)</span><input name="max_guests" type="number" min="1" max="20" step="1" value="2" disabled></label><label class="field" data-rental-fields="daily" hidden><span>ค่าประกันต่อการพัก (บาท)</span><input name="daily_deposit" type="number" min="0" step="0.01" value="0.00" disabled></label></div><details class="optional-fields"><summary>รูปห้องและรายละเอียดเพิ่มเติม</summary><div class="form-grid form-grid-two"><label class="field form-span-two"><span>รูปห้อง</span><select name="image_key" required><option value="room-standard.jpg">ห้องมาตรฐาน</option><option value="room-deluxe.jpg">ห้องดีลักซ์</option><option value="room-suite.jpg">ห้องสวีท</option><option value="room-studio.jpg">ห้องสตูดิโอ</option></select></label><label class="field form-span-two"><span>สิ่งอำนวยความสะดวก</span><input name="amenities" type="text" maxlength="500" placeholder="คั่นด้วยจุลภาค เช่น แอร์, ตู้เย็น, เตียง"></label><label class="field form-span-two"><span>รายละเอียด</span><textarea name="description" rows="3" maxlength="1000"></textarea></label></div></details>
         <p class="form-error" id="room-form-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-primary" type="submit">บันทึกห้อง</button></div>
     </form>
 </dialog>
@@ -434,13 +437,13 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
             <div class="form-actions"><button class="button button-secondary" type="button" id="line-binding-refresh">ตรวจสถานะ</button></div>
             <h3>รหัสรอใช้</h3><p class="muted">ให้ผู้พักเปิด LINE ของตนเอง แล้วกด “ส่ง” ในแชต OA ที่ระบุ ลิงก์และ QR เตรียมข้อความให้เท่านั้น</p><div id="line-pending-list" class="line-platform-grid"></div>
             <h3>บัญชีที่ผูกแล้ว</h3><div id="line-account-list" class="line-platform-grid"></div>
-            <div class="line-platform-policy"><label class="field"><span>เหตุผลระงับการผูก</span><textarea id="line-block-reason" maxlength="500" rows="2" placeholder="ระบุเหตุผลเพื่อให้ผู้ดูแลคนอื่นเข้าใจ"></textarea></label><div class="form-actions"><button class="button button-danger" type="button" id="line-binding-block">ระงับและยกเลิกการผูกทั้งหมด</button><button class="button button-secondary" type="button" id="line-binding-unblock" hidden>ปลดการระงับ</button><button class="button button-danger" type="button" id="line-binding-revoke-all">ยกเลิกทุกบัญชีและทุกรหัส</button></div></div>
+            <div class="line-platform-policy"><label class="field"><span>เหตุผลระงับการผูก</span><textarea id="line-block-reason" maxlength="500" rows="2" placeholder="ระบุเหตุผลเพื่อให้เจ้าของระบบคนอื่นเข้าใจ"></textarea></label><div class="form-actions"><button class="button button-danger" type="button" id="line-binding-block">ระงับและยกเลิกการผูกทั้งหมด</button><button class="button button-secondary" type="button" id="line-binding-unblock" hidden>ปลดการระงับ</button><button class="button button-danger" type="button" id="line-binding-revoke-all">ยกเลิกทุกบัญชีและทุกรหัส</button></div></div>
             <details><summary>ประวัติการผูก</summary><div id="line-binding-history" class="line-platform-history"></div></details>
         </div>
         <form id="line-recipient-form" class="stack-form" hidden>
             <div class="field"><span>LINE ของหอพัก · เลือกให้อัตโนมัติ</span><output class="auto-value" id="line-recipient-bot"></output></div>
             <label class="field"><span>ชื่อกำกับผู้รับ</span><input name="label" maxlength="120" required></label>
-            <label class="check-field" id="line-recipient-owner-field"><input type="checkbox" name="is_owner"><span>ผู้รับหลักของเจ้าของหอ (OWNER)</span></label>
+            <p class="field-hint">เพิ่มบัญชี LINE ของเจ้าของระบบ รหัส OWNER ใช้ได้ 5 นาที เจ้าของระบบต้องส่งรหัสด้วยตนเอง</p>
             <label class="check-field" id="line-recipient-enabled-field"><input type="checkbox" name="enabled" checked><span>เปิดรับแจ้งเตือน</span></label>
             <fieldset id="line-recipient-mutes"><legend>ปิดเสียงตามประเภท</legend><div class="line-platform-mutes"><label><input type="checkbox" name="muted_categories" value="booking"> การจอง</label><label><input type="checkbox" name="muted_categories" value="payment"> ชำระเงิน</label><label><input type="checkbox" name="muted_categories" value="billing"> บิล</label><label><input type="checkbox" name="muted_categories" value="tenancy"> การเข้าพัก</label><label><input type="checkbox" name="muted_categories" value="maintenance"> การซ่อมบำรุง</label><label><input type="checkbox" name="muted_categories" value="security"> ความปลอดภัย</label><label><input type="checkbox" name="muted_categories" value="system"> ระบบ</label></div></fieldset>
             <p id="line-recipient-status" class="muted"></p><div id="line-recipient-code"></div>
@@ -454,7 +457,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
         <div class="modal-header"><div><p class="eyebrow">รับบิลและดูข้อมูลห้องผ่าน LINE</p><h2 id="admin-line-title">ผูก LINE ของผู้พัก</h2></div><button class="text-control" type="button" data-close-dialog aria-label="ปิด">ปิด</button></div>
         <p class="modal-lead" id="admin-line-summary"></p>
         <p id="admin-line-status" role="status">กำลังตรวจสอบสถานะ…</p>
-        <p class="field-hint" id="admin-line-readiness" hidden>ผู้ดูแลยังตั้งค่า LINE ไม่ครบ กรุณาตั้งค่า Token, Channel secret และ Basic ID ก่อนสร้างรหัส</p>
+        <p class="field-hint" id="admin-line-readiness" hidden>เจ้าของระบบยังตั้งค่า LINE ไม่ครบ กรุณาตั้งค่า Token, Channel secret และ Basic ID ก่อนสร้างรหัส</p>
         <div class="security-note"><strong>ให้ผู้พักใช้ LINE ของตนเอง</strong><span>สร้างรหัสแล้วส่งรหัสหรือ QR ให้ผู้พักโดยตรง ผู้พักต้องเปิดแชตของหอพักและกด “ส่ง” ใน LINE จึงจะผูกบัญชีสำเร็จ ลิงก์และ QR ไม่ส่งข้อความให้อัตโนมัติ</span></div>
         <a class="button button-secondary" id="admin-line-add-friend" target="_blank" rel="noopener noreferrer" hidden>เพิ่มเพื่อน LINE ของหอพัก</a>
         <div class="stack-form" id="admin-line-code-panel" hidden>
@@ -470,17 +473,6 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
     </div>
 </dialog>
 
-<dialog class="modal" id="resident-access-dialog" aria-labelledby="resident-access-title" data-require-explicit-close="true">
-    <div class="modal-card">
-        <div class="modal-header"><div><p class="eyebrow">ข้อมูลลับ แสดงเฉพาะครั้งนี้</p><h2 id="resident-access-title">รหัสเปิดใช้งานผู้พัก</h2></div></div>
-        <p class="modal-lead" id="resident-access-summary"></p>
-        <div class="security-note"><strong>ส่งให้ผู้พักโดยตรงเท่านั้น</strong><span>รหัสนี้ใช้ได้ครั้งเดียวและจะยกเลิกรหัสผ่าน/เซสชันเดิม ห้ามบันทึกในหมายเหตุ แชตกลุ่ม หรือภาพหน้าจอสาธารณะ</span></div>
-        <label class="field"><span>Activation code</span><output id="resident-access-code" aria-live="polite">•••••-•••••-•••••-•••••</output><small id="resident-access-expiry"></small></label>
-        <p class="form-error" id="resident-access-error" role="alert" hidden></p>
-        <div class="form-actions"><button class="button button-secondary" type="button" id="resident-access-copy">คัดลอกรหัส</button><button class="button button-primary" type="button" data-close-dialog data-explicit-close>ส่งมอบแล้วและปิด</button></div>
-    </div>
-</dialog>
-
 <dialog class="modal" id="resident-move-out-dialog" aria-labelledby="resident-move-out-title">
     <form class="modal-card" id="resident-move-out-form"><input type="hidden" name="resident_id"><div class="modal-header"><div><p class="eyebrow">สิ้นสุดการเข้าพัก</p><h2 id="resident-move-out-title">ย้ายผู้พักออก</h2></div><button class="text-control" type="button" data-close-dialog aria-label="ปิด">ปิด</button></div><p class="modal-lead" id="resident-move-out-summary"></p><div class="security-note"><strong>ตรวจบิลปิดรอบก่อนย้ายออก</strong><span>ต้องไม่มีบิลค้าง และต้องมีบิลของเดือนที่ย้ายออกซึ่งชำระแล้ว กรุณาจดมิเตอร์ปลายงวดและออกบิลให้ครบก่อนดำเนินการ</span></div><div class="form-grid"><label class="field"><span>วันที่ย้ายออก</span><input name="move_out_date" type="date" required></label></div><p class="form-error" id="resident-move-out-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-danger" type="submit">ยืนยันย้ายออก</button></div></form>
 </dialog>
@@ -490,7 +482,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
 </dialog>
 
 <dialog class="modal" id="user-dialog" aria-labelledby="user-dialog-title">
-    <form class="modal-card" id="user-form" data-guard-draft><input type="hidden" name="id"><div class="modal-header"><div><p class="eyebrow">เฉพาะ Owner</p><h2 id="user-dialog-title">เพิ่มผู้ดูแล</h2></div><button class="text-control" type="button" data-close-dialog aria-label="ปิด">ปิด</button></div><div class="form-grid"><label class="field"><span>ชื่อผู้ใช้</span><input name="username" type="text" minlength="3" maxlength="64" required autocomplete="username"></label><label class="field"><span>รหัสผ่าน</span><input name="password" type="password" minlength="12" maxlength="200" autocomplete="new-password"><small id="user-password-help">อย่างน้อย 12 ตัวอักษร</small></label><label class="field"><span>บทบาท</span><select name="role" required><option value="admin">ผู้ดูแล (Admin)</option><option value="owner">เจ้าของ (Owner)</option></select></label><label class="check-field"><input name="is_active" type="checkbox" value="1" checked><span>เปิดใช้งานบัญชี</span></label></div><p class="form-error" id="user-form-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-primary" type="submit">บันทึกผู้ดูแล</button></div></form>
+    <form class="modal-card" id="user-form" data-guard-draft><input type="hidden" name="id"><div class="modal-header"><div><p class="eyebrow">เฉพาะ Owner</p><h2 id="user-dialog-title">เพิ่มเจ้าของระบบ</h2></div><button class="text-control" type="button" data-close-dialog aria-label="ปิด">ปิด</button></div><div class="form-grid"><label class="field"><span>ชื่อผู้ใช้</span><input name="username" type="text" minlength="3" maxlength="64" required autocomplete="username"></label><label class="field"><span>รหัสผ่าน</span><input name="password" type="password" minlength="12" maxlength="200" autocomplete="new-password"><small id="user-password-help">อย่างน้อย 12 ตัวอักษร</small></label><input type="hidden" name="role" value="owner"><p class="field-hint">บัญชีนี้มีสิทธิ์เจ้าของระบบ จัดการหอพักและการเงินได้ทุกส่วน</p><label class="check-field"><input name="is_active" type="checkbox" value="1" checked><span>เปิดใช้งานบัญชี</span></label></div><p class="form-error" id="user-form-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-primary" type="submit">บันทึกเจ้าของระบบ</button></div></form>
 </dialog>
 
 <dialog class="modal" id="preview-dialog" aria-labelledby="preview-title">

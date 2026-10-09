@@ -117,9 +117,7 @@ $checkIn=$app->bookings()->createAdminResident($ownerId,[
     'opening_electric_reading'=>'200.00',
     'idempotency_key'=>'lifecycle-checkin-000001',
 ]);
-$assert(($checkIn['resident_access']['activation_required']??false)===true,'Activation was not issued');
-$activation=(string)($checkIn['resident_access']['activation_code']??'');
-$assert($activation!=='','Activation code is missing');
+$assert(($checkIn['resident_access']??null)===['auth_method'=>'phone','activation_required'=>false,'sessions_revoked'=>false],'New tenancy must require only the registered phone');
 $residentId=(int)$checkIn['resident_id'];
 $occupancyId=(int)$checkIn['occupancy_id'];
 
@@ -298,7 +296,7 @@ $otherAuthVersionStatement=$pdo->prepare('SELECT auth_version FROM residents WHE
 $otherAuthVersionStatement->execute([$otherResidentId]);
 $otherAuthVersion=(int)$otherAuthVersionStatement->fetchColumn();
 
-// Reissuing a resident credential must invalidate every code created by the
+// Resetting a resident session must invalidate every code created by the
 // previous session. Issuing a replacement code must also revoke its predecessor.
 $supersededCode=$app->lineBindings()->issue($otherResidentId,$otherAuthVersion);
 $preReissueCode=$app->lineBindings()->issue($otherResidentId,$otherAuthVersion);
@@ -307,10 +305,11 @@ $expectHttp(
     fn()=>$app->lineBindings()->consume((string)$supersededCode['code'],'Ucccccccccccccccccccccccccccccccc'),
     'LINE_LINK_CODE_INVALID',
 );
-$app->notifications()->withLineBindingLock(
+$accessReset=$app->notifications()->withLineBindingLock(
     $otherResidentId,
     fn():array=>$app->residents()->reissueAccess($otherResidentId),
 );
+$assert(($accessReset['resident_access']??null)===['auth_method'=>'phone','activation_required'=>false,'sessions_revoked'=>true],'Session reset issued an obsolete secret');
 $expectHttp(
     fn()=>$app->lineBindings()->consume((string)$preReissueCode['code'],'Ucccccccccccccccccccccccccccccccc'),
     'LINE_LINK_CODE_INVALID',

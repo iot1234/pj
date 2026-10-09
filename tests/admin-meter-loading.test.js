@@ -19,6 +19,7 @@ function deferred() {
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
+const meter = (extra = {}) => ({ room_id: 1, room_code: 'M01', period: '2026-08', water_previous: '90.00', water_current: '100.00', electric_previous: '180.00', electric_current: '200.00', water_locked: false, electric_locked: false, water_version: 'water-version', electric_version: 'electric-version', ...extra });
 
 function node(tagName, value = '', disabled = false) {
   const attributes = new Map();
@@ -86,7 +87,7 @@ test('pending meter reload prevents edits to the old visible values', async () =
   assert.equal(ui.rows.controls[0].value, '100.00', 'typing cannot create a draft that the response will erase');
   assert.equal(ui.rows.controls[0].disabled, true);
   assert.equal(ui.rows.controls[2].disabled, true);
-  ui.requests[0].resolve({ meters: [{ water_current: '110.00', electric_current: '200.00', electric_locked: true }] });
+  ui.requests[0].resolve({ meters: [meter({ water_current: '110.00', electric_current: '200.00', electric_locked: true })] });
   await work;
   assert.equal(ui.rows.controls[0].value, '110.00');
   assert.equal(ui.rows.controls[0].disabled, false);
@@ -98,7 +99,7 @@ test('pending meter reload prevents edits to the old visible values', async () =
 test('failed reload clears stale controls and disables writes until a successful retry', async () => {
   const ui=harness(),work=ui.load();ui.requests[0].reject(new Error('Temporary failure'));await work;
   assert.equal(ui.status.dataset.state,'error');assert.equal(ui.rows.controls.length,0);assert.equal(ui.state.meterListReady,false);
-  const retry=ui.load();ui.requests[1].resolve({meters:[{water_current:'101.00',electric_current:'201.00'}]});await retry;
+  const retry=ui.load();ui.requests[1].resolve({meters:[meter({water_current:'101.00',electric_current:'201.00'})]});await retry;
   assert.equal(ui.state.meterListReady,true);assert.equal(ui.rows.controls[0].value,'101.00');
 });
 
@@ -134,9 +135,9 @@ test('a late response from an old month never replaces the new month', async () 
   const oldWork = ui.load();
   ui.period.value = '2026-09';
   const nextWork = ui.load();
-  ui.requests[1].resolve({ meters: [{ water_current: '150.00', electric_current: '250.00' }] });
+  ui.requests[1].resolve({ meters: [meter({ period: '2026-09', water_current: '150.00', electric_current: '250.00' })] });
   await nextWork;
-  ui.requests[0].resolve({ meters: [{ water_current: '100.00', electric_current: '200.00' }] });
+  ui.requests[0].resolve({ meters: [meter()] });
   await oldWork;
   assert.equal(ui.state.meterPeriod, '2026-09');
   assert.equal(ui.rows.controls[0].value, '150.00');
@@ -182,4 +183,14 @@ test('a queued save event cannot submit the old table while its reload is pendin
   vm.runInContext(source.slice(start, end), context);
   await context.saveMeterRow({ closest() { throw new Error('old inputs must not be read'); } });
   assert.equal(messages.length, 1);
+});
+test('wrong-period, missing-version, duplicate-room and malformed meter rows remain unwritable', async () => {
+  for (const bad of [[null], [meter({ period: '2026-07' })], [meter({ water_version: '' })], [meter(), meter()], [meter({ electric_current: 'NaN' })], [meter({ rental_mode:'daily' })]]) {
+    const ui = harness(), work = ui.load(); ui.requests[0].resolve({ meters: bad }); await work;
+    assert.equal(ui.state.meterListReady, false); assert.equal(ui.rows.controls.length, 0); assert.equal(ui.status.dataset.state, 'error');
+  }
+});
+test('historical monthly readings of a converted daily room remain read-only after a successful reload', async () => {
+  const ui=harness(),work=ui.load();ui.requests[0].resolve({meters:[meter({rental_mode:'daily',water_locked:true,electric_locked:true,water_lock_reason:'ประวัติรายเดือน อ่านอย่างเดียว',electric_lock_reason:'ประวัติรายเดือน อ่านอย่างเดียว'})]});await work;
+  assert.equal(ui.state.meterListReady,true);assert.equal(ui.rows.controls[0].disabled,true);assert.equal(ui.rows.controls[1].disabled,true);ui.typeWater('999.00');assert.equal(ui.rows.controls[0].value,'100.00');
 });

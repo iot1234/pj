@@ -19,7 +19,9 @@
 -- database/migrations/012_move_in_request_hash.sql and
 -- database/migrations/013_trigger_collation_pinning.sql,
 -- database/migrations/014_line_platform.sql and
--- database/migrations/015_pending_occupancy_opening_readings.sql. Deploy the current
+-- database/migrations/015_pending_occupancy_opening_readings.sql,
+-- database/migrations/016_unique_transfer_instructions.sql and
+-- database/migrations/017_owner_only_access.sql. Deploy the current
 -- source before reopening traffic.
 
 SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -30,9 +32,10 @@ CREATE TABLE IF NOT EXISTS admin_users (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     username VARCHAR(64) NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
-    role ENUM('owner', 'admin') NOT NULL DEFAULT 'admin',
+    role ENUM('owner') NOT NULL DEFAULT 'owner',
     auth_version INT UNSIGNED NOT NULL DEFAULT 1,
     active TINYINT(1) NOT NULL DEFAULT 1,
+    retired_at DATETIME(6) NULL,
     created_by BIGINT UNSIGNED NULL,
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
@@ -46,7 +49,9 @@ CREATE TABLE IF NOT EXISTS admin_users (
     CONSTRAINT chk_admin_users_username
         CHECK (username REGEXP '^[A-Za-z0-9_.-]{3,64}$'),
     CONSTRAINT chk_admin_users_auth_version CHECK (auth_version >= 1),
-    CONSTRAINT chk_admin_users_active CHECK (active IN (0, 1))
+    CONSTRAINT chk_admin_users_active CHECK (active IN (0, 1)),
+    CONSTRAINT chk_admin_users_owner CHECK (role = 'owner'),
+    CONSTRAINT chk_admin_users_retired CHECK (retired_at IS NULL OR active = 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS residents (
@@ -180,6 +185,12 @@ CREATE TABLE IF NOT EXISTS rooms (
     floor SMALLINT UNSIGNED NOT NULL,
     room_type VARCHAR(50) NOT NULL,
     monthly_rent DECIMAL(12,2) NOT NULL,
+    rental_mode ENUM('monthly','daily') NOT NULL DEFAULT 'monthly',
+    daily_rate DECIMAL(12,2) NULL,
+    max_guests SMALLINT UNSIGNED NOT NULL DEFAULT 2,
+    daily_deposit DECIMAL(12,2) NOT NULL DEFAULT 0,
+    housekeeping_status ENUM('ready','cleaning') NOT NULL DEFAULT 'ready',
+    housekeeping_version INT UNSIGNED NOT NULL DEFAULT 1,
     description TEXT NULL,
     amenities JSON NOT NULL,
     image_key VARCHAR(255) NULL,
@@ -193,7 +204,9 @@ CREATE TABLE IF NOT EXISTS rooms (
     CONSTRAINT chk_rooms_code CHECK (CHAR_LENGTH(TRIM(room_code)) BETWEEN 1 AND 32),
     CONSTRAINT chk_rooms_floor CHECK (floor BETWEEN 1 AND 999),
     CONSTRAINT chk_rooms_type CHECK (CHAR_LENGTH(TRIM(room_type)) BETWEEN 1 AND 50),
-    CONSTRAINT chk_rooms_monthly_rent CHECK (monthly_rent > 0 AND monthly_rent <= 1000000),
+    CONSTRAINT chk_rooms_monthly_rent CHECK (monthly_rent>=0 AND monthly_rent<=1000000 AND (rental_mode='daily' OR monthly_rent>0)),
+    CONSTRAINT chk_rooms_daily_policy CHECK (max_guests BETWEEN 1 AND 20 AND daily_deposit BETWEEN 0 AND 1000000 AND (daily_rate IS NULL OR (daily_rate>0 AND daily_rate<=1000000)) AND (rental_mode='monthly' OR daily_rate IS NOT NULL)),
+    CONSTRAINT chk_rooms_housekeeping_version CHECK (housekeeping_version>=1),
     CONSTRAINT chk_rooms_amenities_array CHECK (JSON_TYPE(amenities) = 'ARRAY'),
     CONSTRAINT chk_rooms_image_key CHECK (
         image_key IS NULL OR image_key IN (
@@ -808,8 +821,18 @@ DROP TRIGGER IF EXISTS trg_meter_readings_occupancy_guard;
 DROP TRIGGER IF EXISTS trg_meter_readings_occupancy_guard_update;
 DROP TRIGGER IF EXISTS trg_bookings_insert_guard;
 DROP TRIGGER IF EXISTS trg_occupancies_relationship_guard;
+DROP TRIGGER IF EXISTS trg_admin_users_retirement_immutable;
 
 DELIMITER $$
+
+CREATE TRIGGER trg_admin_users_retirement_immutable
+BEFORE UPDATE ON admin_users
+FOR EACH ROW
+BEGIN
+    IF OLD.retired_at IS NOT NULL AND NOT (NEW.retired_at <=> OLD.retired_at) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'RETIRED_ACCOUNT_IMMUTABLE';
+    END IF;
+END$$
 
 CREATE TRIGGER trg_bookings_insert_guard
 BEFORE INSERT ON bookings
@@ -1622,7 +1645,7 @@ CREATE TABLE IF NOT EXISTS line_admin_recipients (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     oa_id BIGINT UNSIGNED NOT NULL,
     label VARCHAR(120) NOT NULL,
-    is_owner TINYINT UNSIGNED NOT NULL DEFAULT 0,
+    is_owner TINYINT UNSIGNED NOT NULL DEFAULT 1,
     enabled TINYINT UNSIGNED NOT NULL DEFAULT 1,
     muted_categories JSON NOT NULL,
     line_user_id VARCHAR(33) CHARACTER SET ascii COLLATE ascii_bin NULL,
@@ -1788,3 +1811,728 @@ BEGIN
 END$$
 DELIMITER ;
 -- END GENERATED LINE PLATFORM
+
+-- BEGIN GENERATED DAILY_BOOKINGS
+-- Additive daily-room booking tables. Room columns are installed by migration 018.
+-- Existing monthly ledgers and bookings retain their original invariants.
+SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
+SET time_zone = '+00:00';
+
+-- Clear the previous completion marker before a rerun replaces any guards.
+SET @daily_booking_marker_reset=IF(EXISTS(SELECT 1 FROM information_schema.table_constraints WHERE constraint_schema=DATABASE() AND table_name='daily_bookings' AND constraint_name='chk_daily_booking_schema_v18'),'ALTER TABLE daily_bookings DROP CHECK chk_daily_booking_schema_v18','SELECT 1');
+PREPARE daily_booking_marker FROM @daily_booking_marker_reset; EXECUTE daily_booking_marker; DEALLOCATE PREPARE daily_booking_marker;
+
+CREATE TABLE IF NOT EXISTS daily_bookings (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    reference_no VARCHAR(40) NOT NULL,
+    room_id BIGINT UNSIGNED NOT NULL,
+    full_name VARCHAR(150) NOT NULL,
+    phone_norm CHAR(10) NOT NULL,
+    check_in_date DATE NOT NULL,
+    check_out_date DATE NOT NULL,
+    guests SMALLINT UNSIGNED NOT NULL,
+    nightly_rate DECIMAL(12,2) NOT NULL,
+    room_amount DECIMAL(14,2) NOT NULL,
+    deposit_amount DECIMAL(14,2) NOT NULL DEFAULT 0,
+    total_amount DECIMAL(14,2) NOT NULL,
+    status ENUM('pending','confirmed','checked_in','checked_out','cancelled','expired','no_show') NOT NULL DEFAULT 'pending',
+    expires_at DATETIME(6) NOT NULL,
+    access_token_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    idempotency_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    request_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    version INT UNSIGNED NOT NULL DEFAULT 1,
+    confirmed_at DATETIME(6) NULL,
+    actual_check_in_at DATETIME(6) NULL,
+    actual_check_out_at DATETIME(6) NULL,
+    closed_at DATETIME(6) NULL,
+    close_reason VARCHAR(500) NULL,
+    created_by BIGINT UNSIGNED NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_daily_booking_reference (reference_no),
+    UNIQUE KEY uq_daily_booking_idempotency (idempotency_key),
+    KEY idx_daily_booking_room_dates (room_id,check_in_date,check_out_date),
+    KEY idx_daily_booking_expiry (status,expires_at),
+    KEY idx_daily_booking_phone (phone_norm,created_at),
+    CONSTRAINT fk_daily_booking_room FOREIGN KEY (room_id) REFERENCES rooms(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT fk_daily_booking_creator FOREIGN KEY (created_by) REFERENCES admin_users(id) ON UPDATE RESTRICT ON DELETE SET NULL,
+    CONSTRAINT chk_daily_booking_dates CHECK (check_out_date>check_in_date AND DATEDIFF(check_out_date,check_in_date)<=90),
+    CONSTRAINT chk_daily_booking_name CHECK (CHAR_LENGTH(TRIM(full_name)) BETWEEN 2 AND 150),
+    CONSTRAINT chk_daily_booking_phone CHECK (phone_norm REGEXP '^0[0-9]{9}$'),
+    CONSTRAINT chk_daily_booking_guests CHECK (guests BETWEEN 1 AND 20),
+    CONSTRAINT chk_daily_booking_money CHECK (nightly_rate>0 AND nightly_rate<=1000000 AND deposit_amount>=0 AND deposit_amount<=1000000 AND room_amount=nightly_rate*DATEDIFF(check_out_date,check_in_date) AND total_amount=room_amount+deposit_amount),
+    CONSTRAINT chk_daily_booking_hashes CHECK (access_token_hash REGEXP '^[0-9a-f]{64}$' AND request_hash REGEXP '^[0-9a-f]{64}$'),
+    CONSTRAINT chk_daily_booking_key CHECK (idempotency_key REGEXP '^[A-Za-z0-9_-]{16,64}$'),
+    CONSTRAINT chk_daily_booking_version CHECK (version>=1),
+    CONSTRAINT chk_daily_booking_state CHECK (
+      (status='pending' AND confirmed_at IS NULL AND actual_check_in_at IS NULL AND actual_check_out_at IS NULL AND closed_at IS NULL)
+      OR (status='confirmed' AND confirmed_at IS NOT NULL AND actual_check_in_at IS NULL AND actual_check_out_at IS NULL AND closed_at IS NULL)
+      OR (status='checked_in' AND confirmed_at IS NOT NULL AND actual_check_in_at IS NOT NULL AND actual_check_out_at IS NULL AND closed_at IS NULL)
+      OR (status='checked_out' AND confirmed_at IS NOT NULL AND actual_check_in_at IS NOT NULL AND actual_check_out_at IS NOT NULL AND closed_at IS NOT NULL)
+      OR (status IN ('cancelled','expired','no_show') AND actual_check_in_at IS NULL AND actual_check_out_at IS NULL AND closed_at IS NOT NULL)
+    )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS daily_booking_nights (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    booking_id BIGINT UNSIGNED NOT NULL,
+    room_id BIGINT UNSIGNED NOT NULL,
+    stay_date DATE NOT NULL,
+    nightly_rate DECIMAL(12,2) NOT NULL,
+    active TINYINT UNSIGNED NOT NULL DEFAULT 1,
+    active_room_id BIGINT UNSIGNED GENERATED ALWAYS AS (CASE WHEN active=1 THEN room_id ELSE NULL END) STORED,
+    released_at DATETIME(6) NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_daily_booking_night (booking_id,stay_date),
+    UNIQUE KEY uq_daily_active_room_night (active_room_id,stay_date),
+    KEY idx_daily_night_dates (room_id,stay_date),
+    CONSTRAINT fk_daily_night_booking FOREIGN KEY (booking_id) REFERENCES daily_bookings(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT fk_daily_night_room FOREIGN KEY (room_id) REFERENCES rooms(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT chk_daily_night_rate CHECK (nightly_rate>0 AND nightly_rate<=1000000),
+    CONSTRAINT chk_daily_night_release CHECK ((active=1 AND released_at IS NULL) OR (active=0 AND released_at IS NOT NULL))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS daily_room_blocks (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    room_id BIGINT UNSIGNED NOT NULL,
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    reason VARCHAR(500) NOT NULL,
+    active TINYINT UNSIGNED NOT NULL DEFAULT 1,
+    version INT UNSIGNED NOT NULL DEFAULT 1,
+    idempotency_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    request_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    release_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    release_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    released_at DATETIME(6) NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id), UNIQUE KEY uq_daily_block_key (idempotency_key), KEY idx_daily_block_dates (room_id,active,start_date,end_date),
+    CONSTRAINT fk_daily_block_room FOREIGN KEY (room_id) REFERENCES rooms(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT chk_daily_block_dates CHECK (end_date>start_date),
+    CONSTRAINT chk_daily_block_active CHECK ((active=1 AND released_at IS NULL AND version=1) OR (active=0 AND released_at IS NOT NULL AND version=2 AND release_key IS NOT NULL AND release_hash IS NOT NULL)),
+    CONSTRAINT chk_daily_block_reason CHECK (CHAR_LENGTH(TRIM(reason)) BETWEEN 1 AND 500)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS daily_booking_actions (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    booking_id BIGINT UNSIGNED NOT NULL,
+    action VARCHAR(20) NOT NULL,
+    idempotency_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    request_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    response_json JSON NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id), UNIQUE KEY uq_daily_action_key (booking_id,idempotency_key),
+    CONSTRAINT fk_daily_action_booking FOREIGN KEY (booking_id) REFERENCES daily_bookings(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT chk_daily_action_hash CHECK (request_hash REGEXP '^[0-9a-f]{64}$'),
+    CONSTRAINT chk_daily_action_name CHECK (action IN ('confirm','cancel','check-in','check-out','no-show'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS daily_housekeeping_actions (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    room_id BIGINT UNSIGNED NOT NULL,
+    idempotency_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    request_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    response_json JSON NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id), UNIQUE KEY uq_daily_housekeeping_key (room_id,idempotency_key),
+    CONSTRAINT fk_daily_housekeeping_room FOREIGN KEY (room_id) REFERENCES rooms(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT chk_daily_housekeeping_hash CHECK (request_hash REGEXP '^[0-9a-f]{64}$')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+DROP TRIGGER IF EXISTS trg_daily_booking_insert_guard;
+DROP TRIGGER IF EXISTS trg_daily_booking_immutable;
+DROP TRIGGER IF EXISTS trg_daily_night_insert_guard;
+DROP TRIGGER IF EXISTS trg_daily_night_immutable;
+DROP TRIGGER IF EXISTS trg_daily_night_no_delete;
+DROP TRIGGER IF EXISTS trg_daily_action_no_update;
+DROP TRIGGER IF EXISTS trg_daily_action_no_delete;
+DROP TRIGGER IF EXISTS trg_monthly_booking_mode_guard;
+DROP TRIGGER IF EXISTS trg_monthly_occupancy_mode_guard;
+DROP TRIGGER IF EXISTS trg_daily_block_insert_guard;
+DROP TRIGGER IF EXISTS trg_daily_block_immutable;
+DROP TRIGGER IF EXISTS trg_daily_housekeeping_no_update;
+DROP TRIGGER IF EXISTS trg_daily_housekeeping_no_delete;
+DROP TRIGGER IF EXISTS trg_daily_block_no_delete;
+DROP TRIGGER IF EXISTS trg_daily_booking_no_delete;
+DROP TRIGGER IF EXISTS trg_daily_room_mode_guard;
+DELIMITER $$
+CREATE TRIGGER trg_daily_booking_insert_guard BEFORE INSERT ON daily_bookings FOR EACH ROW
+BEGIN
+    DECLARE room_mode VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+    DECLARE room_deleted DATETIME(6);
+    DECLARE capacity SMALLINT UNSIGNED;
+    SELECT rental_mode,deleted_at,max_guests INTO room_mode,room_deleted,capacity FROM rooms WHERE id=NEW.room_id FOR UPDATE;
+    IF NEW.status<>'pending' OR room_mode<>'daily' OR room_deleted IS NOT NULL OR NEW.guests>capacity
+       OR EXISTS(SELECT 1 FROM occupancies WHERE room_id=NEW.room_id AND status='active')
+       OR EXISTS(SELECT 1 FROM bookings WHERE room_id=NEW.room_id AND status IN ('pending','confirmed'))
+       OR EXISTS(SELECT 1 FROM daily_room_blocks WHERE room_id=NEW.room_id AND active=1 AND start_date<NEW.check_out_date AND end_date>NEW.check_in_date)
+    THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Daily booking requires an available dedicated daily room'; END IF;
+END$$
+CREATE TRIGGER trg_daily_booking_immutable BEFORE UPDATE ON daily_bookings FOR EACH ROW
+BEGIN
+    IF NOT(OLD.room_id<=>NEW.room_id) OR NOT(OLD.reference_no<=>NEW.reference_no)
+       OR NOT(OLD.full_name<=>NEW.full_name) OR NOT(OLD.phone_norm<=>NEW.phone_norm)
+       OR NOT(OLD.check_in_date<=>NEW.check_in_date) OR NOT(OLD.check_out_date<=>NEW.check_out_date)
+       OR NOT(OLD.guests<=>NEW.guests) OR NOT(OLD.nightly_rate<=>NEW.nightly_rate)
+       OR NOT(OLD.room_amount<=>NEW.room_amount) OR NOT(OLD.deposit_amount<=>NEW.deposit_amount)
+       OR NOT(OLD.total_amount<=>NEW.total_amount) OR NOT(OLD.idempotency_key<=>NEW.idempotency_key)
+       OR NOT(OLD.request_hash<=>NEW.request_hash) OR NOT(OLD.access_token_hash<=>NEW.access_token_hash)
+       OR NOT(OLD.created_by<=>NEW.created_by)
+       OR NOT(OLD.expires_at<=>NEW.expires_at) OR NOT(OLD.created_at<=>NEW.created_at)
+    THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Daily booking identity and price snapshots are immutable'; END IF;
+    IF OLD.status<>NEW.status AND NOT(
+       (OLD.status='pending' AND NEW.status IN ('confirmed','cancelled','expired'))
+       OR (OLD.status='confirmed' AND NEW.status IN ('checked_in','cancelled','no_show'))
+       OR (OLD.status='checked_in' AND NEW.status='checked_out'))
+    THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Invalid daily booking transition'; END IF;
+    IF (OLD.status<>NEW.status AND NEW.version<>OLD.version+1) OR (OLD.status=NEW.status AND NEW.version<>OLD.version)
+       OR (OLD.status=NEW.status AND (NOT(OLD.confirmed_at<=>NEW.confirmed_at) OR NOT(OLD.actual_check_in_at<=>NEW.actual_check_in_at) OR NOT(OLD.actual_check_out_at<=>NEW.actual_check_out_at) OR NOT(OLD.closed_at<=>NEW.closed_at) OR NOT(OLD.close_reason<=>NEW.close_reason)))
+       OR (NEW.status IN ('cancelled','expired','no_show') AND NOT(OLD.confirmed_at<=>NEW.confirmed_at))
+       OR (OLD.confirmed_at IS NOT NULL AND NOT(OLD.confirmed_at<=>NEW.confirmed_at))
+       OR (OLD.actual_check_in_at IS NOT NULL AND NOT(OLD.actual_check_in_at<=>NEW.actual_check_in_at))
+       OR (OLD.actual_check_out_at IS NOT NULL AND NOT(OLD.actual_check_out_at<=>NEW.actual_check_out_at))
+       OR (OLD.closed_at IS NOT NULL AND (NOT(OLD.closed_at<=>NEW.closed_at) OR NOT(OLD.close_reason<=>NEW.close_reason)))
+    THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Daily transition evidence is immutable'; END IF;
+END$$
+CREATE TRIGGER trg_daily_night_insert_guard BEFORE INSERT ON daily_booking_nights FOR EACH ROW
+BEGIN
+    DECLARE booking_room BIGINT UNSIGNED;
+    DECLARE start_day DATE;
+    DECLARE end_day DATE;
+    DECLARE rate DECIMAL(12,2);
+    DECLARE booking_state VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+    SELECT room_id,check_in_date,check_out_date,nightly_rate,status INTO booking_room,start_day,end_day,rate,booking_state FROM daily_bookings WHERE id=NEW.booking_id FOR SHARE;
+    IF NEW.room_id<>booking_room OR NEW.stay_date<start_day OR NEW.stay_date>=end_day OR NEW.nightly_rate<>rate OR booking_state<>'pending' OR NEW.active<>1
+    THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Night must match its pending daily booking'; END IF;
+END$$
+CREATE TRIGGER trg_daily_night_immutable BEFORE UPDATE ON daily_booking_nights FOR EACH ROW
+BEGIN
+    IF NOT(OLD.booking_id<=>NEW.booking_id) OR NOT(OLD.room_id<=>NEW.room_id) OR NOT(OLD.stay_date<=>NEW.stay_date)
+       OR NOT(OLD.nightly_rate<=>NEW.nightly_rate) OR NOT(OLD.created_at<=>NEW.created_at)
+       OR (OLD.active=0 AND (NEW.active<>0 OR NOT(OLD.released_at<=>NEW.released_at)))
+       OR (OLD.active=1 AND NEW.active=0 AND NOT EXISTS(SELECT 1 FROM daily_bookings WHERE id=NEW.booking_id AND status IN ('cancelled','expired','no_show')))
+    THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Night history is immutable except cancellation release'; END IF;
+END$$
+CREATE TRIGGER trg_daily_night_no_delete BEFORE DELETE ON daily_booking_nights FOR EACH ROW
+BEGIN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Daily night history cannot be deleted'; END$$
+CREATE TRIGGER trg_daily_action_no_update BEFORE UPDATE ON daily_booking_actions FOR EACH ROW
+BEGIN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Daily action history is append only'; END$$
+CREATE TRIGGER trg_daily_action_no_delete BEFORE DELETE ON daily_booking_actions FOR EACH ROW
+BEGIN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Daily action history is append only'; END$$
+CREATE TRIGGER trg_monthly_booking_mode_guard BEFORE INSERT ON bookings FOR EACH ROW
+BEGIN
+    DECLARE room_mode VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+    SELECT rental_mode INTO room_mode FROM rooms WHERE id=NEW.room_id FOR UPDATE;
+    IF room_mode<>'monthly' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Monthly booking requires monthly room'; END IF;
+END$$
+CREATE TRIGGER trg_monthly_occupancy_mode_guard BEFORE INSERT ON occupancies FOR EACH ROW
+BEGIN
+    DECLARE room_mode VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+    SELECT rental_mode INTO room_mode FROM rooms WHERE id=NEW.room_id FOR UPDATE;
+    IF room_mode<>'monthly' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Monthly occupancy requires monthly room'; END IF;
+END$$
+CREATE TRIGGER trg_daily_block_insert_guard BEFORE INSERT ON daily_room_blocks FOR EACH ROW
+BEGIN
+    DECLARE room_mode VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+    SELECT rental_mode INTO room_mode FROM rooms WHERE id=NEW.room_id FOR UPDATE;
+    IF room_mode<>'daily' OR EXISTS(SELECT 1 FROM daily_bookings WHERE room_id=NEW.room_id
+        AND check_in_date<NEW.end_date AND check_out_date>NEW.start_date
+        AND (status IN ('confirmed','checked_in','checked_out') OR (status='pending' AND expires_at>UTC_TIMESTAMP(6))))
+    THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Block cannot overlap a daily booking'; END IF;
+END$$
+CREATE TRIGGER trg_daily_block_immutable BEFORE UPDATE ON daily_room_blocks FOR EACH ROW
+BEGIN
+    IF NOT(OLD.room_id<=>NEW.room_id) OR NOT(OLD.start_date<=>NEW.start_date) OR NOT(OLD.end_date<=>NEW.end_date)
+       OR NOT(OLD.reason<=>NEW.reason) OR NOT(OLD.idempotency_key<=>NEW.idempotency_key)
+       OR NOT(OLD.request_hash<=>NEW.request_hash) OR NOT(OLD.created_at<=>NEW.created_at)
+       OR NOT(OLD.active=1 AND NEW.active=0 AND NEW.version=OLD.version+1)
+    THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Room block history is immutable except release'; END IF;
+END$$
+CREATE TRIGGER trg_daily_housekeeping_no_update BEFORE UPDATE ON daily_housekeeping_actions FOR EACH ROW
+BEGIN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Housekeeping actions are append only'; END$$
+CREATE TRIGGER trg_daily_housekeeping_no_delete BEFORE DELETE ON daily_housekeeping_actions FOR EACH ROW
+BEGIN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Housekeeping actions are append only'; END$$
+CREATE TRIGGER trg_daily_block_no_delete BEFORE DELETE ON daily_room_blocks FOR EACH ROW
+BEGIN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Room block history cannot be deleted'; END$$
+CREATE TRIGGER trg_daily_booking_no_delete BEFORE DELETE ON daily_bookings FOR EACH ROW
+BEGIN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Daily booking history cannot be deleted'; END$$
+CREATE TRIGGER trg_daily_room_mode_guard BEFORE UPDATE ON rooms FOR EACH ROW
+BEGIN
+    IF NEW.max_guests<OLD.max_guests AND EXISTS(SELECT 1 FROM daily_bookings WHERE room_id=OLD.id AND guests>NEW.max_guests
+        AND (status IN('confirmed','checked_in') OR (status='pending' AND expires_at>UTC_TIMESTAMP(6)))) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Room capacity cannot be reduced below booked daily guests';
+    END IF;
+    IF (OLD.rental_mode<>NEW.rental_mode OR (OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL)) AND (
+       EXISTS(SELECT 1 FROM occupancies WHERE room_id=OLD.id AND status='active')
+       OR EXISTS(SELECT 1 FROM bookings WHERE room_id=OLD.id AND status IN ('pending','confirmed'))
+       OR EXISTS(SELECT 1 FROM daily_bookings WHERE room_id=OLD.id AND
+          (status IN ('confirmed','checked_in') OR (status='pending' AND expires_at>UTC_TIMESTAMP(6))))
+       OR EXISTS(SELECT 1 FROM daily_booking_nights n JOIN daily_bookings b ON b.id=n.booking_id
+          WHERE n.room_id=OLD.id AND n.active=1 AND b.status='checked_out'
+            AND n.stay_date>=DATE(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 7 HOUR)))
+       OR EXISTS(SELECT 1 FROM daily_room_blocks WHERE room_id=OLD.id AND active=1 AND end_date>DATE(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 7 HOUR))))
+    THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Room use must be closed before changing rental mode or retiring room'; END IF;
+END$$
+DELIMITER ;
+
+-- Completion marker is installed last because runtime users cannot inspect TRIGGER metadata.
+SET @daily_booking_marker_sql=IF(EXISTS(SELECT 1 FROM information_schema.table_constraints WHERE constraint_schema=DATABASE() AND table_name='daily_bookings' AND constraint_name='chk_daily_booking_schema_v18'),'SELECT 1','ALTER TABLE daily_bookings ADD CONSTRAINT chk_daily_booking_schema_v18 CHECK (version>=1 AND CHAR_LENGTH(request_hash)=64 AND CHAR_LENGTH(access_token_hash)=64)');
+PREPARE daily_booking_marker FROM @daily_booking_marker_sql; EXECUTE daily_booking_marker; DEALLOCATE PREPARE daily_booking_marker;
+-- END GENERATED DAILY_BOOKINGS
+
+-- BEGIN GENERATED DAILY_PAYMENTS
+-- Shared evidence namespace plus a separate full-prepayment daily ledger.
+-- Remove an earlier completion marker before replacing any ledger guard on a rerun.
+SET @daily_review_marker_exists=(SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema=DATABASE() AND table_name='daily_payments' AND constraint_name='chk_daily_payment_review_v20');
+SET @daily_review_marker_sql=IF(@daily_review_marker_exists>0,'ALTER TABLE daily_payments DROP CHECK chk_daily_payment_review_v20','SELECT 1');
+PREPARE daily_review_marker_stmt FROM @daily_review_marker_sql; EXECUTE daily_review_marker_stmt; DEALLOCATE PREPARE daily_review_marker_stmt;
+SET @daily_finance_marker_exists=(SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema=DATABASE() AND table_name='daily_payments' AND constraint_name='chk_daily_finance_schema_v19' AND constraint_type='CHECK');
+SET @daily_finance_marker_sql=IF(@daily_finance_marker_exists>0,'ALTER TABLE daily_payments DROP CHECK chk_daily_finance_schema_v19','SELECT 1');
+PREPARE daily_finance_marker_stmt FROM @daily_finance_marker_sql;
+EXECUTE daily_finance_marker_stmt;
+DEALLOCATE PREPARE daily_finance_marker_stmt;
+
+CREATE TABLE IF NOT EXISTS payment_evidence_registry (
+    subject_type ENUM('monthly','daily') NOT NULL,
+    subject_id BIGINT UNSIGNED NOT NULL,
+    slip_hmac CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    transaction_ref VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL,
+    claim_status ENUM('active','released') NOT NULL DEFAULT 'active',
+    active_slip_hmac CHAR(64) CHARACTER SET ascii COLLATE ascii_bin GENERATED ALWAYS AS (CASE WHEN claim_status='active' THEN slip_hmac ELSE NULL END) STORED,
+    active_txn_ref VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci GENERATED ALWAYS AS (CASE WHEN claim_status='active' THEN transaction_ref ELSE NULL END) STORED,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY(subject_type,subject_id),
+    UNIQUE KEY uq_evidence_slip(active_slip_hmac),
+    UNIQUE KEY uq_evidence_transaction(active_txn_ref),
+    KEY idx_evidence_slip_history(slip_hmac), KEY idx_evidence_transaction_history(transaction_ref)
+) ENGINE=InnoDB;
+
+-- Proof claim projections preserve rejected raw evidence while allowing a correct context to reverify.
+SET @daily_projection_sql=IF(EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='payments' AND column_name='active_slip_hmac'),'SELECT 1','ALTER TABLE payments ADD COLUMN active_slip_hmac CHAR(64) CHARACTER SET ascii COLLATE ascii_bin GENERATED ALWAYS AS (CASE WHEN status IN(''pending'',''verified'') THEN slip_hmac ELSE NULL END) STORED');
+PREPARE daily_projection_stmt FROM @daily_projection_sql; EXECUTE daily_projection_stmt; DEALLOCATE PREPARE daily_projection_stmt;
+SET @daily_projection_sql=IF(EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='payments' AND column_name='credited_txn_ref'),'SELECT 1','ALTER TABLE payments ADD COLUMN credited_txn_ref VARCHAR(191) GENERATED ALWAYS AS (CASE WHEN status=''verified'' THEN transaction_ref ELSE NULL END) STORED');
+PREPARE daily_projection_stmt FROM @daily_projection_sql; EXECUTE daily_projection_stmt; DEALLOCATE PREPARE daily_projection_stmt;
+SET @daily_projection_bad_index=(SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='payments' AND index_name='uq_payments_slip_hmac' AND (column_name<>'active_slip_hmac' OR non_unique<>0 OR sub_part IS NOT NULL));
+SET @daily_projection_sql=IF(@daily_projection_bad_index>0,'ALTER TABLE payments DROP INDEX uq_payments_slip_hmac','SELECT 1');
+PREPARE daily_projection_stmt FROM @daily_projection_sql; EXECUTE daily_projection_stmt; DEALLOCATE PREPARE daily_projection_stmt;
+SET @daily_projection_sql=IF(EXISTS(SELECT 1 FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='payments' AND index_name='uq_payments_slip_hmac'),'SELECT 1','ALTER TABLE payments ADD UNIQUE KEY uq_payments_slip_hmac(active_slip_hmac)');
+PREPARE daily_projection_stmt FROM @daily_projection_sql; EXECUTE daily_projection_stmt; DEALLOCATE PREPARE daily_projection_stmt;
+SET @daily_projection_bad_index=(SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='payments' AND index_name='uq_payments_transaction_ref' AND (column_name<>'credited_txn_ref' OR non_unique<>0 OR sub_part IS NOT NULL));
+SET @daily_projection_sql=IF(@daily_projection_bad_index>0,'ALTER TABLE payments DROP INDEX uq_payments_transaction_ref','SELECT 1');
+PREPARE daily_projection_stmt FROM @daily_projection_sql; EXECUTE daily_projection_stmt; DEALLOCATE PREPARE daily_projection_stmt;
+SET @daily_projection_sql=IF(EXISTS(SELECT 1 FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='payments' AND index_name='uq_payments_transaction_ref'),'SELECT 1','ALTER TABLE payments ADD UNIQUE KEY uq_payments_transaction_ref(credited_txn_ref)');
+PREPARE daily_projection_stmt FROM @daily_projection_sql; EXECUTE daily_projection_stmt; DEALLOCATE PREPARE daily_projection_stmt;
+SET @daily_projection_sql=IF(EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='payment_evidence_registry' AND column_name='claim_status'),'SELECT 1','ALTER TABLE payment_evidence_registry ADD COLUMN claim_status ENUM(''active'',''released'') NOT NULL DEFAULT ''active''');
+PREPARE daily_projection_stmt FROM @daily_projection_sql; EXECUTE daily_projection_stmt; DEALLOCATE PREPARE daily_projection_stmt;
+SET @daily_projection_sql=IF(EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='payment_evidence_registry' AND column_name='active_slip_hmac'),'SELECT 1','ALTER TABLE payment_evidence_registry ADD COLUMN active_slip_hmac CHAR(64) CHARACTER SET ascii COLLATE ascii_bin GENERATED ALWAYS AS (CASE WHEN claim_status=''active'' THEN slip_hmac ELSE NULL END) STORED');
+PREPARE daily_projection_stmt FROM @daily_projection_sql; EXECUTE daily_projection_stmt; DEALLOCATE PREPARE daily_projection_stmt;
+SET @daily_projection_sql=IF(EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='payment_evidence_registry' AND column_name='active_txn_ref'),'SELECT 1','ALTER TABLE payment_evidence_registry ADD COLUMN active_txn_ref VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci GENERATED ALWAYS AS (CASE WHEN claim_status=''active'' THEN transaction_ref ELSE NULL END) STORED');
+PREPARE daily_projection_stmt FROM @daily_projection_sql; EXECUTE daily_projection_stmt; DEALLOCATE PREPARE daily_projection_stmt;
+SET @daily_projection_bad_index=(SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='payment_evidence_registry' AND index_name='uq_evidence_slip' AND (column_name<>'active_slip_hmac' OR non_unique<>0 OR sub_part IS NOT NULL));
+SET @daily_projection_sql=IF(@daily_projection_bad_index>0,'ALTER TABLE payment_evidence_registry DROP INDEX uq_evidence_slip','SELECT 1');
+PREPARE daily_projection_stmt FROM @daily_projection_sql; EXECUTE daily_projection_stmt; DEALLOCATE PREPARE daily_projection_stmt;
+SET @daily_projection_sql=IF(EXISTS(SELECT 1 FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='payment_evidence_registry' AND index_name='uq_evidence_slip'),'SELECT 1','ALTER TABLE payment_evidence_registry ADD UNIQUE KEY uq_evidence_slip(active_slip_hmac)');
+PREPARE daily_projection_stmt FROM @daily_projection_sql; EXECUTE daily_projection_stmt; DEALLOCATE PREPARE daily_projection_stmt;
+SET @daily_projection_bad_index=(SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='payment_evidence_registry' AND index_name='uq_evidence_transaction' AND (column_name<>'active_txn_ref' OR non_unique<>0 OR sub_part IS NOT NULL));
+SET @daily_projection_sql=IF(@daily_projection_bad_index>0,'ALTER TABLE payment_evidence_registry DROP INDEX uq_evidence_transaction','SELECT 1');
+PREPARE daily_projection_stmt FROM @daily_projection_sql; EXECUTE daily_projection_stmt; DEALLOCATE PREPARE daily_projection_stmt;
+SET @daily_projection_sql=IF(EXISTS(SELECT 1 FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='payment_evidence_registry' AND index_name='uq_evidence_transaction'),'SELECT 1','ALTER TABLE payment_evidence_registry ADD UNIQUE KEY uq_evidence_transaction(active_txn_ref)');
+PREPARE daily_projection_stmt FROM @daily_projection_sql; EXECUTE daily_projection_stmt; DEALLOCATE PREPARE daily_projection_stmt;
+UPDATE payment_evidence_registry e JOIN payments p ON e.subject_type='monthly' AND e.subject_id=p.id SET e.claim_status='released' WHERE p.status='rejected' AND e.claim_status='active';
+
+INSERT INTO payment_evidence_registry(subject_type,subject_id,slip_hmac,transaction_ref,claim_status)
+SELECT 'monthly',id,slip_hmac,transaction_ref,IF(status='rejected','released','active') FROM payments
+ON DUPLICATE KEY UPDATE subject_id=subject_id;
+
+CREATE TABLE IF NOT EXISTS payment_amount_registry (
+    subject_type ENUM('monthly','daily') NOT NULL,
+    subject_id BIGINT UNSIGNED NOT NULL,
+    transfer_amount DECIMAL(14,2) NOT NULL,
+    status ENUM('reserved','settled','released') NOT NULL DEFAULT 'reserved',
+    settled_at DATETIME(6) NULL,
+    active_amount DECIMAL(14,2) GENERATED ALWAYS AS
+      (CASE WHEN status IN('reserved','settled') THEN transfer_amount ELSE NULL END) STORED,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY(subject_type,subject_id),
+    UNIQUE KEY uq_amount_global_active(active_amount),
+    KEY idx_amount_history(transfer_amount),
+    CONSTRAINT chk_global_transfer_positive CHECK(transfer_amount>0),
+    CONSTRAINT chk_global_amount_settlement_time CHECK(status<>'settled' OR settled_at IS NOT NULL)
+) ENGINE=InnoDB;
+
+SET @daily_old_release_check=(SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema=DATABASE() AND table_name='payment_amount_registry' AND constraint_name='chk_daily_amount_never_release');
+SET @daily_amount_upgrade_sql=IF(@daily_old_release_check>0,'ALTER TABLE payment_amount_registry DROP CHECK chk_daily_amount_never_release','SELECT 1');
+PREPARE daily_amount_upgrade_stmt FROM @daily_amount_upgrade_sql;
+EXECUTE daily_amount_upgrade_stmt;
+DEALLOCATE PREPARE daily_amount_upgrade_stmt;
+ALTER TABLE payment_amount_registry MODIFY COLUMN active_amount DECIMAL(14,2) GENERATED ALWAYS AS (CASE WHEN status IN('reserved','settled') THEN transfer_amount ELSE NULL END) STORED;
+SET @daily_settlement_check=(SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema=DATABASE() AND table_name='payment_amount_registry' AND constraint_name='chk_global_amount_settlement_time');
+SET @daily_amount_upgrade_sql=IF(@daily_settlement_check=0,'ALTER TABLE payment_amount_registry ADD CONSTRAINT chk_global_amount_settlement_time CHECK(status<>''settled'' OR settled_at IS NOT NULL)','SELECT 1');
+PREPARE daily_amount_upgrade_stmt FROM @daily_amount_upgrade_sql;
+EXECUTE daily_amount_upgrade_stmt;
+DEALLOCATE PREPARE daily_amount_upgrade_stmt;
+
+INSERT INTO payment_amount_registry(subject_type,subject_id,transfer_amount,status,settled_at)
+SELECT 'monthly',bill_id,transfer_amount,status,settled_at FROM transfer_instructions
+ON DUPLICATE KEY UPDATE subject_id=subject_id;
+
+CREATE TABLE IF NOT EXISTS daily_transfer_instructions (
+    booking_id BIGINT UNSIGNED NOT NULL,
+    booking_amount DECIMAL(14,2) NOT NULL,
+    adjustment_amount DECIMAL(4,2) NOT NULL,
+    transfer_amount DECIMAL(14,2) NOT NULL,
+    promptpay_target VARCHAR(20) NOT NULL,
+    recipient_name VARCHAR(191) NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY(booking_id),
+    KEY idx_daily_transfer_amount(transfer_amount),
+    CONSTRAINT fk_daily_transfer_booking FOREIGN KEY(booking_id) REFERENCES daily_bookings(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT chk_daily_transfer_amount CHECK(booking_amount>0 AND adjustment_amount BETWEEN 0.01 AND 0.99 AND transfer_amount=booking_amount+adjustment_amount)
+) ENGINE=InnoDB;
+
+SET @daily_old_amount_index=(SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='daily_transfer_instructions' AND index_name='uq_daily_transfer_amount');
+SET @daily_amount_upgrade_sql=IF(@daily_old_amount_index>0,'ALTER TABLE daily_transfer_instructions DROP INDEX uq_daily_transfer_amount','SELECT 1');
+PREPARE daily_amount_upgrade_stmt FROM @daily_amount_upgrade_sql;
+EXECUTE daily_amount_upgrade_stmt;
+DEALLOCATE PREPARE daily_amount_upgrade_stmt;
+SET @daily_history_amount_index=(SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='daily_transfer_instructions' AND index_name='idx_daily_transfer_amount');
+SET @daily_amount_upgrade_sql=IF(@daily_history_amount_index=0,'ALTER TABLE daily_transfer_instructions ADD INDEX idx_daily_transfer_amount(transfer_amount)','SELECT 1');
+PREPARE daily_amount_upgrade_stmt FROM @daily_amount_upgrade_sql;
+EXECUTE daily_amount_upgrade_stmt;
+DEALLOCATE PREPARE daily_amount_upgrade_stmt;
+
+CREATE TABLE IF NOT EXISTS daily_payments (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    booking_id BIGINT UNSIGNED NOT NULL,
+    amount DECIMAL(14,2) NOT NULL,
+    transfer_amount DECIMAL(14,2) NOT NULL,
+    method ENUM('slip','cash') NOT NULL,
+    status ENUM('pending','verified','rejected','closed') NOT NULL DEFAULT 'pending',
+    request_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    slip_path VARCHAR(512) NULL,
+    slip_mime VARCHAR(32) NULL,
+    slip_hmac CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    provider VARCHAR(32) NULL,
+    transaction_ref VARCHAR(191) NULL,
+    receiver_ref VARCHAR(191) NULL,
+    provider_payload JSON NULL,
+    receipt_reference VARCHAR(191) NULL,
+    rejection_reason VARCHAR(500) NULL,
+    verification_lease_until DATETIME(6) NULL,
+    verification_token CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    verification_attempts INT UNSIGNED NOT NULL DEFAULT 0,
+    recorded_by BIGINT UNSIGNED NULL,
+    refunded_amount DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+    deposit_refunded_amount DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+    deposit_retained_amount DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+    verified_at DATETIME(6) NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    active_booking_id BIGINT UNSIGNED GENERATED ALWAYS AS (CASE WHEN status IN('pending','verified') THEN booking_id ELSE NULL END) STORED,
+    active_slip_hmac CHAR(64) CHARACTER SET ascii COLLATE ascii_bin GENERATED ALWAYS AS (CASE WHEN status IN('pending','verified','closed') THEN slip_hmac ELSE NULL END) STORED,
+    credited_txn_ref VARCHAR(191) GENERATED ALWAYS AS (CASE WHEN status='verified' THEN transaction_ref ELSE NULL END) STORED,
+    PRIMARY KEY(id),
+    UNIQUE KEY uq_daily_payment_active(active_booking_id),
+    UNIQUE KEY uq_daily_payment_request(request_key),
+    UNIQUE KEY uq_daily_payment_slip(active_slip_hmac),
+    UNIQUE KEY uq_daily_payment_transaction(credited_txn_ref),
+    KEY idx_daily_payment_slip_history(slip_hmac), KEY idx_daily_payment_transaction_history(transaction_ref),
+    UNIQUE KEY uq_daily_cash_receipt(receipt_reference),
+    CONSTRAINT fk_daily_payment_booking FOREIGN KEY(booking_id) REFERENCES daily_bookings(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT fk_daily_payment_owner FOREIGN KEY(recorded_by) REFERENCES admin_users(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT chk_daily_payment_amount CHECK(amount>0 AND transfer_amount>=amount),
+    CONSTRAINT chk_daily_payment_balances CHECK(refunded_amount>=0 AND deposit_refunded_amount>=0 AND deposit_retained_amount>=0 AND deposit_refunded_amount<=refunded_amount AND refunded_amount+deposit_retained_amount<=transfer_amount),
+    CONSTRAINT chk_daily_payment_lease CHECK((verification_token IS NULL)=(verification_lease_until IS NULL)),
+    CONSTRAINT chk_daily_payment_verified CHECK((status='verified')=(verified_at IS NOT NULL)),
+    CONSTRAINT chk_daily_payment_evidence CHECK(
+      (method='slip' AND slip_path IS NOT NULL AND slip_mime IS NOT NULL AND slip_hmac IS NOT NULL AND recorded_by IS NULL)
+      OR (method='cash' AND status='verified' AND recorded_by IS NOT NULL AND receipt_reference IS NOT NULL AND request_key IS NOT NULL AND slip_path IS NULL AND slip_hmac IS NULL AND transaction_ref IS NULL))
+) ENGINE=InnoDB;
+
+ALTER TABLE daily_payments MODIFY status ENUM('pending','verified','rejected','closed') NOT NULL DEFAULT 'pending';
+SET @daily_projection_sql=IF(EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='daily_payments' AND column_name='active_slip_hmac'),'SELECT 1','ALTER TABLE daily_payments ADD COLUMN active_slip_hmac CHAR(64) CHARACTER SET ascii COLLATE ascii_bin GENERATED ALWAYS AS (CASE WHEN status IN(''pending'',''verified'',''closed'') THEN slip_hmac ELSE NULL END) STORED');
+PREPARE daily_projection_stmt FROM @daily_projection_sql; EXECUTE daily_projection_stmt; DEALLOCATE PREPARE daily_projection_stmt;
+SET @daily_projection_sql=IF(EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='daily_payments' AND column_name='credited_txn_ref'),'SELECT 1','ALTER TABLE daily_payments ADD COLUMN credited_txn_ref VARCHAR(191) GENERATED ALWAYS AS (CASE WHEN status=''verified'' THEN transaction_ref ELSE NULL END) STORED');
+PREPARE daily_projection_stmt FROM @daily_projection_sql; EXECUTE daily_projection_stmt; DEALLOCATE PREPARE daily_projection_stmt;
+SET @daily_projection_bad_index=(SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='daily_payments' AND index_name='uq_daily_payment_slip' AND (column_name<>'active_slip_hmac' OR non_unique<>0 OR sub_part IS NOT NULL));
+SET @daily_projection_sql=IF(@daily_projection_bad_index>0,'ALTER TABLE daily_payments DROP INDEX uq_daily_payment_slip','SELECT 1');
+PREPARE daily_projection_stmt FROM @daily_projection_sql; EXECUTE daily_projection_stmt; DEALLOCATE PREPARE daily_projection_stmt;
+SET @daily_projection_sql=IF(EXISTS(SELECT 1 FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='daily_payments' AND index_name='uq_daily_payment_slip'),'SELECT 1','ALTER TABLE daily_payments ADD UNIQUE KEY uq_daily_payment_slip(active_slip_hmac)');
+PREPARE daily_projection_stmt FROM @daily_projection_sql; EXECUTE daily_projection_stmt; DEALLOCATE PREPARE daily_projection_stmt;
+SET @daily_projection_bad_index=(SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='daily_payments' AND index_name='uq_daily_payment_transaction' AND (column_name<>'credited_txn_ref' OR non_unique<>0 OR sub_part IS NOT NULL));
+SET @daily_projection_sql=IF(@daily_projection_bad_index>0,'ALTER TABLE daily_payments DROP INDEX uq_daily_payment_transaction','SELECT 1');
+PREPARE daily_projection_stmt FROM @daily_projection_sql; EXECUTE daily_projection_stmt; DEALLOCATE PREPARE daily_projection_stmt;
+SET @daily_projection_sql=IF(EXISTS(SELECT 1 FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='daily_payments' AND index_name='uq_daily_payment_transaction'),'SELECT 1','ALTER TABLE daily_payments ADD UNIQUE KEY uq_daily_payment_transaction(credited_txn_ref)');
+PREPARE daily_projection_stmt FROM @daily_projection_sql; EXECUTE daily_projection_stmt; DEALLOCATE PREPARE daily_projection_stmt;
+UPDATE payment_evidence_registry e JOIN daily_payments p ON e.subject_type='daily' AND e.subject_id=p.id SET e.claim_status='released' WHERE p.status='rejected' AND e.claim_status='active';
+
+CREATE TABLE IF NOT EXISTS daily_payment_actions (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    payment_id BIGINT UNSIGNED NOT NULL,
+    action ENUM('close') NOT NULL,
+    idempotency_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    request_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    reason VARCHAR(450) NOT NULL,
+    recorded_by BIGINT UNSIGNED NOT NULL,
+    response_json JSON NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY(id), UNIQUE KEY uq_daily_payment_action_key(payment_id,idempotency_key),
+    CONSTRAINT fk_daily_payment_action_payment FOREIGN KEY(payment_id) REFERENCES daily_payments(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT fk_daily_payment_action_owner FOREIGN KEY(recorded_by) REFERENCES admin_users(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT chk_daily_payment_action_hash CHECK(request_hash REGEXP '^[0-9a-f]{64}$'),
+    CONSTRAINT chk_daily_payment_action_reason CHECK(CHAR_LENGTH(TRIM(reason)) BETWEEN 3 AND 450)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS daily_refunds (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    booking_id BIGINT UNSIGNED NOT NULL,
+    payment_id BIGINT UNSIGNED NOT NULL,
+    amount DECIMAL(14,2) NOT NULL,
+    purpose ENUM('cancellation','deposit') NOT NULL,
+    request_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    reference_no VARCHAR(191) NOT NULL,
+    reason VARCHAR(500) NOT NULL,
+    recorded_by BIGINT UNSIGNED NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY(id),
+    UNIQUE KEY uq_daily_refund_request(request_key),
+    UNIQUE KEY uq_daily_refund_reference(reference_no),
+    CONSTRAINT fk_daily_refund_booking FOREIGN KEY(booking_id) REFERENCES daily_bookings(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT fk_daily_refund_payment FOREIGN KEY(payment_id) REFERENCES daily_payments(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT fk_daily_refund_owner FOREIGN KEY(recorded_by) REFERENCES admin_users(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT chk_daily_refund_positive CHECK(amount>0)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS daily_deposit_settlements (
+    booking_id BIGINT UNSIGNED NOT NULL,
+    retained_amount DECIMAL(14,2) NOT NULL,
+    request_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    reason VARCHAR(500) NOT NULL,
+    recorded_by BIGINT UNSIGNED NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY(booking_id),
+    UNIQUE KEY uq_daily_deposit_request(request_key),
+    CONSTRAINT fk_daily_deposit_booking FOREIGN KEY(booking_id) REFERENCES daily_bookings(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT fk_daily_deposit_owner FOREIGN KEY(recorded_by) REFERENCES admin_users(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT chk_daily_deposit_nonnegative CHECK(retained_amount>=0)
+) ENGINE=InnoDB;
+
+DELIMITER $$
+DROP TRIGGER IF EXISTS trg_daily_payment_insert$$
+CREATE TRIGGER trg_daily_payment_insert BEFORE INSERT ON daily_payments FOR EACH ROW
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM daily_bookings WHERE id=NEW.booking_id AND total_amount=NEW.amount) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_PAYMENT_AMOUNT_MISMATCH';
+    END IF;
+    IF NEW.refunded_amount<>0 OR NEW.deposit_refunded_amount<>0 OR NEW.deposit_retained_amount<>0 THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_INITIAL_BALANCE_INVALID'; END IF;
+    IF NEW.method='cash' AND (NOT EXISTS(SELECT 1 FROM admin_users WHERE id=NEW.recorded_by AND role='owner' AND active=1 AND retired_at IS NULL)
+      OR CHAR_LENGTH(TRIM(NEW.receipt_reference))<3 OR COALESCE(CHAR_LENGTH(JSON_UNQUOTE(JSON_EXTRACT(NEW.provider_payload,'$.reason'))),0)<3
+      OR NOT EXISTS(SELECT 1 FROM daily_bookings WHERE id=NEW.booking_id AND status='pending' AND expires_at>UTC_TIMESTAMP(6))
+      OR EXISTS(SELECT 1 FROM daily_transfer_instructions WHERE booking_id=NEW.booking_id)) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_CASH_OWNER_EVIDENCE_REQUIRED';
+    END IF;
+    IF NEW.method='slip' AND (NEW.status<>'pending' OR NOT EXISTS(SELECT 1 FROM daily_transfer_instructions WHERE booking_id=NEW.booking_id AND booking_amount=NEW.amount AND transfer_amount=NEW.transfer_amount)) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_SLIP_INTENT_MISMATCH';
+    END IF;
+END$$
+DROP TRIGGER IF EXISTS trg_daily_payment_update$$
+CREATE TRIGGER trg_daily_payment_update BEFORE UPDATE ON daily_payments FOR EACH ROW
+BEGIN
+    DECLARE deposit_value DECIMAL(14,2);
+    IF OLD.status<>NEW.status AND NOT((OLD.status='pending' AND NEW.status IN('verified','rejected','closed')) OR (OLD.status='closed' AND NEW.status='pending')) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_PAYMENT_STATE_INVALID';
+    END IF;
+    IF OLD.status='closed' AND NEW.status='pending' AND (NEW.verification_token IS NULL OR NEW.verification_lease_until<=UTC_TIMESTAMP(6) OR NEW.verification_attempts<>OLD.verification_attempts+1) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_PAYMENT_REOPEN_REQUIRES_CLAIM';
+    END IF;
+    IF NEW.status='closed' AND (NEW.verification_token IS NOT NULL OR NEW.verification_lease_until IS NOT NULL OR COALESCE(CHAR_LENGTH(TRIM(NEW.rejection_reason)),0)<3) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_PAYMENT_CLOSE_INVALID';
+    END IF;
+    IF NOT(OLD.booking_id<=>NEW.booking_id) OR NOT(OLD.amount<=>NEW.amount) OR NOT(OLD.transfer_amount<=>NEW.transfer_amount)
+      OR NOT(OLD.method<=>NEW.method) OR NOT(OLD.request_key<=>NEW.request_key) OR NOT(OLD.slip_path<=>NEW.slip_path)
+      OR NOT(OLD.slip_mime<=>NEW.slip_mime) OR NOT(OLD.slip_hmac<=>NEW.slip_hmac) OR NOT(OLD.created_at<=>NEW.created_at)
+      OR NOT(OLD.receipt_reference<=>NEW.receipt_reference) OR NOT(OLD.recorded_by<=>NEW.recorded_by)
+      OR (OLD.status IN('verified','rejected') AND (NOT(OLD.status<=>NEW.status) OR NOT(OLD.transaction_ref<=>NEW.transaction_ref)
+      OR NOT(OLD.verified_at<=>NEW.verified_at) OR NOT(OLD.provider_payload<=>NEW.provider_payload) OR NOT(OLD.provider<=>NEW.provider)
+      OR NOT(OLD.receiver_ref<=>NEW.receiver_ref) OR NOT(OLD.rejection_reason<=>NEW.rejection_reason)
+      OR NOT(OLD.verification_token<=>NEW.verification_token) OR NOT(OLD.verification_lease_until<=>NEW.verification_lease_until)
+      OR NOT(OLD.verification_attempts<=>NEW.verification_attempts))) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_PAYMENT_IMMUTABLE';
+    END IF;
+    SELECT deposit_amount INTO deposit_value FROM daily_bookings WHERE id=OLD.booking_id;
+    IF NEW.refunded_amount<OLD.refunded_amount OR NEW.deposit_refunded_amount<OLD.deposit_refunded_amount OR NEW.deposit_retained_amount<OLD.deposit_retained_amount
+      OR NEW.deposit_refunded_amount+NEW.deposit_retained_amount>deposit_value
+      OR ((NOT(OLD.refunded_amount<=>NEW.refunded_amount) OR NOT(OLD.deposit_refunded_amount<=>NEW.deposit_refunded_amount) OR NOT(OLD.deposit_retained_amount<=>NEW.deposit_retained_amount)) AND OLD.status<>'verified') THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_RECEIPT_BALANCE_INVALID';
+    END IF;
+    IF OLD.status='pending' AND NEW.status='verified' AND NOT EXISTS(SELECT 1 FROM payment_evidence_registry WHERE subject_type='daily' AND subject_id=OLD.id AND slip_hmac=OLD.slip_hmac AND transaction_ref=NEW.transaction_ref) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_GLOBAL_EVIDENCE_REQUIRED';
+    END IF;
+END$$
+DROP TRIGGER IF EXISTS trg_daily_payment_action_insert$$
+CREATE TRIGGER trg_daily_payment_action_insert BEFORE INSERT ON daily_payment_actions FOR EACH ROW
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM daily_payments WHERE id=NEW.payment_id AND method='slip' AND status='closed')
+      OR NOT EXISTS(SELECT 1 FROM admin_users WHERE id=NEW.recorded_by AND role='owner' AND active=1 AND retired_at IS NULL) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_PAYMENT_ACTION_INVALID';
+    END IF;
+END$$
+DROP TRIGGER IF EXISTS trg_daily_payment_action_no_update$$
+CREATE TRIGGER trg_daily_payment_action_no_update BEFORE UPDATE ON daily_payment_actions FOR EACH ROW BEGIN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_PAYMENT_ACTION_IMMUTABLE'; END$$
+DROP TRIGGER IF EXISTS trg_daily_payment_action_no_delete$$
+CREATE TRIGGER trg_daily_payment_action_no_delete BEFORE DELETE ON daily_payment_actions FOR EACH ROW BEGIN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_PAYMENT_ACTION_IMMUTABLE'; END$$
+DROP TRIGGER IF EXISTS trg_evidence_insert_guard$$
+CREATE TRIGGER trg_evidence_insert_guard BEFORE INSERT ON payment_evidence_registry FOR EACH ROW
+BEGIN
+    IF (NEW.subject_type='monthly' AND NOT EXISTS(SELECT 1 FROM payments WHERE id=NEW.subject_id AND (NEW.slip_hmac IS NULL OR slip_hmac=NEW.slip_hmac)))
+      OR (NEW.subject_type='daily' AND NOT EXISTS(SELECT 1 FROM daily_payments WHERE id=NEW.subject_id AND method='slip' AND (NEW.slip_hmac IS NULL OR slip_hmac=NEW.slip_hmac))) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='GLOBAL_EVIDENCE_SUBJECT_MISMATCH';
+    END IF;
+    IF (NEW.claim_status='released' AND NOT((NEW.subject_type='monthly' AND EXISTS(SELECT 1 FROM payments WHERE id=NEW.subject_id AND status='rejected')) OR (NEW.subject_type='daily' AND EXISTS(SELECT 1 FROM daily_payments WHERE id=NEW.subject_id AND status='rejected'))))
+      OR (NEW.claim_status='active' AND ((NEW.subject_type='monthly' AND EXISTS(SELECT 1 FROM payments WHERE id=NEW.subject_id AND status='rejected')) OR (NEW.subject_type='daily' AND EXISTS(SELECT 1 FROM daily_payments WHERE id=NEW.subject_id AND status='rejected')))) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='GLOBAL_EVIDENCE_CLAIM_STATE_INVALID';
+    END IF;
+END$$
+DROP TRIGGER IF EXISTS trg_evidence_immutable$$
+CREATE TRIGGER trg_evidence_immutable BEFORE UPDATE ON payment_evidence_registry FOR EACH ROW
+BEGIN
+    IF NOT(OLD.subject_type<=>NEW.subject_type) OR NOT(OLD.subject_id<=>NEW.subject_id) OR NOT(OLD.created_at<=>NEW.created_at)
+      OR (OLD.slip_hmac IS NOT NULL AND NOT(OLD.slip_hmac<=>NEW.slip_hmac))
+      OR (OLD.transaction_ref IS NOT NULL AND NOT(OLD.transaction_ref<=>NEW.transaction_ref)) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='GLOBAL_EVIDENCE_IMMUTABLE';
+    END IF;
+    IF OLD.claim_status='released' AND NEW.claim_status<>'released' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='GLOBAL_EVIDENCE_CANNOT_REACTIVATE'; END IF;
+    IF OLD.claim_status<>NEW.claim_status AND NOT(
+      OLD.claim_status='active' AND NEW.claim_status='released' AND (
+       (OLD.subject_type='monthly' AND EXISTS(SELECT 1 FROM payments WHERE id=OLD.subject_id AND status='rejected'))
+       OR (OLD.subject_type='daily' AND EXISTS(SELECT 1 FROM daily_payments WHERE id=OLD.subject_id AND status='rejected')))) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='GLOBAL_EVIDENCE_RELEASE_REQUIRES_REJECTION';
+    END IF;
+END$$
+DROP TRIGGER IF EXISTS trg_evidence_no_delete$$
+CREATE TRIGGER trg_evidence_no_delete BEFORE DELETE ON payment_evidence_registry FOR EACH ROW BEGIN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='GLOBAL_EVIDENCE_IMMUTABLE'; END$$
+DROP TRIGGER IF EXISTS trg_amount_immutable$$
+CREATE TRIGGER trg_amount_immutable BEFORE UPDATE ON payment_amount_registry FOR EACH ROW
+BEGIN
+    DECLARE booking_status VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+    DECLARE quarantine_start DATETIME(6);
+    DECLARE pending_evidence INT DEFAULT 0;
+    IF NOT(OLD.subject_type<=>NEW.subject_type) OR NOT(OLD.subject_id<=>NEW.subject_id) OR NOT(OLD.transfer_amount<=>NEW.transfer_amount) OR NOT(OLD.created_at<=>NEW.created_at)
+      OR (OLD.status='released' AND NEW.status<>'released')
+      OR (OLD.subject_type='daily' AND OLD.status='released' AND NOT(OLD.settled_at<=>NEW.settled_at))
+      OR (OLD.subject_type='daily' AND OLD.settled_at IS NOT NULL AND NOT(OLD.settled_at<=>NEW.settled_at)) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='GLOBAL_AMOUNT_IMMUTABLE';
+    END IF;
+    IF OLD.subject_type='daily' AND NEW.status<>OLD.status THEN
+      SELECT status,CASE WHEN status IN('cancelled','no_show') THEN closed_at ELSE expires_at END
+        INTO booking_status,quarantine_start FROM daily_bookings WHERE id=OLD.subject_id FOR SHARE;
+      SELECT COUNT(*) INTO pending_evidence FROM daily_payments WHERE booking_id=OLD.subject_id AND status='pending' FOR SHARE;
+      IF NEW.status='released' THEN
+        IF pending_evidence>0 OR (OLD.status='settled' AND (OLD.settled_at IS NULL OR OLD.settled_at>DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 7 DAY)))
+          OR (OLD.status='reserved' AND (booking_status NOT IN('pending','expired','cancelled','no_show') OR quarantine_start IS NULL OR quarantine_start>DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 7 DAY))) THEN
+          SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_AMOUNT_QUARANTINE_ACTIVE';
+        END IF;
+      ELSEIF OLD.status='reserved' AND NEW.status='settled' THEN
+        IF NEW.settled_at IS NULL OR NOT EXISTS(SELECT 1 FROM daily_payments WHERE booking_id=OLD.subject_id AND status='verified') THEN
+          SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_AMOUNT_RECEIPT_REQUIRED';
+        END IF;
+      ELSE SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_AMOUNT_STATE_INVALID';
+      END IF;
+    END IF;
+END$$
+DROP TRIGGER IF EXISTS trg_amount_no_delete$$
+CREATE TRIGGER trg_amount_no_delete BEFORE DELETE ON payment_amount_registry FOR EACH ROW BEGIN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='GLOBAL_AMOUNT_IMMUTABLE'; END$$
+DROP TRIGGER IF EXISTS trg_daily_refund_insert$$
+CREATE TRIGGER trg_daily_refund_insert BEFORE INSERT ON daily_refunds FOR EACH ROW
+BEGIN
+    DECLARE booking_room BIGINT UNSIGNED;
+    DECLARE room_lock BIGINT UNSIGNED;
+    DECLARE received DECIMAL(14,2);
+    DECLARE refunded DECIMAL(14,2);
+    DECLARE deposit_value DECIMAL(14,2);
+    DECLARE retained DECIMAL(14,2);
+    DECLARE deposit_refunded DECIMAL(14,2);
+    SELECT room_id,deposit_amount INTO booking_room,deposit_value FROM daily_bookings WHERE id=NEW.booking_id;
+    SELECT id INTO room_lock FROM rooms WHERE id=booking_room FOR UPDATE;
+    SELECT transfer_amount,refunded_amount,deposit_refunded_amount,deposit_retained_amount INTO received,refunded,deposit_refunded,retained
+      FROM daily_payments WHERE id=NEW.payment_id AND booking_id=NEW.booking_id AND status='verified' FOR UPDATE;
+    IF received IS NULL OR NEW.amount>received-refunded-retained OR CHAR_LENGTH(TRIM(NEW.reference_no))<3 OR CHAR_LENGTH(TRIM(NEW.reason))<3
+      OR NOT EXISTS(SELECT 1 FROM admin_users WHERE id=NEW.recorded_by AND role='owner' AND active=1 AND retired_at IS NULL) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_REFUND_EVIDENCE_INVALID';
+    END IF;
+    IF (NEW.purpose='cancellation' AND NOT EXISTS(SELECT 1 FROM daily_bookings WHERE id=NEW.booking_id AND status IN('cancelled','expired','no_show')))
+      OR (NEW.purpose='deposit' AND (NEW.amount>deposit_value-deposit_refunded-retained OR NOT EXISTS(SELECT 1 FROM daily_bookings WHERE id=NEW.booking_id AND status IN('checked_in','checked_out')))) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_REFUND_PURPOSE_INVALID';
+    END IF;
+    UPDATE daily_payments SET refunded_amount=refunded_amount+NEW.amount,
+      deposit_refunded_amount=deposit_refunded_amount+IF(NEW.purpose='deposit',NEW.amount,0) WHERE id=NEW.payment_id;
+END$$
+DROP TRIGGER IF EXISTS trg_daily_deposit_insert$$
+CREATE TRIGGER trg_daily_deposit_insert BEFORE INSERT ON daily_deposit_settlements FOR EACH ROW
+BEGIN
+    DECLARE booking_room BIGINT UNSIGNED;
+    DECLARE room_lock BIGINT UNSIGNED;
+    DECLARE deposit_value DECIMAL(14,2);
+    DECLARE refunded DECIMAL(14,2);
+    DECLARE retained DECIMAL(14,2);
+    DECLARE receipt_id BIGINT UNSIGNED;
+    SELECT room_id,deposit_amount INTO booking_room,deposit_value FROM daily_bookings WHERE id=NEW.booking_id;
+    SELECT id INTO room_lock FROM rooms WHERE id=booking_room FOR UPDATE;
+    SELECT id,deposit_refunded_amount,deposit_retained_amount INTO receipt_id,refunded,retained FROM daily_payments WHERE booking_id=NEW.booking_id AND status='verified' FOR UPDATE;
+    IF receipt_id IS NULL OR NEW.retained_amount>deposit_value-refunded-retained OR CHAR_LENGTH(TRIM(NEW.reason))<3
+      OR NOT EXISTS(SELECT 1 FROM daily_bookings WHERE id=NEW.booking_id AND status IN('checked_in','checked_out'))
+      OR NOT EXISTS(SELECT 1 FROM daily_payments WHERE booking_id=NEW.booking_id AND status='verified')
+      OR NOT EXISTS(SELECT 1 FROM admin_users WHERE id=NEW.recorded_by AND role='owner' AND active=1 AND retired_at IS NULL) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_DEPOSIT_EVIDENCE_INVALID';
+    END IF;
+    UPDATE daily_payments SET deposit_retained_amount=deposit_retained_amount+NEW.retained_amount WHERE id=receipt_id;
+END$$
+DROP TRIGGER IF EXISTS trg_daily_payment_no_delete$$
+CREATE TRIGGER trg_daily_payment_no_delete BEFORE DELETE ON daily_payments FOR EACH ROW BEGIN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_PAYMENT_IMMUTABLE'; END$$
+DROP TRIGGER IF EXISTS trg_daily_transfer_no_update$$
+DROP TRIGGER IF EXISTS trg_daily_transfer_insert$$
+CREATE TRIGGER trg_daily_transfer_insert BEFORE INSERT ON daily_transfer_instructions FOR EACH ROW
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM daily_bookings WHERE id=NEW.booking_id AND status='pending' AND total_amount=NEW.booking_amount)
+      OR NOT EXISTS(SELECT 1 FROM payment_amount_registry WHERE subject_type='daily' AND subject_id=NEW.booking_id AND transfer_amount=NEW.transfer_amount AND status='reserved') THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_TRANSFER_BOOKING_MISMATCH';
+    END IF;
+END$$
+CREATE TRIGGER trg_daily_transfer_no_update BEFORE UPDATE ON daily_transfer_instructions FOR EACH ROW BEGIN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_TRANSFER_IMMUTABLE'; END$$
+DROP TRIGGER IF EXISTS trg_daily_transfer_no_delete$$
+CREATE TRIGGER trg_daily_transfer_no_delete BEFORE DELETE ON daily_transfer_instructions FOR EACH ROW BEGIN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_TRANSFER_IMMUTABLE'; END$$
+DROP TRIGGER IF EXISTS trg_daily_refund_no_update$$
+CREATE TRIGGER trg_daily_refund_no_update BEFORE UPDATE ON daily_refunds FOR EACH ROW BEGIN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_REFUND_IMMUTABLE'; END$$
+DROP TRIGGER IF EXISTS trg_daily_refund_no_delete$$
+CREATE TRIGGER trg_daily_refund_no_delete BEFORE DELETE ON daily_refunds FOR EACH ROW BEGIN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_REFUND_IMMUTABLE'; END$$
+DROP TRIGGER IF EXISTS trg_daily_deposit_no_update$$
+CREATE TRIGGER trg_daily_deposit_no_update BEFORE UPDATE ON daily_deposit_settlements FOR EACH ROW BEGIN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_DEPOSIT_IMMUTABLE'; END$$
+DROP TRIGGER IF EXISTS trg_daily_deposit_no_delete$$
+CREATE TRIGGER trg_daily_deposit_no_delete BEFORE DELETE ON daily_deposit_settlements FOR EACH ROW BEGIN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_DEPOSIT_IMMUTABLE'; END$$
+DROP PROCEDURE IF EXISTS assert_daily_finance_backfill$$
+CREATE PROCEDURE assert_daily_finance_backfill()
+BEGIN
+    IF EXISTS(SELECT 1 FROM payments p LEFT JOIN payment_evidence_registry e ON e.subject_type='monthly' AND e.subject_id=p.id
+      WHERE e.subject_id IS NULL OR NOT(e.slip_hmac<=>p.slip_hmac) OR NOT(e.transaction_ref<=>p.transaction_ref))
+      OR EXISTS(SELECT 1 FROM transfer_instructions t LEFT JOIN payment_amount_registry a ON a.subject_type='monthly' AND a.subject_id=t.bill_id
+      WHERE a.subject_id IS NULL OR a.transfer_amount<>t.transfer_amount) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='DAILY_FINANCE_BACKFILL_CONFLICT';
+    END IF;
+END$$
+CALL assert_daily_finance_backfill()$$
+DROP PROCEDURE assert_daily_finance_backfill$$
+DELIMITER ;
+
+-- Set the enforced completion marker only after every ledger guard and backfill succeeded.
+SET @daily_finance_marker_exists=(SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema=DATABASE() AND table_name='daily_payments' AND constraint_name='chk_daily_finance_schema_v19' AND constraint_type='CHECK');
+SET @daily_finance_marker_sql=IF(@daily_finance_marker_exists=0,'ALTER TABLE daily_payments ADD CONSTRAINT chk_daily_finance_schema_v19 CHECK(amount>0 AND transfer_amount>=amount)','SELECT 1');
+PREPARE daily_finance_marker_stmt FROM @daily_finance_marker_sql;
+EXECUTE daily_finance_marker_stmt;
+DEALLOCATE PREPARE daily_finance_marker_stmt;
+
+-- Completion marker for recoverable closed evidence; installed after every review guard.
+SET @daily_review_marker_sql=IF(EXISTS(SELECT 1 FROM information_schema.table_constraints WHERE constraint_schema=DATABASE() AND table_name='daily_payments' AND constraint_name='chk_daily_payment_review_v20'),'SELECT 1','ALTER TABLE daily_payments ADD CONSTRAINT chk_daily_payment_review_v20 CHECK(status<>''closed'' OR (verification_token IS NULL AND verified_at IS NULL))');
+PREPARE daily_review_marker_stmt FROM @daily_review_marker_sql; EXECUTE daily_review_marker_stmt; DEALLOCATE PREPARE daily_review_marker_stmt;
+-- END GENERATED DAILY_PAYMENTS

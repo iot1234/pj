@@ -5,7 +5,6 @@ namespace Dormitory\Domain;
 
 use Dormitory\Application;
 use Dormitory\Http\HttpException;
-use Dormitory\Security\ResidentAccessCredential;
 use Dormitory\Support\MySqlError;
 use Dormitory\Support\Validator;
 use PDO;
@@ -134,19 +133,16 @@ final class ResidentService
                 }
             }
 
-            $residentAccess=null;
             try{
                 if($phoneChanged){
                     $nextAuthVersion=(int)$current['auth_version']+1;
-                    $residentAccess=$this->newResidentAccess($id,$nextAuthVersion);
                     $update=$pdo->prepare("UPDATE residents
                         SET full_name=?,phone_norm=?,email=?,line_user_id=NULL,
-                            access_password_hash=NULL,activation_code_hash=?,
-                            activation_expires_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL {$residentAccess['ttl_seconds']} SECOND),
+                            access_password_hash=NULL,activation_code_hash=NULL,activation_expires_at=NULL,
                             activation_consumed_at=NULL,auth_version=?,updated_at=UTC_TIMESTAMP(6)
                         WHERE id=? AND active=1 AND auth_version=?");
                     $update->execute([
-                        $name,$phone,$email,$residentAccess['hash'],$nextAuthVersion,$id,
+                        $name,$phone,$email,$nextAuthVersion,$id,
                         (int)$current['auth_version'],
                     ]);
                     if($update->rowCount()!==1){
@@ -177,14 +173,9 @@ final class ResidentService
                     'reason'=>'admin_phone_change',
                 ];
             }
-            if($residentAccess!==null){
-                $expiry=$pdo->prepare('SELECT activation_expires_at FROM residents WHERE id=?');
-                $expiry->execute([$id]);
+            if($phoneChanged){
                 $profile['resident_access']=[
-                    'activation_required'=>true,
-                    'activation_code'=>$residentAccess['code'],
-                    'expires_at'=>(string)$expiry->fetchColumn(),
-                    'single_use'=>true,
+                    'auth_method'=>'phone','activation_required'=>false,'sessions_revoked'=>true,
                 ];
             }
             return $profile;
@@ -204,50 +195,30 @@ final class ResidentService
             $row=$lock->fetch();
             if(!$row)throw new HttpException(404,'Resident not found','RESIDENT_NOT_FOUND');
             $nextAuthVersion=(int)$row['auth_version']+1;
-            $credential=$this->newResidentAccess($id,$nextAuthVersion);
             $update=$pdo->prepare("UPDATE residents
-                SET access_password_hash=NULL,activation_code_hash=?,
-                    activation_expires_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL {$credential['ttl_seconds']} SECOND),
+                SET line_user_id=NULL,access_password_hash=NULL,activation_code_hash=NULL,activation_expires_at=NULL,
                     activation_consumed_at=NULL,auth_version=?,updated_at=UTC_TIMESTAMP(6)
                 WHERE id=? AND active=1 AND auth_version=?");
             $update->execute([
-                $credential['hash'],$nextAuthVersion,$id,(int)$row['auth_version'],
+                $nextAuthVersion,$id,(int)$row['auth_version'],
             ]);
             if($update->rowCount()!==1){
                 throw new HttpException(409,'Resident changed; refresh and retry','RESIDENT_CHANGED');
             }
-            // A credential rotation invalidates every one-time action issued by
+            // A session reset invalidates every one-time action issued by
             // the previous resident session. The HTTP route also holds the
             // resident LINE advisory lock so this cannot race webhook consume.
             $this->app->lineBindings()->revokePending($id);
             $this->app->lineRoomBindings()->revokeForIdentity($id);
             LineAdminEvents::enqueue($this->app,'security.access_reissued',hash('sha256',$id.':'.$nextAuthVersion));
-            $expiry=$pdo->prepare('SELECT activation_expires_at FROM residents WHERE id=?');
-            $expiry->execute([$id]);
             return [
                 'resident_id'=>$id,
                 'sessions_revoked'=>true,
                 'resident_access'=>[
-                    'activation_required'=>true,
-                    'activation_code'=>$credential['code'],
-                    'expires_at'=>(string)$expiry->fetchColumn(),
-                    'single_use'=>true,
+                    'auth_method'=>'phone','activation_required'=>false,'sessions_revoked'=>true,
                 ],
             ];
         });
-    }
-
-    /** @return array{code:string,hash:string,ttl_seconds:int} */
-    private function newResidentAccess(int $residentId,int $authVersion): array
-    {
-        $credential=ResidentAccessCredential::issue(
-            $this->app->config,
-            $residentId,
-            $authVersion
-        );
-        return $credential+[
-            'ttl_seconds'=>ResidentAccessCredential::ttlSeconds($this->app->config),
-        ];
     }
 
     /** @return array<string,mixed> */

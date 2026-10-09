@@ -8,8 +8,10 @@
     </span>
   </a>
   <nav class="header-actions" aria-label="เมนูผู้ใช้งาน">
+    <a class="button button-ghost" href="/" aria-current="page">รายเดือน</a>
+    <a class="button button-primary" href="/daily">จองรายวัน</a>
     <a class="button button-ghost" href="/resident/login">ผู้เช่าเข้าสู่ระบบ</a>
-    <a class="button button-dark" href="/admin/login">ผู้ดูแลระบบ</a>
+    <a class="button button-dark" href="/admin/login">เจ้าของระบบ</a>
   </nav>
 </header>
 
@@ -17,12 +19,12 @@
   <section class="public-hero" aria-labelledby="public-title">
     <div class="hero-copy">
       <span class="eyebrow">Available rooms</span>
-      <h1 id="public-title">ค้นหาห้องที่พร้อมเข้าอยู่</h1>
+      <h1 id="public-title">ค้นหาห้องรายเดือนที่พร้อมเข้าอยู่</h1>
       <p>ดูราคา รูปภาพ และสิ่งอำนวยความสะดวกของห้องว่างจริง แล้วส่งคำขอจองได้ทันทีโดยไม่ต้องสมัครสมาชิก</p>
       <div class="hero-steps" aria-label="ขั้นตอนการจอง">
         <span><b>1</b> เลือกห้อง</span>
         <span><b>2</b> กรอกชื่อและเบอร์โทร</span>
-        <span><b>3</b> รอผู้ดูแลยืนยัน</span>
+        <span><b>3</b> รอเจ้าของระบบยืนยัน</span>
       </div>
     </div>
     <div class="hero-stat" aria-live="polite">
@@ -134,7 +136,7 @@
       <label class="field">
         <span>ชื่อ–นามสกุล <b aria-hidden="true">*</b></span>
         <input name="full_name" type="text" minlength="2" maxlength="120" autocomplete="name" required>
-        <small>ใช้สำหรับให้ผู้ดูแลติดต่อกลับ</small>
+        <small>ใช้สำหรับให้เจ้าของระบบติดต่อกลับ</small>
       </label>
       <label class="field">
         <span>เบอร์โทรศัพท์ <b aria-hidden="true">*</b></span>
@@ -146,14 +148,14 @@
         <button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button>
         <button class="button button-primary" type="submit" data-submit-label="ส่งคำขอจอง">ส่งคำขอจอง</button>
       </div>
-      <p class="form-privacy">เมื่อส่งคำขอ ห้องจะถูกกันไว้เป็น “จองแล้ว” และรอผู้ดูแลยืนยัน ข้อมูลของคุณไม่แสดงต่อสาธารณะ</p>
+      <p class="form-privacy">เมื่อส่งคำขอ ห้องจะถูกกันไว้เป็น “จองแล้ว” และรอเจ้าของระบบยืนยัน ข้อมูลของคุณไม่แสดงต่อสาธารณะ</p>
     </form>
 
     <div class="success-state" id="public-booking-success" hidden tabindex="-1">
 
       <h3>รับคำขอจองเรียบร้อยแล้ว</h3>
-      <p>ห้องถูกกันไว้แล้ว ผู้ดูแลจะติดต่อกลับตามเบอร์ที่แจ้ง</p>
-      <p id="booking-expiry">กรุณารอผู้ดูแลติดต่อกลับเพื่อยืนยันการจอง</p>
+      <p>ห้องถูกกันไว้แล้ว เจ้าของระบบจะติดต่อกลับตามเบอร์ที่แจ้ง</p>
+      <p id="booking-expiry">กรุณารอเจ้าของระบบติดต่อกลับเพื่อยืนยันการจอง</p>
       <div class="reference-box">
         <span>รายละเอียดคำขอ</span>
         <strong id="booking-success-room">—</strong>
@@ -164,7 +166,7 @@
         <strong id="booking-reference">—</strong>
       </div>
       <button class="button button-secondary button-full" id="booking-reference-copy" type="button">คัดลอกหมายเลขอ้างอิง</button>
-      <a class="button button-secondary button-full" href="#" data-public-support-line target="_blank" rel="noopener noreferrer" hidden>ติดต่อผู้ดูแลผ่าน LINE</a>
+      <a class="button button-secondary button-full" href="#" data-public-support-line target="_blank" rel="noopener noreferrer" hidden>ติดต่อเจ้าของระบบผ่าน LINE</a>
       <button class="button button-primary button-full" type="button" data-close-dialog>กลับไปดูห้อง</button>
     </div>
   </div>

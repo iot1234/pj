@@ -26,15 +26,21 @@ final class AuthService
     public function resolveActor(): ?array
     {
         $sessionActor = $this->app->session()->actor();
-        if (!$sessionActor || !isset($sessionActor['type'], $sessionActor['id'], $sessionActor['auth_version'])) {
+        if (!$sessionActor) {
+            return null;
+        }
+        if (!isset($sessionActor['type'], $sessionActor['id'], $sessionActor['auth_version'])
+            || (int)$sessionActor['id'] < 1 || (int)$sessionActor['auth_version'] < 1) {
+            $this->app->session()->revokeLocal();
             return null;
         }
         $pdo = $this->app->database()->pdo();
         if ($sessionActor['type'] === 'admin') {
-            $statement = $pdo->prepare('SELECT id,username,role,auth_version,active FROM admin_users WHERE id=? LIMIT 1');
+            $statement = $pdo->prepare('SELECT id,username,role,auth_version,active,retired_at FROM admin_users WHERE id=? LIMIT 1');
             $statement->execute([(int) $sessionActor['id']]);
             $row = $statement->fetch();
-            if (!$row || !(bool) $row['active'] || (int) $row['auth_version'] !== (int) $sessionActor['auth_version']) {
+            if (!$row || !(bool) $row['active'] || $row['role'] !== 'owner' || $row['retired_at'] !== null
+                || (int) $row['auth_version'] !== (int) $sessionActor['auth_version']) {
                 $this->app->session()->revokeLocal();
                 return null;
             }
@@ -93,7 +99,7 @@ final class AuthService
 
         $row = false;
         if ($wellFormed) {
-            $statement = $this->app->database()->pdo()->prepare('SELECT id,username,password_hash,role,auth_version,active FROM admin_users WHERE username=? LIMIT 1');
+            $statement = $this->app->database()->pdo()->prepare('SELECT id,username,password_hash,role,auth_version,active,retired_at FROM admin_users WHERE username=? LIMIT 1');
             $statement->execute([$username]);
             $row = $statement->fetch();
         }
@@ -110,7 +116,8 @@ final class AuthService
         $valid = self::verifyCredential($password,is_string($row['password_hash']??null)?(string)$row['password_hash']:null);
         $trustedDevice=$row&&$valid&&$this->hasTrustedLoginDevice('admin',(int)$row['id'],(int)$row['auth_version']);
         usleep(random_int(180000, 320000));
-        if ((!$accountAllowed&&!$trustedDevice) || !$row || !(bool) $row['active'] || !$valid) {
+        if ((!$accountAllowed&&!$trustedDevice) || !$row || !(bool) $row['active'] || $row['role'] !== 'owner'
+            || $row['retired_at'] !== null || !$valid) {
             $this->app->audit()->write($request, null, 'auth.admin_failed', 'admin_user', null, [
                 'principal_hash' => hash_hmac('sha256', $username, $this->app->config->appKey()),
                 'account_rate_limited'=>!$accountAllowed,
@@ -121,7 +128,7 @@ final class AuthService
         if (Password::needsRehash((string) $row['password_hash'])) {
             $newHash = Password::hash($password);
             $rehash = $this->app->database()->pdo()->prepare(
-                'UPDATE admin_users SET password_hash=?,updated_at=UTC_TIMESTAMP() WHERE id=? AND password_hash=? AND auth_version=?'
+                "UPDATE admin_users SET password_hash=?,updated_at=UTC_TIMESTAMP() WHERE id=? AND password_hash=? AND auth_version=? AND role='owner' AND active=1 AND retired_at IS NULL"
             );
             $rehash->execute([$newHash, $row['id'], $row['password_hash'], $row['auth_version']]);
             if ($rehash->rowCount() !== 1) {
@@ -130,16 +137,29 @@ final class AuthService
             }
             $row['password_hash'] = $newHash;
         }
-        $actor = [
-            'type' => 'admin', 'id' => (int) $row['id'], 'username' => $row['username'],
-            'name' => $row['username'], 'role' => $row['role'], 'auth_version' => (int) $row['auth_version'],
-        ];
+        // Credential checks take time. Recheck the current account under a lock
+        // before returning an owner session or recording a successful login.
+        $actor = $this->app->database()->transaction(function(PDO $pdo) use($row,$request): array {
+            $query = $pdo->prepare('SELECT id,username,password_hash,role,auth_version,active,retired_at FROM admin_users WHERE id=? LIMIT 1 FOR SHARE');
+            $query->execute([(int)$row['id']]);
+            $fresh = $query->fetch();
+            if (!$fresh || !(bool)$fresh['active'] || $fresh['role'] !== 'owner' || $fresh['retired_at'] !== null
+                || (int)$fresh['auth_version'] !== (int)$row['auth_version']
+                || $fresh['username'] !== $row['username'] || $fresh['password_hash'] !== $row['password_hash']) {
+                throw new HttpException(401, 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง', 'INVALID_CREDENTIALS');
+            }
+            $actor = [
+                'type'=>'admin', 'id'=>(int)$fresh['id'], 'username'=>$fresh['username'],
+                'name'=>$fresh['username'], 'role'=>'owner', 'auth_version'=>(int)$fresh['auth_version'],
+            ];
+            $this->app->audit()->writeStrict($request, $actor, 'auth.admin_login', 'admin_user', $fresh['id']);
+            return $actor;
+        });
         $this->app->session()->login($actor);
         $this->app->clearActorCache();
         $this->app->limiter()->clear('admin-login-account', $accountIdentity);
         $this->app->limiter()->clear('admin-login-account-source', $sourceIdentity);
         $this->rememberLoginDevice('admin',(int)$row['id'],(int)$row['auth_version']);
-        $this->app->audit()->write($request, $actor, 'auth.admin_login', 'admin_user', $row['id']);
         return $actor;
     }
 

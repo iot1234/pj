@@ -82,20 +82,20 @@ MySQL และทดสอบ restore ก่อน แล้วใช้ Railwa
 snapshot/backup อีกครั้งแล้วรัน `006_remove_resident_pin.sql` เพื่อลบ
 `residents.pin_hash` Migration 006 รันซ้ำได้แต่ห้ามรันขณะยังมีแอปรุ่น PIN หลังลบ
 คอลัมน์แล้วแอปรุ่น PIN เดิม rollback ไม่ได้โดยไม่ restore schema/backup และ
-**ห้าม deploy source ปัจจุบันในจุดนี้** เพราะ source ปัจจุบันต้องใช้ schema 007–015
+**ห้าม deploy source ปัจจุบันในจุดนี้** เพราะ source ปัจจุบันต้องใช้ schema 007–017
 ครบก่อน
 
 ปิด public traffic/การเขียน, หยุด worker ทุก replica และ disable/pause schedule ของ
 `monthly-billing` ตลอด maintenance window จากนั้นรัน
 `007_notification_worker_fencing.sql` → `008_resident_access_credentials.sql` →
 `009_occupancy_meter_baselines.sql` → `010_line_self_service_binding.sql` →
-`011_line_add_friend_identity.sql` → `012_move_in_request_hash.sql` → `013_trigger_collation_pinning.sql` → `014_line_platform.sql` → `015_pending_occupancy_opening_readings.sql` ตามลำดับ Migration `013` แก้ trigger ให้ใช้ collation เดียวกัน ป้องกันการออกบิลล้มด้วย error 1267 บนฐานที่มี collation ต่างกัน ส่วน `014` เพิ่มตาราง LINE 5 ตารางและเปลี่ยนดัชนีการส่งบิลให้แยกตามบัญชีที่ผูกไว้ โดยเก็บการตั้งค่า LINE เดิมไว้บน OA 0 Migration `007` จะคืนงาน `processing`
+`011_line_add_friend_identity.sql` → `012_move_in_request_hash.sql` → `013_trigger_collation_pinning.sql` → `014_line_platform.sql` → `015_pending_occupancy_opening_readings.sql` → `016_unique_transfer_instructions.sql` → `017_owner_only_access.sql` ตามลำดับ Migration `013` แก้ trigger ให้ใช้ collation เดียวกัน ป้องกันการออกบิลล้มด้วย error 1267 บนฐานที่มี collation ต่างกัน ส่วน `014` เพิ่มตาราง LINE 5 ตารางและเปลี่ยนดัชนีการส่งบิลให้แยกตามบัญชีที่ผูกไว้ โดยเก็บการตั้งค่า LINE เดิมไว้บน OA 0 Migration `007` จะคืนงาน `processing`
 รุ่นเก่าที่ไม่มี claim/lease เป็น `pending` โดยไม่เปลี่ยน retry key ส่วน `009`
 จะหยุดเมื่อ lifecycle/meter legacy ไม่สอดคล้องและเปลี่ยนกฎการเขียนมิเตอร์ ต้อง
 reconcile จนรันซ้ำผ่านก่อน deploy source ปัจจุบัน Fresh database จาก `install.sql`
-มีโครงสร้างล่าสุดอยู่แล้วและไม่ต้องรัน `006`–`015`
+มีโครงสร้างล่าสุดอยู่แล้วและไม่ต้องรัน `006`–`020`
 
-ถ้าฐานเดิมผ่าน `013` แล้ว ให้สำรองข้อมูลและหยุด traffic/worker/cron ตามข้างต้น แล้วรันเฉพาะ `014_line_platform.sql` → `015_pending_occupancy_opening_readings.sql` โดยไม่ย้อนรัน migrations เก่า ถ้าผ่าน `014` แล้วให้รันเฉพาะ `015`
+ถ้าฐานเดิมผ่าน `013` แล้ว ให้สำรองข้อมูลและหยุด traffic/worker/cron ตามข้างต้น แล้วรัน `014` → `015` → `016` → `017` → `018` → `019` → `020` โดยไม่ย้อนรัน migrations เก่า ถ้าผ่าน `014` แล้วให้เริ่มที่ `015` หรือเริ่ม migration ถัดจากรุ่นที่ติดตั้งครบ ต้องมี owner เดิมที่ active ก่อน `017` เมื่อฐานมีแอดมินที่จะเลิกใช้; หากยังไม่มีให้สร้าง owner อย่างชัดเจนก่อนตาม [คู่มือ migration 017](OWNER_ONLY_MIGRATION.md) แอดมินเดิมถูกปิดถาวรโดยไม่ยกระดับสิทธิ์ พร้อมเพิกถอนคำเชิญ LINE ของเจ้าหน้าที่/คำเชิญที่สร้างโดยแอดมินที่เลิกใช้และหยุดคิวที่ยังไม่ส่ง โดยคงประวัติเดิม
 
 `009` และ `015` อนุญาตให้ข้อมูลผู้พักเดิมที่ไม่มีค่าเปิดมิเตอร์น้ำและไฟทั้งคู่
 คงสถานะ “รอเลขมิเตอร์เริ่มต้น” ได้เฉพาะเมื่อไม่มีประวัติมิเตอร์หรือบิลเกี่ยวข้อง
@@ -108,11 +108,11 @@ reconcile จนรันซ้ำผ่านก่อน deploy source ปั�
 การรับผู้พักใหม่ยังต้องระบุค่าทั้งคู่เสมอ หลังมีประวัติหรือเคยระบุครบแล้ว
 ระบบไม่อนุญาตให้ใช้ช่องทางนี้เปลี่ยนค่าเปิดมิเตอร์ย้อนหลัง
 
-เมื่อ 015 ผ่าน ให้ deploy source ปัจจุบันโดยยังปิด public traffic และยังไม่เริ่ม
-worker/cron จากนั้นให้ Owner เข้า Admin ผ่านช่องทาง maintenance ที่จำกัดผู้ดูแล:
+เมื่อ 017–020 ผ่าน ให้ deploy source ปัจจุบันโดยยังปิด public traffic และยังไม่เริ่ม
+worker/cron จากนั้นให้ Owner เข้าหน้าเจ้าของที่ `/admin` ผ่านช่องทาง maintenance ที่จำกัดเจ้าของ:
 
-1. reissue activation code ให้ resident ที่ active เดิมทุกคนซึ่งยังไม่มี password/code
-   และส่งมอบรหัสผ่านช่องทางส่วนตัว
+1. ตรวจเบอร์โทรและการผูกห้อง active ของผู้พักให้ตรงหนึ่งรายการต่อคน ผู้พักใช้เบอร์โทร
+   ไม่ต้องมี password/activation code หรือ reissue เพื่อเข้าใช้และผ่าน readiness
 2. ตรวจ/บันทึก billing settings และ PromptPay/slip integrations ที่หน้า Settings และคีย์ LINE/Basic ID ที่หน้า “บัญชี LINE OA” ให้ครบ
    รายการผู้พักเดิมที่รอค่าเปิดมิเตอร์จะแสดงสถานะให้ผู้ดูแลบันทึกค่าจริงก่อนจดมิเตอร์หรือออกบิลของห้องนั้น
 3. สร้าง isolated one-shot schema-audit job ชั่วคราว โดย map `DB_USERNAME` และ
@@ -124,17 +124,19 @@ worker/cron จากนั้นให้ Owner เข้า Admin ผ่าน
 
 ผล `[NOTICE]` เรื่องค่าเปิดมิเตอร์ที่รอดำเนินการเป็นสถานะที่ระบบรองรับและไม่ทำให้
 `--strict` ล้มเหลว แต่ห้องเหล่านั้นยังจดมิเตอร์หรือออกบิลไม่ได้จนกว่าผู้ดูแลบันทึกค่าจริง
-ข้อผิดพลาดเรื่องค่าเพียงชนิดเดียว ประวัติเดิมที่ไม่สอดคล้อง และผู้เช่าขาด password/
-activation code ยังทำให้การตรวจไม่ผ่านตามเดิม
+ข้อผิดพลาดเรื่องค่าเพียงชนิดเดียว ประวัติเดิมที่ไม่สอดคล้อง และผู้พักมีเบอร์หรือ
+การผูกห้อง active ไม่ถูกต้องยังทำให้การตรวจไม่ผ่าน แต่การไม่มี password/activation
+code ของผู้พักไม่ใช่ข้อผิดพลาดของ phone-only data gate
 
 `/healthz.php` ตรวจ schema/readiness ของ web แต่ไม่แทน data gate ข้างต้น จึงห้ามเปิด
-traffic เพียงเพราะ Railway healthcheck ผ่าน เมื่อ strict gate ผ่านและตรวจพบ 21 ตาราง,
-23 triggers พร้อม body ตรง canonical และ CHECK 116 รายการแล้ว จึงเปิด traffic, เริ่ม worker, เปิด
+traffic เพียงเพราะ Railway healthcheck ผ่าน เมื่อ strict gate ผ่านและตรวจพบ 34 ตาราง,
+63 triggers พร้อม body ตรง canonical และ CHECK 155 รายการแล้ว จึงเปิด traffic, เริ่ม worker, เปิด
 monthly-billing schedule และลบ migration job/`DB_DBA_*`
 
 ### ถ้า `/healthz.php` ตอบ 503 หลัง deploy
 
 - `migration 016 required` หรือข้อความ `migration 016` ใน log หมายถึงระบบล็อกยอด QR ยังไม่พร้อม ให้สำรองฐานและติดตั้ง `database/migrations/016_unique_transfer_instructions.sql` ด้วยบัญชี migration หลัง 015 ก่อน deploy รุ่นนี้ การตรวจสลิปอัตโนมัติไม่จำเป็นต่อการสร้าง QR แต่ตารางจองยอดและ unique index ต้องพร้อมเสมอ
+- `migration 017 required` หรือ `Migration 017` ใน log หมายถึง role enum/retired_at หรือ enforced owner/retirement CHECK ยังไม่ตรงรุ่น ให้คง traffic/worker/cron หยุดและทำตาม [คู่มือ migration 017](OWNER_ONLY_MIGRATION.md) ก่อน deploy ห้ามข้าม readiness หรือเปิดใช้แอดมินเดิม
 
 ดูข้อความ `readiness check failed` ใน deployment log ของ web รุ่นใหม่จะระบุชื่อ
 ตารางที่ขาดเฉพาะใน server log ส่วนผลตอบกลับสาธารณะยังเป็น `{"status":"unavailable"}`
@@ -176,7 +178,6 @@ TRUSTED_PROXIES=
 RUNTIME_ROLE=web
 SESSION_NAME=dormitory_session
 SESSION_LIFETIME_SECONDS=43200
-RESIDENT_ACTIVATION_TTL_SECONDS=604800
 
 DB_HOST=${{MySQL.MYSQLHOST}}
 DB_PORT=${{MySQL.MYSQLPORT}}
@@ -212,7 +213,7 @@ fail-closed ระหว่าง readiness/startup และต้องรั�
 หาก Railway MySQL ที่ใช้อยู่ไม่ให้ CA/certificate ที่ตรวจชื่อ private host ได้ ให้คง
 private WireGuard mode, ปิด public TCP Proxy และบันทึกข้อจำกัดนี้ไว้ใน security review
 
-`SESSION_LIFETIME_SECONDS` ยังใช้กับ Admin/Owner ส่วน Resident ถูกจำกัดตายตัวที่ idle 15 นาทีและอายุรวม 1 ชั่วโมงและไม่มี trusted-device bypass Resident login ใช้เบอร์ของ resident/occupancy active ร่วมกับ password; ครั้งแรกใช้ activation code แบบครั้งเดียวเพื่อตั้ง password ค่า `RESIDENT_ACTIVATION_TTL_SECONDS` กำหนดอายุ code ได้ 900–2,592,000 วินาที (ค่าเริ่มต้น 604,800 หรือ 7 วัน) ผู้ดูแลต้องส่ง code ผ่านช่องทางส่วนตัวและออกใหม่ทันทีหากสงสัยว่ารั่ว
+`SESSION_LIFETIME_SECONDS` ใช้กับ Owner ส่วน Resident ถูกจำกัดตายตัวที่ idle 15 นาทีและอายุรวม 1 ชั่วโมงและไม่มี trusted-device bypass Resident login ใช้เฉพาะเบอร์ของ resident/occupancy active ที่ผูกตรงหนึ่งรายการจากทุกเครื่อง ไม่ขอ password/activation code ระบบไม่สร้างรหัสใหม่ตอนเพิ่มผู้พัก ย้ายเข้า ใช้ประวัติเดิม หรือ reissue; reissue ใช้ยกเลิก session/การผูก LINE เท่านั้น คอลัมน์ legacy คงไว้เพื่อเข้ากันกับฐานเดิม ส่วน `RESIDENT_ACTIVATION_TTL_SECONDS` เลิกใช้แล้ว ไม่ต้องตั้งและค่าเดิมไม่กระทบ readiness
 
 ห้ามใส่ `DB_DBA_*`, `DB_ROOT_PASSWORD` หรือ `ADMIN_PASSWORD` ไว้ใน web service
 ชื่อฐานต้องตรงกับ `MYSQLDATABASE`; Railway มักใช้ชื่อ `railway` จึงห้ามใช้
@@ -252,8 +253,8 @@ printf '%s' "$ADMIN_PASSWORD" | php scripts/create_admin.php \
 ```
 
 ลบ `ADMIN_PASSWORD` ทันทีเมื่อสำเร็จ ห้ามเก็บไว้กับ process ระยะยาว จากนั้น login
-เข้า Admin → Settings เพื่อตั้ง billing, PromptPay receiver และ provider credentials
-แล้วเข้า Admin → บัญชี LINE OA เพื่อตั้ง Basic ID, Channel access token และ Channel secret ของแต่ละบัญชี ค่าลับทั้งหมดนี้เก็บ
+เข้าเจ้าของ → Settings เพื่อตั้ง billing, PromptPay receiver และ provider credentials
+แล้วเข้าเจ้าของ → บัญชี LINE OA เพื่อตั้ง Channel access token และ Channel secret ของบอทหลัก OA 0 ระบบดึง Basic ID ให้เอง ค่าลับทั้งหมดนี้เก็บ
 เข้ารหัสใน MySQL ไม่ต้องเพิ่มเป็น Railway Variables เมื่อค่าจำเป็นครบและ
 `ADMIN_PASSWORD` ถูกลบแล้วจึงรัน production gate:
 
@@ -321,7 +322,7 @@ MONTHLY_BILLING_ADMIN_ID=<id-ของ-admin-ที่-active>
 MONTHLY_BILLING_TIMEOUT_SECONDS=900
 ```
 
-`MONTHLY_BILLING_ADMIN_ID` ต้องเป็น ID ของ Admin/Owner ที่ยัง active เพื่อให้ audit log
+`MONTHLY_BILLING_ADMIN_ID` ต้องเป็น ID ของ Owner ที่ active และไม่ถูกเลิกใช้ (`retired_at IS NULL`) เพื่อให้ audit log
 ระบุผู้รับผิดชอบได้ `MONTHLY_BILLING_TIMEOUT_SECONDS` รับค่า 60–3600 วินาที
 (แนะนำ 900) ห้ามใส่ `DB_DBA_*` หรือ `ADMIN_PASSWORD` ใน service นี้ ตั้ง Start Command
 เป็น:

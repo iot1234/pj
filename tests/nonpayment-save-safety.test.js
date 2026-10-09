@@ -7,7 +7,7 @@ function node(){return {dataset:{},disabled:false,textContent:'',hidden:false,se
 function login(){
  let submit;const button=node(),form={...node(),reportValidity:()=>true,querySelector:()=>button,addEventListener:(_n,fn)=>submit=fn};
  const requests=[],messages=[],destinations=[];
- const ctx={$:key=>key==='#admin-login-form'?form:node(),FormData:class{entries(){return [['username','fixture'],['password','unchanged']];}},
+ const ctx={ApiError:Error,$:key=>key==='#admin-login-form'?form:node(),FormData:class{entries(){return [['username','fixture'],['password','unchanged']];}},
   api:(_url,options)=>{const d=deferred();requests.push({...d,options});return d.promise;},showFormError:(_n,m)=>messages.push(m),errorMessage:e=>e.message,
   setBusy:(n,busy)=>n.disabled=busy,setFormFieldsBusy:(f,busy)=>f.fieldsDisabled=busy,location:{assign:url=>destinations.push(url)}};
  vm.runInNewContext(extract('function initLogin(', 'function initResidentLogin()'),ctx);ctx.initLogin('#admin-login-form','/api/auth/admin/login','/admin');
@@ -15,20 +15,26 @@ function login(){
 }
 test('administrator login double submit cannot unlock or replace the pending credentials',async()=>{
  const h=login(),work=h.save();await h.save();assert.equal(h.requests.length,1);assert.equal(h.button.disabled,true);assert.equal(h.form.fieldsDisabled,true);
- h.requests[0].resolve({});await work;assert.deepEqual(h.destinations,['/admin']);assert.equal(h.button.disabled,true);await h.save();assert.equal(h.requests.length,1);
+ h.requests[0].resolve({user:{type:'admin',role:'owner'}});await work;assert.deepEqual(h.destinations,['/admin']);assert.equal(h.button.disabled,true);await h.save();assert.equal(h.requests.length,1);
 });
 test('administrator login failure restores fields and permits a deliberate retry',async()=>{
  const h=login(),first=h.save();h.requests[0].reject(new Error('offline'));await first;assert.equal(h.form.fieldsDisabled,false);assert.equal(h.button.disabled,false);
- const retry=h.save();h.requests[1].resolve({});await retry;assert.equal(h.requests.length,2);
+ const retry=h.save();h.requests[1].resolve({user:{type:'admin',role:'owner'}});await retry;assert.equal(h.requests.length,2);
+});
+test('owner login rejects empty, resident and removed admin success responses',async()=>{
+ for(const reply of [{},{user:{type:'resident',role:'resident'}},{user:{type:'admin',role:'admin'}}]){
+  const h=login(),work=h.save();h.requests[0].resolve(reply);await work;
+  assert.deepEqual(h.destinations,[]);assert.equal(h.form.fieldsDisabled,false);assert.equal(h.button.disabled,false);assert.match(h.messages.at(-1),/เจ้าของระบบ/);
+ }
 });
 function profile(){
  let submit;const nodes=new Map(),$=key=>{if(!nodes.has(key))nodes.set(key,node());return nodes.get(key);};
  const form={...node(),elements:Object.fromEntries(['full_name','email','phone','room_code'].map(name=>[name,{value:name}])),reportValidity:()=>true,querySelector:()=>node(),addEventListener:(_n,fn)=>submit=fn};
  const requests=[],state={profile:{},bills:[],loadRequest:0,profileRevision:0};
- const ctx={$,profileForm:form,state,FormData:class{entries(){return [['full_name','New name'],['email','new@example.test']];}},
+ const ctx={ApiError:Error,$,profileForm:form,state,FormData:class{entries(){return [['full_name','New name'],['email','new@example.test']];}},
   api:(url,options)=>{const d=deferred();requests.push({...d,url,options});return d.promise;},objectFrom:v=>v,listFrom:v=>v,renderLineStatus(){},renderBills(){},errorMessage:e=>e.message,text:String,
   showFormError(){},toast(){},setFormFieldsBusy:(f,busy)=>f.locked=busy,setBusy(){}};
- vm.runInNewContext(extract('function fillProfile()', 'async function refreshVerifyingBills(')+extract("profileForm.addEventListener('submit'", "lineStartForm.addEventListener('submit'"),ctx);
+ vm.runInNewContext(extract('const requiredEntityList =', 'const errorMessagesByCode =')+extract('function fillProfile()', 'async function refreshVerifyingBills(')+extract("profileForm.addEventListener('submit'", "lineStartForm.addEventListener('submit'"),ctx);
  return {state,form,requests,save:()=>submit({preventDefault(){}}),load:()=>ctx.loadAll()};
 }
 test('profile duplicate submission cannot invalidate a successful first response',async()=>{

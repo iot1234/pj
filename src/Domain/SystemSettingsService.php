@@ -260,6 +260,17 @@ final class SystemSettingsService
                             'PROMPTPAY_HAS_RESERVED_BILLS',
                             ['field'=>'promptpay_target','bill_ids'=>array_slice($billIds,0,20),'has_more'=>count($billIds)>20]);
                     }
+                    if((new PaymentEvidenceRegistry($this->app))->available()){
+                        // Settings fences QR creation. Only instruction rows are locked here;
+                        // locking bookings would invert daily room -> booking -> settings.
+                        $daily=$pdo->prepare("SELECT t.booking_id FROM daily_transfer_instructions t
+                            WHERE NOT (BINARY t.promptpay_target <=> BINARY ?)
+                            AND (EXISTS(SELECT 1 FROM daily_bookings b WHERE b.id=t.booking_id AND b.status='pending' AND b.expires_at>UTC_TIMESTAMP(6))
+                              OR EXISTS(SELECT 1 FROM daily_payments p WHERE p.booking_id=t.booking_id AND p.status='pending'))
+                            ORDER BY t.booking_id LIMIT 21 FOR SHARE");
+                        $daily->execute([$settings['promptpay_target']]);$dailyIds=array_map('intval',$daily->fetchAll(PDO::FETCH_COLUMN));
+                        if($dailyIds!==[])throw new HttpException(409,'ยังมี QR การจองรายวันหรือสลิปรอตรวจกับบัญชีเดิม กรุณาตรวจรายการก่อนเปลี่ยนบัญชีรับเงิน','PROMPTPAY_HAS_RESERVED_DAILY_BOOKINGS',['field'=>'promptpay_target','booking_ids'=>array_slice($dailyIds,0,20),'has_more'=>count($dailyIds)>20]);
+                    }
                 }
             }
             if (array_key_exists('promptpay_name', $input)) {

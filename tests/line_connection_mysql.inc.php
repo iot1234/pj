@@ -3,6 +3,19 @@ declare(strict_types=1);
 if(PHP_SAPI!=='cli'||getenv('APP_ENV')!=='testing'||!isset($service,$test,$transport))throw new RuntimeException('LINE OA test fixture required');
 $previousUrl=getenv('APP_URL');putenv('APP_URL=https://line-connection.example.test');
 try {
+ $test('signed scoped webhook trailing slash preserves raw signature and bypasses only browser CSRF',function()use($app,$service,$assert,$expect):void{
+  $oa=$service->credentials(0);$raw=json_encode(['destination'=>$oa['provider_user_id'],'events'=>[]],JSON_THROW_ON_ERROR);
+  $headers=['content-type'=>'application/json','x-line-signature'=>base64_encode(hash_hmac('sha256',$raw,$oa['channel_secret'],true))];
+  $webhook=new Dormitory\Domain\LineWebhookService($app,null,0);
+  foreach(['','/']as$suffix){
+   $request=new Dormitory\Http\Request('POST','/api/webhooks/line/oa/'.$oa['route_token'].$suffix,$headers,[],[],[],[],'line-webhook-trailing-slash',$raw);
+   $app->guard($request,[]);$assert($webhook->handle($request)['events']===0);
+   $wrong=new Dormitory\Http\Request('POST',$request->path,array_replace($headers,['x-line-signature'=>base64_encode(str_repeat('x',32))]),[],[],[],[],'line-webhook-trailing-slash-bad-signature',$raw);
+   $app->guard($wrong,[]);$expect(fn()=>$webhook->handle($wrong),'LINE_WEBHOOK_SIGNATURE_INVALID');
+   $revoked=new Dormitory\Http\Request('POST','/api/webhooks/line'.$suffix,$headers,[],[],[],[],'line-webhook-revoked-legacy-alias',$raw);
+   $app->guard($revoked,[]);$expect(fn()=>$webhook->handle($revoked),'LINE_WEBHOOK_ROUTE_REVOKED');
+  }
+ });
  $service->touchWebhook(0);
  $remote=['endpoint'=>$service->get(0)['webhook_url'],'active'=>true];
  $peerRegistry=new Dormitory\Domain\LineOfficialAccountService(new Dormitory\Application($app->config),$transport);

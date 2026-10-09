@@ -60,9 +60,16 @@ final class TransferInstructionService
             $this->app->limiter()->lockBucket('transfer-allocation','global');
             // Retain completed amounts for seven days; late transfers still need a bank reference.
             $pdo->exec("UPDATE transfer_instructions SET status='released' WHERE status='settled' AND settled_at<=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 7 DAY)");
+            $shared=(new PaymentEvidenceRegistry($this->app))->available();
+            if($shared)(new PaymentEvidenceRegistry($this->app))->reclaimAmounts($pdo,Validator::decimalString($base+1),Validator::decimalString($base+99));
             $q=$pdo->prepare('SELECT active_amount FROM transfer_instructions WHERE active_amount BETWEEN ? AND ? FOR UPDATE');
             $q->execute([Validator::decimalString($base+1),Validator::decimalString($base+99)]);
             $used=array_map(static fn($v):int=>Validator::scaledDecimal($v,'reserved_amount',2,12),$q->fetchAll(PDO::FETCH_COLUMN));
+            if($shared){
+                $q=$pdo->prepare('SELECT active_amount FROM payment_amount_registry WHERE active_amount BETWEEN ? AND ? FOR UPDATE');
+                $q->execute([Validator::decimalString($base+1),Validator::decimalString($base+99)]);
+                foreach($q->fetchAll(PDO::FETCH_COLUMN)as$v)$used[]=Validator::scaledDecimal($v,'reserved_amount',2,12);
+            }
             // Avoid unallocated pending bill totals too (legacy direct-transfer amounts).
             $q=$pdo->prepare("SELECT total_amount FROM bills WHERE status='pending' AND id<>? AND total_amount BETWEEN ? AND ?");
             $q->execute([$billId,Validator::decimalString($base+1),Validator::decimalString($base+99)]);
@@ -72,6 +79,7 @@ final class TransferInstructionService
             $delta=$free[random_int(0,count($free)-1)];
             $q=$pdo->prepare('INSERT INTO transfer_instructions(bill_id,resident_id,bill_amount,adjustment_amount,transfer_amount,promptpay_target,recipient_name) VALUES(?,?,?,?,?,?,?)');
             $q->execute([$billId,$residentId,$bill['total_amount'],Validator::decimalString($delta),Validator::decimalString($base+$delta),$target,$settings['promptpay_name']??null]);
+            if($shared){$q=$pdo->prepare("INSERT INTO payment_amount_registry(subject_type,subject_id,transfer_amount,status) VALUES('monthly',?,?,'reserved')");$q->execute([$billId,Validator::decimalString($base+$delta)]);}
             return $this->find($billId)??throw new \RuntimeException('Transfer instruction was not stored');
         });
     }
@@ -94,6 +102,9 @@ final class TransferInstructionService
         if(!$this->available())return;
         $q=$pdo->prepare("UPDATE transfer_instructions SET status='settled',settled_at=UTC_TIMESTAMP(6) WHERE bill_id=? AND status='reserved'");
         $q->execute([$billId]);
+        if((new PaymentEvidenceRegistry($this->app))->available()){
+            $q=$pdo->prepare("UPDATE payment_amount_registry SET status='settled',settled_at=UTC_TIMESTAMP(6) WHERE subject_type='monthly' AND subject_id=? AND status='reserved'");$q->execute([$billId]);
+        }
     }
     public function envelope(array $instruction,array $bill): array
     {

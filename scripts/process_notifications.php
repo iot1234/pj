@@ -83,7 +83,9 @@ do{
         // the worker from the admin console without restarting it. A CLI
         // --limit remains an explicit one-process override.
         $effectiveLimit=$limit??$app->settings()->intValue('notification_batch_size',25);
+        $dailyExpiry=$app->dailyBookings()->expireHolds(100);
         $result=$app->notifications()->process($effectiveLimit);
+        $result['daily_holds_expired']=$dailyExpiry['expired'];
         $app->notifications()->recordWorkerHeartbeat($workerIdentity,'running',$result);
         if(!$loop||$result['processed']>0){
             fwrite(STDOUT,json_encode(['ok'=>true,'data'=>$result],JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR).PHP_EOL);

@@ -16,6 +16,11 @@ test('owner-only directions never offer privileged navigation to other roles or 
   assert.equal(explain(error(code),{page:'resident-portal',role:'resident'}).view,null);
  }
 });
+test('removed admin roles cannot navigate to any operational repair view',()=>{
+ for(const code of ['ROOM_IN_USE','BOOKING_BAD_STATE','METER_OPENING_REQUIRED','BILL_ALREADY_PAID','LINE_BINDING_BLOCKED']){
+  assert.equal(explain(error(code),{page:'admin-console',role:'admin'}).view,null);
+ }
+});
 test('field guidance accepts known form names only and never renders untrusted code as navigation',()=>{
  assert.equal(explain(error('VALIDATION_ERROR',{field:'phone'})).field,'phone');
  for(const field of ['__proto__','constructor','<img onerror=alert(1)>'])assert.equal(explain(error('VALIDATION_ERROR',{field})).field,undefined);

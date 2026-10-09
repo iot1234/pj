@@ -14,6 +14,11 @@ try {
     $app = require dirname(__DIR__) . '/bootstrap.php';
     $pdo = $app->database()->pdo();
 
+    $dailySchemaErrors = Dormitory\Support\DailyBookingSchema::errors($pdo);
+    if ($dailySchemaErrors !== []) {
+        throw new RuntimeException('Daily booking schema is incomplete; migrations 018, 019 and 020 are required: '.implode('; ',array_slice($dailySchemaErrors,0,3)));
+    }
+
     if ((int) $pdo->query('SELECT 1')->fetchColumn() !== 1) {
         throw new RuntimeException('database readiness check failed');
     }
@@ -88,6 +93,11 @@ try {
     // disabled. Reject an incomplete deployment before it reaches residents.
     if (!$app->transfers()->available()) {
         throw new RuntimeException('schema transfer readiness check failed; migration 016 required');
+    }
+    $ownerSchemaErrors = Dormitory\Support\OwnerAccessSchema::errors($pdo);
+    if ($ownerSchemaErrors !== []) {
+        throw new RuntimeException('schema owner-only access readiness check failed; migration 017 required: '
+            . implode('; ', array_slice($ownerSchemaErrors, 0, 3)));
     }
 
     // A table-count-only probe can stay green while application code expects
@@ -389,6 +399,8 @@ try {
                 "casewhenstatusin'verified','pending'thenbill_idelsenullend",
             ],
         ],
+        'payments.active_slip_hmac' => ['type'=>'char(64)','expressions'=>["casewhenstatusin'pending','verified'thenslip_hmacelsenullend"]],
+        'payments.credited_txn_ref' => ['type'=>'varchar(191)','expressions'=>["casewhenstatus='verified'thentransaction_refelsenullend"]],
         'line_link_codes.pending_resident_id' => [
             'type' => 'bigint unsigned',
             'expressions' => ["casewhenstatus='pending'thenresident_idelsenullend"],
@@ -477,8 +489,8 @@ try {
         'bills.uq_bills_bill_no' => ['bill_no'],
         'bills.uq_bills_occupancy_period' => ['occupancy_id', 'period'],
         'bill_items.uq_bill_items_bill_type' => ['bill_id', 'item_type'],
-        'payments.uq_payments_slip_hmac' => ['slip_hmac'],
-        'payments.uq_payments_transaction_ref' => ['transaction_ref'],
+        'payments.uq_payments_slip_hmac' => ['active_slip_hmac'],
+        'payments.uq_payments_transaction_ref' => ['credited_txn_ref'],
         'payments.uq_payments_one_active_per_bill' => ['active_bill_id'],
         'notification_outbox.uq_notification_outbox_bill_binding' => ['bill_id', 'purpose', 'line_delivery_key'],
         'notification_outbox.uq_notification_outbox_retry_key' => ['retry_key'],

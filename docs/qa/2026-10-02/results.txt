@@ -1,0 +1,71 @@
+Verification date: 2026-10-02 (Asia/Bangkok)
+Project: php-mysql; local source changes from 705c745
+PHP unit/contracts: 139 passed, 0 failed
+JavaScript interactions: 242 passed, 0 failed
+PHP lint: 100 files passed
+Installer --check, changed shell syntax, diff whitespace: passed
+Canonical schema: 22 tables, 27 triggers, 121 CHECKs
+External providers: simulated; no LINE messages, live slip checks or money transfers
+Configured/live database: unchanged
+
+Full isolated MySQL run and browser operations/payment:
+owner_migration: exit=0, PASS lines=7
+line_qr: exit=0, PASS lines=23
+operations: exit=0, PASS lines=14
+browser: exit=0
+PASS resident read failure/malformed payload cannot revive stale actions; retry restores real records
+PASS real phone conflict preserves submitted draft, unlocks recovery and leaves original phone intact
+PASS direct check-in locks all fields, sends one request, creates one resident and updates room occupancy
+PASS admin creation is rejected; owner can use management APIs and disabling owner revokes the live session
+PASS resident cannot read another room bill or admin data; invalid CSRF leaves profile unchanged
+PASS all 11 admin views remain compatible; no JavaScript errors or external calls
+PASS all-billed screenshot scenario: nearby causes, existing-bill navigation, per-room explanations, LINE counts, 320/390/1280px and zero writes
+PASS correcting prerequisites updates help and enables preview only; issuance still requires a fresh preview
+PASS read failures keep actions blocked and explain retry instead of reporting ready or no selection
+PASS unsaved integration credentials explain save-before-test without testing any provider
+PASS disabled help lifecycle preserves accessibility descriptions, groups busy controls, escapes text and hides owner-only routes
+pending_migration: exit=0, PASS lines=4
+pending: exit=0, PASS lines=1
+binding: exit=0, PASS lines=1
+bot: exit=0, PASS lines=18
+room_binding: exit=0, PASS lines=20
+oa: exit=0, PASS lines=24
+platform: exit=0, PASS lines=14
+billing_defaults: exit=0, PASS lines=7
+guide: exit=0, PASS lines=17
+meter: exit=0, PASS lines=16
+phone: exit=0, PASS lines=18
+payment: exit=0, PASS lines=19
+transfer: exit=0, PASS lines=16
+browser: exit=0
+PASS real PHP/MySQL resident 1: QR without verifier, exact 100.70, LINE bill reference, stable reload
+PASS real QR layout at 320, 390, 768 and 1366px
+PASS real PHP/MySQL resident 2: QR without verifier, exact 100.48, LINE bill reference, stable reload
+PASS real PHP/MySQL resident 3: QR without verifier, exact 100.23, LINE bill reference, stable reload
+PASS three equal-principal rooms have distinct locked amounts: 100.70, 100.48, 100.23
+PASS incomplete verifier configuration is rejected without disabling resident QR or LINE
+PASS LINE identity cannot be overwritten via payment settings
+PASS real move-out guard explains unpaid bills and guides back to billing without moving the resident or marking paid
+PASS all 11 admin views load against real PHP/MySQL without API read errors
+PASS simulated user-list outage clears stale actions and one-click reload restores the real list
+PASS zero browser JavaScript errors; no provider requests, LINE messages or transfers
+billing: exit=0, PASS lines=33
+healthz: exit=0, PASS lines=14
+lifecycle: exit=0, PASS lines=1
+schema-audit: exit=0
+MySQL suites: 0 failures
+
+Final source: booking-to-bill browser journey and signed webhook alias verification:
+operations: exit=0, PASS lines=14
+browser: exit=0
+PASS create room through real form and read back exact rent, floor and availability
+PASS lost booking response preserves draft/key; explicit retry returns one existing booking and hides reserved room
+PASS move-in guidance matches phone-only access and does not promise an activation code
+PASS confirm booking and check in through real forms; room changes from reserved to occupied
+PASS missing-meter preview blocks issuance; repair action opens correct room and returns with bill draft intact
+PASS actual preview totals 2500 + 2x20 + 10x7 = 2610; double submit issues exactly one bill
+PASS issued month no longer exposes writable meter controls
+PASS new tenant logs in with phone only, sees only own exact bill, and unpaid move-out preserves occupancy/session
+PASS entire real HTTP journey has no JavaScript errors and makes no external requests
+oa: exit=0, PASS lines=25
+MySQL suites: 0 failures

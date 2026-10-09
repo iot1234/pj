@@ -86,7 +86,7 @@ final class MeterService
         $periodDate = Validator::periodDate($period);
         $this->assertPeriodIsNotFuture(substr($periodDate, 0, 7));
         $statement = $this->app->database()->pdo()->prepare(
-            "SELECT r.id AS room_id,r.room_code,mt.meter_type,
+            "SELECT r.id AS room_id,r.room_code,r.rental_mode,mt.meter_type,
                     m.id AS reading_id,m.previous_reading,m.current_reading,m.units_used,m.updated_at,m.occupancy_id,
                     (SELECT history.period FROM meter_readings history WHERE history.room_id=r.id AND history.meter_type=mt.meter_type AND history.period<? ORDER BY history.period DESC LIMIT 1) AS prior_period,
                     (SELECT history.occupancy_id FROM meter_readings history WHERE history.room_id=r.id AND history.meter_type=mt.meter_type AND history.period<? ORDER BY history.period DESC LIMIT 1) AS prior_occupancy_id,
@@ -138,14 +138,14 @@ final class MeterService
                ) mt
                LEFT JOIN meter_readings m
                  ON m.room_id=r.id AND m.meter_type=mt.meter_type AND m.period=?
-              WHERE r.deleted_at IS NULL
+              WHERE r.deleted_at IS NULL AND (r.rental_mode='monthly' OR m.id IS NOT NULL)
               ORDER BY r.floor,r.room_code,FIELD(mt.meter_type,'water','electric')"
         );
         $statement->execute(array_fill(0,17,$periodDate));
         $grouped = [];
         foreach ($statement->fetchAll() as $row) {
             $id = (int) $row['room_id'];
-            $grouped[$id] ??= ['room_id'=>$id,'room_code'=>$row['room_code'],'period'=>$period,'water'=>null,'electric'=>null,
+            $grouped[$id] ??= ['room_id'=>$id,'room_code'=>$row['room_code'],'rental_mode'=>$row['rental_mode'],'period'=>$period,'water'=>null,'electric'=>null,
                 'is_billed'=>(bool)$row['is_billed'],'occupancy_id'=>$row['selected_occupancy_id']===null?null:(int)$row['selected_occupancy_id'],
                 'opening_readings_pending'=>(bool)$row['opening_readings_pending'],
                 'water_previous'=>null,'water_current'=>null,'water_units'=>null,'electric_previous'=>null,'electric_current'=>null,'electric_units'=>null];
@@ -164,8 +164,9 @@ final class MeterService
                 $grouped[$id][$meterType.'_current']=$hasCurrent?(string)$row['current_reading']:null;
                 $grouped[$id][$meterType.'_units']=$hasCurrent?(string)$row['units_used']:null;
                 $grouped[$id][$meterType.'_opening_required']=(bool)$row['opening_readings_pending'];
-                $grouped[$id][$meterType.'_locked']=$readiness['locked'];
-                $grouped[$id][$meterType.'_lock_reason']=$readiness['lock_reason'];
+                $dailyHistory=$row['rental_mode']==='daily';
+                $grouped[$id][$meterType.'_locked']=$dailyHistory||$readiness['locked'];
+                $grouped[$id][$meterType.'_lock_reason']=$dailyHistory?'daily_history':$readiness['lock_reason'];
                 $grouped[$id][$meterType.'_baseline_state']=$readiness['baseline_state'];
                 $grouped[$id][$meterType.'_vacant_baseline']=$readiness['is_vacant_baseline'];
                 $grouped[$id][$meterType.'_next_period']=$row['next_period']===null?null:substr($row['next_period'],0,7);
@@ -221,9 +222,11 @@ final class MeterService
         }
 
         return $this->app->database()->transaction(function (PDO $pdo) use ($roomId,$period,$periodDate,$values,$adminId,$confirmLarge,$input): array {
-            $room = $pdo->prepare('SELECT id FROM rooms WHERE id=? AND deleted_at IS NULL FOR UPDATE');
+            $room = $pdo->prepare('SELECT id,rental_mode FROM rooms WHERE id=? AND deleted_at IS NULL FOR UPDATE');
             $room->execute([$roomId]);
-            if (!$room->fetch()) throw new HttpException(404, 'ไม่พบห้อง', 'ROOM_NOT_FOUND');
+            $roomRow=$room->fetch();
+            if (!$roomRow) throw new HttpException(404, 'ไม่พบห้อง', 'ROOM_NOT_FOUND');
+            if($roomRow['rental_mode']!=='monthly')throw new HttpException(409,'ห้องรายวันรวมค่าน้ำไฟในค่าพัก ไม่ต้องจดมิเตอร์รายเดือน','ROOM_RENTAL_MODE');
             $occupancy=$this->occupancyForPeriod($pdo,$roomId,$periodDate,true);
             if($occupancy!==null&&($occupancy['opening_water_reading']===null||$occupancy['opening_electric_reading']===null)){
                 throw new HttpException(409,'กรุณาเติมเลขมิเตอร์น้ำและไฟ ณ วันเข้าอยู่ในหน้าผู้เช่าก่อนบันทึกมิเตอร์','METER_OPENING_REQUIRED',[

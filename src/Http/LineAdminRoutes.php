@@ -9,7 +9,7 @@ final class LineAdminRoutes
 {
     public static function register(Router $router,Application $app): void
     {
-        $auth=['auth'=>'admin'];
+        $auth=['auth'=>'admin','role'=>'owner'];
         $admin=static fn():int=>(int)$app->actor()['id'];
         $id=static fn(Request $r):int=>Validator::id($r->param('id'),'id');
         $oa=static function(Request $r)use($app):int{$value=$r->param('id');if(!is_string($value)||!preg_match('/^(0|[1-9][0-9]{0,17})$/D',$value))throw new HttpException(422,'OA ID ไม่ถูกต้อง','VALIDATION_ERROR');$app->lineOfficialAccounts()->assertBotId((int)$value);return(int)$value;};

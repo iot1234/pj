@@ -85,7 +85,7 @@ function harness(flow, { deferReload = false, changedPhone = false } = {}) {
     text: (value, fallback = '—') => value == null || value === '' ? fallback : String(value),
     errorMessage: (error) => error.message,
     showFormError: (_node, message) => { if (message) effects.errors.push(message.message || message); },
-    showResidentAccess: (data, label) => effects.access.push({ data, label }),
+    notifyResidentPhoneAccess: (label, action) => effects.access.push({ label, action }),
     toast: () => {},
     loadResidents: () => deferReload ? reload.promise : Promise.resolve(),
     loadRooms: () => deferReload ? reload.promise : Promise.resolve(),
@@ -120,7 +120,7 @@ for (const flow of flows) {
     assert.equal(ui.dialog.dataset.dialogBusy, 'true');
     assert.equal(ui.closeButton.disabled, true);
     assert.equal(ui.close(), false, 'cannot close and reopen this form for another resident');
-    ui.resolve({ full_name: 'Alice', room_code: 'A101', resident_access: { activation_required: true } });
+    ui.resolve({ full_name: 'Alice', room_code: 'A101', sessions_revoked: true, resident_access: { auth_method: 'phone', activation_required: false } });
     await work;
     assert.equal(ui.dialog.open, false);
     assert.equal(ui.closeButton.disabled, false);
@@ -146,7 +146,7 @@ for (const flow of flows) {
   test(`${flow.form}: save controls finish before the post-save list reload`, async () => {
     const ui = harness(flow, { deferReload: true });
     const work = ui.submit();
-    ui.resolve({ resident_access: { activation_required: true } });
+    ui.resolve({ resident_access: { auth_method: 'phone', activation_required: false } });
     await new Promise(setImmediate);
     assert.equal(ui.dialog.open, false);
     assert.equal(ui.submitButton.disabled, false, 'completed save must release its button before closing');
@@ -158,7 +158,7 @@ for (const flow of flows) {
   test(`${flow.form}: an earlier list reload cannot unlock a newer pending save`, async () => {
     const ui = harness(flow, { deferReload: true });
     const firstSave = ui.submit();
-    ui.resolve({ resident_access: { activation_required: true } });
+    ui.resolve({ resident_access: { auth_method: 'phone', activation_required: false } });
     await new Promise(setImmediate);
     ui.reopen();
     const nextSave = ui.submit();
@@ -168,22 +168,38 @@ for (const flow of flows) {
     assert.equal(ui.dialog.dataset.dialogBusy, 'true', 'older finally must not release the new request');
     assert.equal(ui.submitButton.disabled, true);
     assert.equal(ui.close(), false);
-    ui.resolve({ resident_access: { activation_required: true } }, 1);
+    ui.resolve({ resident_access: { auth_method: 'phone', activation_required: false } }, 1);
     await nextSave;
     assert.equal(ui.dialog.open, false);
     assert.equal(ui.submitButton.disabled, false);
   });
 }
 
-test('move-in activation label uses the submitted booking snapshot', async () => {
+test('move-in phone access guidance uses the submitted booking snapshot', async () => {
   const ui = harness(flows[0]);
   const work = ui.submit();
-  // Even if another UI refresh changes the shared label, the credential must
-  // remain associated with the resident whose request was submitted.
+  // A concurrent list refresh must not associate the confirmation with another resident.
   ui.summary.textContent = 'Bob · ห้อง B202';
-  ui.resolve({ resident_access: { activation_required: true } });
+  ui.resolve({ resident_access: { auth_method: 'phone', activation_required: false } });
   await work;
   assert.equal(ui.effects.access[0].label, 'Alice · ห้อง A101');
+});
+
+test('an unchanged resident edit does not announce a phone access reset', async () => {
+  const ui = harness(flows[2]), work = ui.submit();
+  ui.resolve({ sessions_revoked: false, resident_access: { auth_method: 'phone', activation_required: false } });
+  await work;
+  assert.equal(ui.effects.access.length, 0);
+});
+
+test('a changed phone announces access through the new phone after revocation', async () => {
+  const ui = harness(flows[2], { changedPhone: true }), work = ui.submit();
+  ui.confirmation.resolve(true); await new Promise(setImmediate);
+  ui.resolve({ sessions_revoked: true, resident_access: { auth_method: 'phone', activation_required: false } });
+  await work;
+  assert.equal(ui.effects.access[0].label, 'Alice · ห้อง A101');
+  assert.match(ui.effects.access[0].action, /บันทึกเบอร์ใหม่/);
+  assert.doesNotMatch(ui.effects.access[0].action, /รหัส|คีย์/);
 });
 
 test('move-in reuse confirmation remains enabled after the failed save unlocks fields', async () => {

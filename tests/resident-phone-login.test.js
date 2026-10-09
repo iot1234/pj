@@ -22,6 +22,8 @@ test('an invalid empty form does not send a request',async()=>{const h=harness()
 test('admin onboarding and phone-change guidance agree with phone-only access',()=>{
  const admin=fs.readFileSync(path.join(__dirname,'../templates/admin/console.php'),'utf8');
  assert.doesNotMatch(admin,/ระบบจะแสดงรหัสเปิดใช้งาน|ตั้งรหัสผ่านใหม่|แล้วออก activation code/);
+ assert.doesNotMatch(admin,/resident-access-dialog|resident-access-copy|Activation code/);
+ assert.doesNotMatch(source,/residentActivationSecret|copyResidentAccess|clearResidentAccess|showResidentAccess|hasUncopiedAccess/);
  assert.match(admin,/ผู้พักใช้เบอร์ใหม่เข้าสู่ระบบได้ทันที แล้วผูก LINE ใหม่/);
  assert.match(admin,/data-resident-stat="opening"/);assert.doesNotMatch(admin,/data-resident-stat="activation"/);
  const render=source.slice(source.indexOf('function renderResidents()'),source.indexOf('async function loadResidents()'));

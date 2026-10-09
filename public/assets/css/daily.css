@@ -1,0 +1,27 @@
+.daily-summary { display: grid; gap: .55rem; margin-bottom: 1rem; }
+.daily-summary dl { margin: 0; display: grid; grid-template-columns: minmax(8rem,1fr) minmax(0,1fr); gap: .5rem 1rem; }
+.daily-summary dt { color: var(--muted); }
+.daily-summary dd { margin: 0; overflow-wrap: anywhere; font-weight: 600; }
+.daily-calendar-cell { min-width: 5.5rem; font-size: .8rem; white-space: normal; }
+.daily-calendar-cell[data-booked="true"] { background: #edf2fc; }
+.daily-calendar-cell[data-blocked="true"] { background: #fff2e0; }
+.daily-room-operations { display: grid; grid-template-columns: repeat(auto-fit,minmax(240px,1fr)); gap: 1rem; }
+.daily-room-operations .panel { padding: 1rem; }
+#daily-admin-rows .table-actions { flex-wrap: wrap; min-width: 12rem; }
+#daily-owner-payment-actions form { border-top: 1px solid var(--line); padding-top: 1rem; }
+#daily-qr-stage:empty { display: none; }
+.admin-content #daily-calendar th:last-child, .admin-content #daily-calendar td:last-child { position: static; box-shadow: none; }
+@media(max-width:600px) {
+  .daily-summary dl { grid-template-columns: minmax(7rem,1fr) minmax(0,1fr); gap: .6rem; font-size: .88rem; }
+  .daily-booking-table, .daily-booking-table tbody { display: block; width: 100%; }
+  .daily-booking-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .daily-booking-table tbody { display: grid; gap: 1rem; padding: 1rem; }
+  .daily-booking-table tbody tr { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); padding: .75rem; border: 1px solid var(--line); border-radius: 8px; }
+  .daily-booking-table tbody td { display: block; padding: .4rem; white-space: normal; border: 0; overflow-wrap: anywhere; }
+  .daily-booking-table tbody td:first-child, .daily-booking-table tbody td:nth-child(3), .daily-booking-table tbody td:last-child { grid-column: 1 / -1; }
+  .daily-booking-table tbody td::before { content: attr(data-label); display: block; margin-bottom: .25rem; color: var(--muted); font-size: .75rem; font-weight: 400; }
+  .admin-content .daily-booking-table tbody td:last-child { position: static; box-shadow: none; background: transparent; }
+  #daily-admin-rows .table-actions { display: grid; min-width: 0; grid-template-columns: repeat(2,minmax(0,1fr)); gap: .4rem; }
+  #daily-admin-rows .table-actions button { min-height: 44px; }
+  #daily-admin-rows .table-actions button:first-child { grid-column: 1 / -1; }
+}

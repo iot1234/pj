@@ -1,18 +1,24 @@
 # ระบบบริหารหอพัก PHP / MySQL
 
-ระบบนี้เป็นการเขียนใหม่ด้วย PHP 8.2+ และ MySQL 8 โดยยกมาเฉพาะ FR-01 ถึง FR-16 จาก `1.txt`: ห้องและการจอง ผู้เช่า มิเตอร์ บิล LINE พร้อมเพย์ และตรวจสลิป ไม่มีการพึ่งพา Node.js/PostgreSQL เดิม
+เพิ่ม **การจองห้องรายวัน** ที่ `/daily` และเมนูเจ้าของ **จองรายวัน**: ค้นหาวันพัก ราคา/คืน ป้องกันจองชน รับเงินก่อนเข้าพัก เงินประกัน เช็กอิน–เอาต์ ห้องรอทำความสะอาด และช่วงปิดขาย ดู [คู่มือรายวัน](docs/DAILY_BOOKING.md) ฐานเดิมต้องอัปเกรดเพิ่มด้วย migrations **018, 019 และ 020** หลัง 017 ก่อนใช้ source รุ่นนี้
+
+ระบบนี้เป็นการเขียนใหม่ด้วย PHP 8.2+ และ MySQL 8 โดยเริ่มจาก FR-01 ถึง FR-16 จาก `1.txt`: ห้องและการจอง ผู้เช่า มิเตอร์ บิล LINE พร้อมเพย์ และตรวจสลิป พร้อมเพิ่มการจองรายวัน ไม่มีการพึ่งพา Node.js/PostgreSQL เดิม
 
 หากติดตั้งใหม่และต้องการขั้นตอนสั้นที่สุด ให้เริ่มที่ [`START_HERE.md`](START_HERE.md) โดย XAMPP/Laragon สามารถ import `database/install.sql` **ไฟล์เดียว** ผ่าน phpMyAdmin ได้ ส่วน Docker ติดตั้ง SQL และเปิด worker ให้อัตโนมัติ
 
-รายละเอียดการครอบคลุมแต่ละข้ออยู่ที่ [docs/FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md), คู่มือตั้งค่า MySQL อยู่ที่ [docs/SQL_SETUP.md](docs/SQL_SETUP.md), ผลวิเคราะห์ระบบเดิมและแนวทางย้ายข้อมูลอยู่ที่ [docs/MIGRATION_ANALYSIS.md](docs/MIGRATION_ANALYSIS.md), ผลทดสอบอยู่ที่ [docs/QA_REPORT.md](docs/QA_REPORT.md) และแนวทางความปลอดภัยอยู่ที่ [docs/SECURITY.md](docs/SECURITY.md)
+ระบบมีเฉพาะเจ้าของระบบ (`owner`) และผู้ใช้งาน (`resident`) บัญชีแอดมินเดิมถูกเลิกใช้ถาวรโดยไม่ยกระดับสิทธิ์ ดู [การอัปเกรดสิทธิ์ด้วย migration 017](docs/OWNER_ONLY_MIGRATION.md) ก่อนใช้รุ่นนี้กับฐานเดิม ผู้เยี่ยมชมยังดูห้องว่างและจองได้โดยไม่เป็นบทบาทที่เข้าสู่ระบบ
 
-แอดมินตั้งค่า LINE Bot หลักของหอพักบัญชีเดียวด้วย Token และ Secret ระบบดึงชื่อ/Basic ID และสร้างลิงก์ให้เอง รองรับผู้รับหลายบัญชีต่อห้อง ยกเลิก/บล็อกและกำหนดผู้รับแจ้งเตือนได้ ดู [คู่มือ LINE](docs/LINE_BINDING.md) และ [คู่มือใช้งานแบบลดช่องกรอก](docs/USABILITY_REVIEW_2026-09-20.md) ฐานเดิมต้องผ่าน migration ถึง `015`
+รายละเอียดการครอบคลุมแต่ละข้ออยู่ที่ [docs/FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md), คู่มือตั้งค่า MySQL อยู่ที่ [docs/SQL_SETUP.md](docs/SQL_SETUP.md), ผลวิเคราะห์ระบบเดิมและแนวทางย้ายข้อมูลอยู่ที่ [docs/MIGRATION_ANALYSIS.md](docs/MIGRATION_ANALYSIS.md), ผลตรวจและทดสอบล่าสุดอยู่ที่ [docs/AUDIT_2026-10-02.md](docs/AUDIT_2026-10-02.md) และแนวทางความปลอดภัยอยู่ที่ [docs/SECURITY.md](docs/SECURITY.md)
 
-> **ทางเข้าลูกบ้านแบบเบอร์อย่างเดียว:** กรอกเบอร์ที่ผูกกับผู้พักและห้องที่ยังเข้าอยู่ แล้วเข้าได้ทันทีจากทุกเครื่อง ไม่ใช้รหัสผ่าน OTP ลิงก์ยืนยัน หรือการยืนยันเครื่องครั้งแรก บัญชี Admin/Owner ยังใช้ username/password ตามเดิม **เบอร์โทรไม่ใช่หลักฐานเจ้าของบัญชี คนที่รู้เบอร์สามารถเข้าแทนได้** ระบบระบุ `auth_method=phone`, `assurance=low`, `phone_verified=false` ไม่อ้างว่ายืนยันเจ้าของเบอร์แล้ว ดู `docs/RESIDENT_PHONE_ONLY_2026-09-21.md`
+เจ้าของระบบตั้งค่า LINE Bot หลักของหอพักบัญชีเดียวด้วย Token และ Secret ระบบดึงชื่อ/Basic ID และสร้างลิงก์ให้เอง รองรับผู้รับหลายบัญชีต่อห้อง ยกเลิก/บล็อกและกำหนดผู้รับแจ้งเตือนได้ ดู [คู่มือ LINE](docs/LINE_BINDING.md) และ [คู่มือใช้งานแบบลดช่องกรอก](docs/USABILITY_REVIEW_2026-09-20.md) ฐานเดิมต้องผ่าน migration ถึง `020`
+
+> **ทางเข้าลูกบ้านแบบเบอร์อย่างเดียว:** กรอกเบอร์ที่ผูกกับผู้พักและห้องที่ยังเข้าอยู่ แล้วเข้าได้ทันทีจากทุกเครื่อง ไม่ใช้รหัสผ่าน OTP ลิงก์ยืนยัน หรือการยืนยันเครื่องครั้งแรก บัญชี Owner ยังใช้ username/password ตามเดิม **เบอร์โทรไม่ใช่หลักฐานเจ้าของบัญชี คนที่รู้เบอร์สามารถเข้าแทนได้** ระบบระบุ `auth_method=phone`, `assurance=low`, `phone_verified=false` ไม่อ้างว่ายืนยันเจ้าของเบอร์แล้ว ดู `docs/RESIDENT_PHONE_ONLY_2026-09-21.md`
 
 Resident session หมดอายุเมื่อไม่ใช้งาน 15 นาทีหรือครบ 1 ชั่วโมง ยังตรวจ active, auth_version, เบอร์ ห้อง และรอบเข้าอยู่ในแต่ละคำขอ ผู้พักแก้ชื่อและ email ได้ แต่เปลี่ยนเบอร์หรือห้องเองไม่ได้ หากเบอร์ไม่ตรงให้ติดต่อผู้ดูแล ไม่ต้องขอรหัสเปิดใช้งาน
 
-ผู้ดูแลเพิ่มผู้พักหลักเข้าห้องได้โดยตรงจากหน้า **ห้องพัก** (ปุ่ม “เพิ่มผู้พัก” ของห้องว่าง) หรือหน้า **ผู้พักอาศัย** ระบบจะสร้าง booking ledger, resident และ occupancy ใน transaction เดียว ป้องกันห้อง/เบอร์ซ้ำและการกดส่งซ้ำด้วย idempotency key หากเบอร์เคยมีประวัติ ผู้ดูแลต้องยืนยันว่าเป็นบุคคลเดิมก่อนเชื่อมประวัติบิล หนึ่งห้องรองรับผู้พักหลักที่ active ได้ครั้งละหนึ่งคน
+เจ้าของระบบเพิ่มผู้พักหลักเข้าห้องได้โดยตรงจากหน้า **ห้องพัก** (ปุ่ม “เพิ่มผู้พัก” ของห้องว่าง) หรือหน้า **ผู้พักอาศัย** ระบบจะสร้าง booking ledger, resident และ occupancy ใน transaction เดียว ป้องกันห้อง/เบอร์ซ้ำและการกดส่งซ้ำด้วย idempotency key หากเบอร์เคยมีประวัติ เจ้าของต้องยืนยันว่าเป็นบุคคลเดิมก่อนเชื่อมประวัติบิล หนึ่งห้องรองรับผู้พักหลักที่ active ได้ครั้งละหนึ่งคน
+
+คอลัมน์ password/activation ของผู้พักยังเก็บไว้เพื่อความเข้ากันได้กับฐานเดิม ระบบไม่สร้างหรือคืนรหัส activation ตอนเพิ่มผู้พัก ย้ายเข้า ใช้ประวัติเดิม หรือ reissue อีกต่อไป endpoint reissue ใช้ยกเลิก session ผ่าน `auth_version` และเพิกถอนการผูก LINE เดิมเท่านั้น ตัวแปร `RESIDENT_ACTIVATION_TTL_SECONDS` เลิกใช้แล้ว ค่าเก่าที่ค้างอยู่ไม่ถูกตรวจหรือส่งเข้า Compose ผู้พักไม่ต้องขอหรือกรอกรหัสเปิดใช้งาน
 
 ## ความต้องการของระบบ
 
@@ -54,7 +60,6 @@ php -r "echo bin2hex(random_bytes(32)), PHP_EOL;"
 - `APP_KEY` ต้องคงเดิมและมีค่าเดียวกันใน web/worker/job ทุก instance เพราะใช้สร้าง HMAC และถอดรหัส token/API key ใน `integration_settings`; ห้ามหมุนค่าโดยไม่มีขั้นตอน re-encrypt หรือล้างค่าลับด้วย key เดิมแล้วกรอกใหม่หลังเปลี่ยน key
 - `TRUSTED_PROXIES` ใส่เฉพาะ IP ของ reverse proxy ที่ควบคุมเอง คั่นด้วย comma; หากไม่ได้ใช้ proxy ให้เว้นว่าง
 - `BOOKING_HOLD_SECONDS` กำหนดอายุคำขอจองที่ยังไม่ยืนยัน ค่าเริ่มต้น 86,400 วินาที (24 ชั่วโมง) และกำหนดได้ 900–604,800 วินาที; เมื่อหมดอายุระบบจะยกเลิกคำขออัตโนมัติและคืนห้องให้จองใหม่
-- `RESIDENT_ACTIVATION_TTL_SECONDS` กำหนดอายุรหัสเปิดใช้งานผู้พัก ค่าเริ่มต้น 604,800 วินาที (7 วัน) และกำหนดได้ 900–2,592,000 วินาที Docker Compose ส่งค่านี้และ `BOOKING_HOLD_SECONDS` ให้ทั้งเว็บและ worker; หลังแก้ `.env` ให้รัน `docker compose up -d` เพื่อสร้าง container ใหม่ด้วยค่าที่เปลี่ยน
 - ค่าโครงสร้างพื้นฐาน เช่น `APP_KEY`, `APP_URL`, `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME` และ `DB_PASSWORD` ยังต้องมาจาก environment/secret manager ส่วนเบอร์พร้อมเพย์, LINE Channel access token/Channel secret และ SlipOK/EasySlip key ไม่ต้องและไม่ควรใส่ใน `.env`
 
 ห้าม commit `.env` และห้ามส่งไฟล์นี้ทางแชตหรืออีเมล
@@ -159,7 +164,7 @@ php -S 127.0.0.1:8080 -t public router.php
 
 คำสั่งนี้ใช้เพื่อพัฒนาเท่านั้น ไม่ใช่ production server
 
-## สร้างผู้ดูแลคนแรก
+## สร้างเจ้าของระบบคนแรก
 
 ระบบไม่มีบัญชีหรือรหัสผ่านตั้งต้น แนะนำให้ส่งรหัสผ่านผ่าน standard input เพื่อไม่ให้ปรากฏใน command history หรือ process list รหัสผ่านต้องยาว 12–200 ตัวอักษร ไม่ใช้ชื่อผู้ใช้/คำยอดนิยม และต้องผสมชนิดอักขระให้คาดเดายาก ตัวอย่าง PowerShell 7:
 
@@ -186,7 +191,7 @@ Remove-Variable ownerPassword
 
 เมื่อสร้างสำเร็จ ให้ลบตัวแปร/secret ชั่วคราวจาก shell ทันที Compose ส่งเฉพาะ runtime allowlist ให้ `app`/`worker` จึงไม่มี `DB_ROOT_PASSWORD` หรือรหัสผ่าน bootstrap อยู่ใน process ระยะยาว
 
-บัญชี `owner` เท่านั้นที่เพิ่ม/แก้ไข/ปิดบัญชีผู้ดูแลรายอื่นได้ ระบบป้องกันการลบ owner คนสุดท้าย แต่ควรมีขั้นตอนกู้คืนที่ควบคุมโดยผู้ดูแลฐานข้อมูลด้วย
+บัญชี `owner` เท่านั้นที่เพิ่ม/แก้ไข/ปิดบัญชีเจ้าของรายอื่นได้ ระบบป้องกันการปิด owner คนสุดท้ายและบัญชีของตนเอง แอดมินเดิมที่เลิกใช้แก้ credential หรือเปิดใช้งานอีกไม่ได้ หากต้องมอบสิทธิ์เจ้าของให้บุคคลเดิมต้องสร้างบัญชี owner ใหม่อย่างชัดเจนด้วยชื่อใหม่ ดู [คู่มือ migration 017](docs/OWNER_ONLY_MIGRATION.md)
 
 ## ฐานข้อมูล
 
@@ -217,7 +222,7 @@ MySQL ตีความ `_` และ `%` ในขอบเขต database ข
 
 อย่าใช้ MySQL `root` เป็น `DB_USERNAME` ของเว็บ และอย่าเปิด port 3306 สู่ Internet ใน Docker ตัวอย่างผูก port ฐานข้อมูลไว้ที่ `127.0.0.1` เท่านั้น
 
-บัญชี runtime ที่มีเฉพาะ `SELECT`/`INSERT`/`UPDATE` จะมองไม่เห็น `INFORMATION_SCHEMA.TRIGGERS` ตามกฎสิทธิ์ของ MySQL ตัวตรวจจึงแสดง `[SKIP]` สำหรับ trigger โดยไม่ถือว่าล้มเหลว ให้ DBA รัน `php scripts/check_requirements.php --schema-audit` ด้วยบัญชี schema owner หลัง import/restore เพื่อรับรองว่า integrity triggers ทั้ง 23 รายการ รวม event/timing/table และ body ตรงกับ `database/schema.sql` แล้วกลับมาใช้บัญชี runtime ตามเดิม บัญชีที่ import/สร้าง trigger จะเป็น `DEFINER`; ต้องเป็นบัญชี schema owner ที่ล็อกการใช้งานและคงอยู่ ห้ามลบบัญชีนั้นหลัง migration เว้นแต่ DBA จะ recreate trigger ทั้งหมดภายใต้ definer ที่คงอยู่
+บัญชี runtime ที่มีเฉพาะ `SELECT`/`INSERT`/`UPDATE` จะมองไม่เห็น `INFORMATION_SCHEMA.TRIGGERS` ตามกฎสิทธิ์ของ MySQL ตัวตรวจจึงแสดง `[SKIP]` สำหรับ trigger โดยไม่ถือว่าล้มเหลว ให้ DBA รัน `php scripts/check_requirements.php --schema-audit` ด้วยบัญชี schema owner หลัง import/restore เพื่อรับรองว่า integrity triggers ทั้งหมด รวม event/timing/table และ body ตรงกับ `database/schema.sql` แล้วกลับมาใช้บัญชี runtime ตามเดิม บัญชีที่ import/สร้าง trigger จะเป็น `DEFINER`; ต้องเป็นบัญชี schema owner ที่ล็อกการใช้งานและคงอยู่ ห้ามลบบัญชีนั้นหลัง migration เว้นแต่ DBA จะ recreate trigger ทั้งหมดภายใต้ definer ที่คงอยู่
 
 ### อัปเกรดฐานข้อมูลที่ติดตั้งอยู่แล้ว
 
@@ -225,16 +230,16 @@ MySQL ตีความ `_` และ `%` ในขอบเขต database ข
 
 ฐานข้อมูลเดิมต้องสำรองและทดสอบ restore ก่อน แล้วใช้บัญชี schema/migration ที่มีสิทธิ์ DDL (ไม่ใช่ `DB_USERNAME` ของแอป) รันตามลำดับ: `database/migrations/001_integration_settings.sql` เมื่อฐานยังไม่มี `integration_settings` (ไฟล์นี้ idempotent), รัน `database/migrations/002_operational_hardening.sql` **หนึ่งครั้งเท่านั้น**, รัน `003_append_only_guards.sql`, `004_line_webhook.sql` และ `005_booking_active_phone.sql` ตามเงื่อนไขเดิม จากนั้น deploy transitional commit `a52bc33` ให้ทุก replica healthy ก่อนรัน `006_remove_resident_pin.sql` เพื่อลบ `residents.pin_hash` ห้ามรัน `006` ขณะยังมีแอปรุ่น PIN และหลังลบแล้วจะ rollback ไปแอปรุ่น PIN ไม่ได้โดยไม่ restore schema/backup
 
-เมื่อยืนยันว่า `pin_hash` หายแล้ว ให้ปิด public write, หยุด notification worker ทุก instance และ pause monthly-billing cron แล้วรัน `007_notification_worker_fencing.sql` เพื่อเพิ่ม claim lease/fencing กับ heartbeat table ตามด้วย `008_resident_access_credentials.sql` จากนั้นคง maintenance window ที่หยุด write ของ web/worker/job, สำรองอีกครั้ง และรัน `009_occupancy_meter_baselines.sql` ตามด้วย `010_line_self_service_binding.sql`, `011_line_add_friend_identity.sql` `012_move_in_request_hash.sql` และ `013_trigger_collation_pinning.sql` ก่อน deploy source ปัจจุบัน Migration `007` จะคืนเฉพาะงาน `processing` รุ่นเก่าที่ไม่มี claim/lease เป็น `pending` โดยไม่เปลี่ยน retry key ส่วน `009` จะหยุดแบบ fail-closed หาก occupancy ของห้องหรือ resident เดียวกันทับเดือน, สถานะ/ค่าเช่า snapshot ของ resident/occupancy/room/booking ไม่สอดคล้อง, moved-in booking ไม่มี occupancy, ความสัมพันธ์ bill/items/payment/notification หรือหลักฐาน paid ผิด, ค่าเปิดมิเตอร์ไม่ครบ, meter reading ผูก occupancy ผิด หรือ chain รายเดือนไม่ต่อเนื่อง/ยอดก่อนหน้าไม่ตรง และติดตั้ง insert guards สำหรับ booking/occupancy กับ bill guard ที่บังคับเริ่ม pending ส่วน `010` เพิ่มตารางรหัสผูก LINE แบบเก็บเฉพาะ HMAC และตรวจนิยาม security-critical หลังสร้าง, `011` เพิ่ม LINE Official Account Basic ID สาธารณะพร้อม CHECK รูปแบบ และ `012` เพิ่ม digest ของคำขอย้ายเข้าที่ไม่ขึ้นกับอีเมลโปรไฟล์ซึ่งแก้ไขภายหลังได้ จึงต้องรัน migration ให้ครบและ deploy source ที่ตรงกันก่อนเปิด traffic อีกครั้ง ขั้น recovery ที่ trigger immutable ขวางการซ่อมให้ทำตาม `docs/SQL_SETUP.md` เท่านั้น
+เมื่อยืนยันว่า `pin_hash` หายแล้ว ให้ปิด public write, หยุด notification worker ทุก instance และ pause monthly-billing cron แล้วรัน `007_notification_worker_fencing.sql` เพื่อเพิ่ม claim lease/fencing กับ heartbeat table ตามด้วย `008_resident_access_credentials.sql` จากนั้นคง maintenance window ที่หยุด write ของ web/worker/job, สำรองอีกครั้ง และรัน `009_occupancy_meter_baselines.sql` ตามด้วย `010_line_self_service_binding.sql`, `011_line_add_friend_identity.sql` `012_move_in_request_hash.sql` และ `013_trigger_collation_pinning.sql` จากนั้นรัน `014` → `015` → `016` → `017` → `018` → `019` → `020` ให้ครบก่อน deploy source ปัจจุบัน Migration `007` จะคืนเฉพาะงาน `processing` รุ่นเก่าที่ไม่มี claim/lease เป็น `pending` โดยไม่เปลี่ยน retry key ส่วน `009` จะหยุดแบบ fail-closed หาก occupancy ของห้องหรือ resident เดียวกันทับเดือน, สถานะ/ค่าเช่า snapshot ของ resident/occupancy/room/booking ไม่สอดคล้อง, moved-in booking ไม่มี occupancy, ความสัมพันธ์ bill/items/payment/notification หรือหลักฐาน paid ผิด, ค่าเปิดมิเตอร์ขาดค่าเดียวหรือขาดทั้งสองแต่มีประวัติ, meter reading ผูก occupancy ผิด หรือ chain รายเดือนไม่ต่อเนื่อง/ยอดก่อนหน้าไม่ตรง และติดตั้ง insert guards สำหรับ booking/occupancy กับ bill guard ที่บังคับเริ่ม pending ส่วน `010` เพิ่มตารางรหัสผูก LINE แบบเก็บเฉพาะ HMAC และตรวจนิยาม security-critical หลังสร้าง, `011` เพิ่ม LINE Official Account Basic ID สาธารณะพร้อม CHECK รูปแบบ และ `012` เพิ่ม digest ของคำขอย้ายเข้าที่ไม่ขึ้นกับอีเมลโปรไฟล์ซึ่งแก้ไขภายหลังได้ จึงต้องรัน migration ให้ครบและ deploy source ที่ตรงกันก่อนเปิด traffic อีกครั้ง ขั้น recovery ที่ trigger immutable ขวางการซ่อมให้ทำตาม `docs/SQL_SETUP.md` เท่านั้น
 
-Fresh schema/`install.sql` มี migrations `006`–`015` รวมอยู่แล้วและไม่ต้องรันซ้ำ ฐานเดิมต้องผ่านลำดับ `001` (เมื่อจำเป็น) → `002` หนึ่งครั้ง → `003` → `004` → `005` → transitional commit `a52bc33` → `006` → ปิด traffic/หยุด worker และ cron → `007` → `008` → maintenance window → `009` → `010` → `011` → `012` → `013` → `014` → `015` → deploy source ปัจจุบันโดยยังปิด traffic จากนั้น login ด้วยบัญชี `owner`, reissue activation code ให้ผู้พัก active เดิมที่ยังเข้าไม่ได้ และกรอกค่าการเงินที่ Admin → ตั้งค่า และคีย์ LINE/Basic ID ที่ Admin → บัญชี LINE OA ระบบไม่ย้ายหรืออ่านค่าดำเนินงานเดิมจาก environment โดยอัตโนมัติ จึงต้องกรอกใหม่ในหน้าหลังบ้านก่อนเปิด LINE webhook/ส่งบิล/ตรวจสลิป/PromptPay แล้วรัน `php scripts/check_requirements.php --db --strict --production` ด้วยบัญชี runtime และ `php scripts/check_requirements.php --schema-audit` ด้วยบัญชี migration ชั่วคราว เมื่อทั้งสองผ่านจึงเปิด traffic/worker/cron
+Fresh schema/`install.sql` มี migrations ถึง `020` รวมอยู่แล้วและไม่ต้องรันซ้ำ ฐานเดิมต้องผ่านลำดับ `001` (เมื่อจำเป็น) → `002` หนึ่งครั้ง → `003` → `004` → `005` → transitional commit `a52bc33` → `006` → ปิด traffic/หยุด worker และ cron → `007` → `008` → maintenance window → `009` → `010` → `011` → `012` → `013` → `014` → `015` → `016` → `017` → `018` → `019` → `020` ต้องมีเจ้าของเดิมที่ active ก่อน `017` เมื่อฐานมีแอดมินที่ต้องเลิกใช้; migration ไม่ยกระดับแอดมินเป็นเจ้าของ อ่าน [ขั้นตอนและผลต่อบัญชี/LINE](docs/OWNER_ONLY_MIGRATION.md) แล้ว deploy source ปัจจุบันโดยยังปิด traffic จากนั้น login ด้วยบัญชี `owner` ตรวจเบอร์โทรผู้พักและการผูกห้อง active ให้ตรงหนึ่งรายการต่อคน และกรอกค่าการเงินที่หน้าเจ้าของ → ตั้งค่า และคีย์ LINE/Basic ID ที่หน้าเจ้าของ → บัญชี LINE OA ระบบไม่ย้ายหรืออ่านค่าดำเนินงานเดิมจาก environment โดยอัตโนมัติ จึงต้องกรอกใหม่ในหน้าหลังบ้านก่อนเปิด LINE webhook/ส่งบิล/ตรวจสลิป/PromptPay แล้วรัน `php scripts/check_requirements.php --db --strict --production` ด้วยบัญชี runtime และ `php scripts/check_requirements.php --schema-audit` ด้วยบัญชี migration ชั่วคราว เมื่อทั้งสองผ่านจึงเปิด traffic/worker/cron ผู้พักไม่ต้องมี password หรือ activation code เพื่อผ่าน gate นี้
 
 ## ตั้งค่า PromptPay, LINE และตรวจสลิป
 
-ค่าใช้งานทั้งหมดในหัวข้อนี้จัดการจาก Admin → ตั้งค่า โดยบัญชี `owner` เท่านั้นที่บันทึกหรือเปลี่ยนค่าได้ บัญชี admin ทั่วไปอ่านค่าที่ไม่ลับและสถานะความพร้อมได้ แต่ credential จะแสดงเพียง hint แบบปิดบัง ค่าถูกเก็บใน singleton `integration_settings` และ web/worker อ่านจากฐานข้อมูลเมื่อใช้งาน จึงมีผลกับ request/รอบ worker ถัดไปโดยไม่ต้องแก้ `.env`, rebuild image หรือ restart process
+ค่าใช้งานทั้งหมดในหัวข้อนี้จัดการจากหน้าเจ้าของ → ตั้งค่า โดยบัญชี `owner` เท่านั้นที่เข้าถึง อ่านและบันทึกค่าได้ credential แสดงเพียง hint แบบปิดบัง ค่าถูกเก็บใน singleton `integration_settings` และ web/worker อ่านจากฐานข้อมูลเมื่อใช้งาน จึงมีผลกับ request/รอบ worker ถัดไปโดยไม่ต้องแก้ `.env`, rebuild image หรือ restart process
 
-- PromptPay: กรอกเบอร์มือถือไทย 10 หลักหรือเลขผู้เสียภาษี 13 หลัก, ชื่อผู้รับ และเลขบัญชีปลายทาง/เลขท้าย 6–20 หลัก QR ใช้ยอดจาก bill snapshot ฝั่ง server เท่านั้น ไม่รับยอดจาก browser และจะแสดงเมื่อทั้ง PromptPay กับผู้ให้บริการตรวจสลิปพร้อม โดยไม่มีรายการชำระที่กำลังดำเนินการ เพื่อไม่ให้ผู้พักโอนเข้ากระบวนการที่ยังตรวจยืนยันไม่ได้ ปุ่ม “สุ่มยอดและแสดง QR ทดสอบ” จะสุ่มยอด 1.01–1.99 บาทโดยไม่สร้างบิล/รายการชำระและไม่เรียก provider แต่ QR ชี้บัญชีจริง ไม่มี sandbox และไม่หมดอายุอัตโนมัติ ให้สแกนตรวจชื่อ/ยอดแล้วกดยกเลิก ห้ามยืนยันโอน
-- LINE: Admin และ Owner ตั้งค่าบอทหลัก OA 0 ที่หน้า “บัญชี LINE OA” กรอกเฉพาะ Token และ Secret ชื่อ Basic ID ลิงก์ และ Webhook URL เป็นข้อมูลอัตโนมัติ ไม่มีช่องกรอก metadata หรือเลือก OA ในฟอร์มผูกบัญชี หนึ่งห้องยังผูกผู้รับได้หลายคน
+- PromptPay: กรอกเบอร์มือถือไทย 10 หลักหรือเลขผู้เสียภาษี 13 หลัก, ชื่อผู้รับ และเลขบัญชีปลายทาง/เลขท้าย 6–20 หลัก QR ใช้ยอดโอนที่ server จองจาก bill snapshot บวกยอดปรับ 0.01–0.99 บาท ไม่รับยอดจาก browser ยอดนี้คงเดิมเมื่อเปิด QR ซ้ำและไม่ซ้ำกับยอดโอนที่ระบบกันไว้ในสถานะ reserved/settled QR พร้อมเมื่อกำหนด PromptPay และ schema จองยอดครบ บิลยังไม่ชำระ และไม่มีรายการชำระ pending/verified โดยไม่ขึ้นกับความพร้อมของผู้ให้บริการตรวจสลิป การสร้าง QR ไม่เรียก provider และไม่ทำให้บิลชำระแล้ว ส่วนการอัปโหลดและตรวจสลิปยังต้องตั้ง provider ให้พร้อม ปุ่ม “สุ่มยอดและแสดง QR ทดสอบ” จะสุ่มยอด 1.01–1.99 บาทโดยไม่สร้างบิล/รายการชำระและไม่เรียก provider แต่ QR ชี้บัญชีจริง ไม่มี sandbox และไม่หมดอายุอัตโนมัติ ให้สแกนตรวจชื่อ/ยอดแล้วกดยกเลิก ห้ามยืนยันโอน
+- LINE: Owner ตั้งค่าบอทหลัก OA 0 ที่หน้า “บัญชี LINE OA” กรอกเฉพาะ Token และ Secret ชื่อ Basic ID ลิงก์ และ Webhook URL เป็นข้อมูลอัตโนมัติ ไม่มีช่องกรอก metadata หรือเลือก OA ในฟอร์มผูกบัญชี หนึ่งห้องยังผูกผู้รับได้หลายคน
 - SlipOK: เลือก provider เป็น SlipOK แล้วกรอก API key, Branch ID และบัญชีปลายทาง
 - EasySlip: เลือก provider เป็น EasySlip แล้วกรอก API key และบัญชีปลายทาง
 - การอัปโหลดสลิปตั้งขนาดได้ 1,024–4,194,304 bytes และช่วงผ่อนผันเวลา 0–3,600 วินาที (ค่าเริ่มต้น 300) เวลา provider ที่หาย/parse ไม่ได้ หรือยังยืนยันบัญชีผู้รับกับค่าที่ตั้งไว้ไม่ได้จะคง `pending` เพื่อไม่ fail-open
@@ -279,7 +284,7 @@ php scripts/check_requirements.php --production
 php scripts/check_requirements.php --schema-audit
 ```
 
-`--production` บังคับ `APP_ENV=production`, เปิดการตรวจฐานข้อมูล และถือ warning เป็น failure ในคำสั่งเดียว เหมาะเป็น deployment gate ของ production ส่วน `--schema-audit` ใช้ชั่วคราวกับบัญชี DBA/schema owner เพื่อตรวจ trigger ทั้ง 23 รายการรวม body ไม่ใช่คำสั่งสำหรับบัญชี runtime ประจำของแอป Fresh schema หลัง migration `015` ต้องมี 21 ตารางและ CHECK 116 รายการ โดยตัวตรวจจะตรวจทั้งจำนวนขั้นต่ำและ named guards ของ claim lease, heartbeat, resident credential, occupancy-meter, LINE binding code, LINE Basic ID และ move-in request hash รวมทั้งนิยามและการบังคับใช้ `chk_occupancies_opening_readings_v2` จาก migration `015`
+`--production` บังคับ `APP_ENV=production`, เปิดการตรวจฐานข้อมูล และถือ warning เป็น failure ในคำสั่งเดียว เหมาะเป็น deployment gate ของ production ส่วน `--schema-audit` ใช้ชั่วคราวกับบัญชี DBA/schema owner เพื่อตรวจ trigger ทั้งหมดรวม body ไม่ใช่คำสั่งสำหรับบัญชี runtime ประจำของแอป Fresh schema รุ่นรายวันหลัง migrations `018`/`019`/`020` ต้องมี 34 ตาราง โดยจำนวน trigger และ CHECK ต้องตรง canonical SQL โดยตัวตรวจจะตรวจทั้งจำนวนขั้นต่ำและ named guards ของ claim lease, heartbeat, คอลัมน์ credential legacy, occupancy-meter, LINE binding code, LINE Basic ID, move-in request hash และยอดโอนประจำบิล รวมทั้งนิยามและการบังคับใช้ opening-readings guard จาก `015` และ owner/retirement guards จาก `017` Data gate ของผู้พักตรวจเบอร์โทรและห้อง active ที่ผูกตรงหนึ่งรายการ ไม่บังคับ password/activation key
 
 บน Docker ให้ตรวจทั้งสองบทบาท เพราะ web และ worker ใช้ runtime role คนละค่า แม้อ่าน operational settings ชุดเดียวกันจาก MySQL:
 
@@ -292,7 +297,7 @@ docker compose exec worker php scripts/check_requirements.php --db --strict
 
 ทดสอบ workflow อย่างน้อยหนึ่งรอบบน staging: จองห้อง → ยืนยัน → ย้ายเข้า → จดมิเตอร์สองประเภท → preview/bulk bill → เปิด QR → ส่ง LINE → อัปโหลดสลิป → ตรวจสถานะ paid และ audit log
 
-หลังเปิดใช้งานแล้ว หน้า **ภาพรวม** ที่ `/admin` เป็นจุดตรวจประจำวัน: บอกจำนวนการจองรอยืนยัน สลิปรอตรวจ ความคืบหน้าการจดมิเตอร์/ออกบิลของรอบเดือน และ (เฉพาะ Owner) สถานะ heartbeat ของ LINE worker พร้อมจำนวนคิวที่ค้างหรือส่งไม่สำเร็จ หากการ์ดนั้นขึ้น “ไม่ทำงาน” ให้ตรวจ worker/scheduler ก่อน เพราะบิลจะค้างในคิวโดยไม่มีข้อความแจ้งเตือนออกไป
+หลังเปิดใช้งานแล้ว หน้า **ภาพรวม** ของเจ้าของที่ `/admin` เป็นจุดตรวจประจำวัน: บอกจำนวนการจองรอยืนยัน สลิปรอตรวจ ความคืบหน้าการจดมิเตอร์/ออกบิลของรอบเดือน และสถานะ heartbeat ของ LINE worker พร้อมจำนวนคิวที่ค้างหรือส่งไม่สำเร็จ หากการ์ดนั้นขึ้น “ไม่ทำงาน” ให้ตรวจ worker/scheduler ก่อน เพราะบิลจะค้างในคิวโดยไม่มีข้อความแจ้งเตือนออกไป
 
 ## แนวทาง production
 
@@ -318,7 +323,7 @@ docker compose exec worker php scripts/check_requirements.php --db --strict
 - LINE webhook ไม่ตอบ: ตรวจว่า `004_line_webhook.sql`, `010_line_self_service_binding.sql` และ `011_line_add_friend_identity.sql` รันแล้ว, ตั้ง Channel access token และ Channel secret ให้ครบ แล้วตรวจ Basic ID ที่ระบบดึงให้, Webhook URL เป็น `<APP_URL>/api/webhooks/line`, เปิด Use webhook และ Webhook redelivery, กด Verify และตรวจว่า LINE เรียก HTTPS domain จริงได้ โดยห้ามพิมพ์ token/secret/รหัส `BIND-` หรือลายเซ็นลง log
 - ส่ง LINE ไม่ได้: ตรวจ token, สถานะ audit ของ `line_user_id`, quota และรายการ retry โดยไม่พิมพ์ token ลง log
 - สลิปถูกปฏิเสธ: ตรวจยอด 2 ตำแหน่งทศนิยม, เลขท้ายบัญชี, provider config และ transaction reference ซ้ำ
-- หน้า Settings แจ้งว่า integration ยังไม่พร้อม: ฐานใหม่ให้ import `install.sql` (หรือ `schema.sql` + `defaults.sql` แบบขั้นสูง); ฐานเดิมต้องรัน `001` เมื่อจำเป็น, `002` หนึ่งครั้ง, `003`–`005`, deploy transitional commit `a52bc33`, รัน `006`, ปิด public write/หยุด worker/pause monthly-billing cron แล้วรัน `007` → `008` → `009` → `010` → `011` → `012` ก่อน deploy source ปัจจุบันโดยยังปิด traffic จากนั้น login ด้วย role `owner`, reissue activation code ให้ผู้พัก active เดิม, ตั้ง integration (รวม LINE Basic ID) และผ่าน production/schema gates ก่อนเปิด traffic/worker/cron; ช่อง secret ว่างหมายถึงเก็บค่าเดิม ไม่ได้ล้างค่า
+- หน้า Settings แจ้งว่า integration ยังไม่พร้อม: ฐานใหม่ให้ import `install.sql` (หรือ `schema.sql` + `defaults.sql` แบบขั้นสูง); ฐานเดิมต้องอัปเกรดถึง `020` ตาม [SQL_SETUP](docs/SQL_SETUP.md) และ [คู่มือยกเลิกแอดมิน](docs/OWNER_ONLY_MIGRATION.md) ขณะ public traffic/worker/monthly-billing cron หยุดอยู่ จากนั้น deploy source ที่ตรงกัน login ด้วย role `owner` ตรวจเบอร์/ห้อง active ของผู้พัก ตั้ง integration และผ่าน production/schema gates ก่อนเปิด traffic/worker/cron; ช่อง secret ว่างหมายถึงเก็บค่าเดิม ไม่ได้ล้างค่า
 
 ## โครงสร้างหลัก
 

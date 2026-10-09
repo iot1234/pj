@@ -730,10 +730,10 @@ final class BillingService
         if ($adminId < 1) {
             throw new HttpException(422, 'admin_id is invalid', 'VALIDATION_ERROR', ['field' => 'admin_id']);
         }
-        $statement = $pdo->prepare('SELECT id FROM admin_users WHERE id=? AND active=1 FOR SHARE');
+        $statement = $pdo->prepare("SELECT id FROM admin_users WHERE id=? AND active=1 AND role='owner' AND retired_at IS NULL FOR SHARE");
         $statement->execute([$adminId]);
         if ($statement->fetchColumn() === false) {
-            throw new HttpException(403, 'Active administrator is required', 'ADMIN_INACTIVE');
+            throw new HttpException(403, 'Active system owner is required', 'ADMIN_INACTIVE');
         }
     }
 

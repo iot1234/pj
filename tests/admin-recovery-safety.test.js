@@ -35,7 +35,7 @@ for(const spec of [
   const pending=[],states=[];let renders=0;
   const ctx={state,$,role:'owner',AbortController,URLSearchParams,ApiError:Error,setBusy(){},setTableState:(n,s)=>states.push(s),toast(){},errorMessage:e=>e.message,
    listFrom:d=>Array.isArray(d)?d:d.items,renderBookings:()=>renders++,renderUsers:()=>renders++,api:()=>{const d=deferred();pending.push(d);return d.promise;}};
-  vm.runInNewContext(extract(spec.start,spec.end),ctx);
+  vm.runInNewContext(extract('const requiredEntityList =', 'const errorMessagesByCode =')+extract(spec.start,spec.end),ctx);
   return {ctx,state,$,pending,states,load:()=>ctx[spec.fn](),get renders(){return renders;}};
  }
  test(`${spec.name}: reload clears and disables stale rows; malformed data fails closed`,async()=>{

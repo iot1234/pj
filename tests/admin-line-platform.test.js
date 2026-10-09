@@ -59,7 +59,7 @@ function harness() {
   const formSpec = {
     'line-oa-form': ['channel_access_token', 'channel_secret', 'channel_access_token_clear', 'channel_secret_clear', 'enabled'],
     'line-binding-code-form': ['ttl_days', 'replace_pending'],
-    'line-recipient-form': ['label', 'is_owner', 'enabled'],
+    'line-recipient-form': ['label', 'enabled'],
   };
   for (const [id, names] of Object.entries(formSpec)) {
     const form = make(id, 'form'), fields = new Map(); form.elements = { namedItem: (key) => fields.get(key) };
@@ -92,9 +92,10 @@ function harness() {
   return { $, $$, window, document, controller, requests, effects, timers, helpers, dialog, form, field, button, openBinding, context, setConfirm: (value) => { allowConfirm = value; }, advance: (ms) => { now += ms; }, tick: (ms) => { for (const [id,timer] of [...timeouts]) if(timer.ms === ms){timeouts.delete(id);timer.fn();} for (const timer of [...timers.values()]) if (timer.ms === ms) timer.fn(); } };
 }
 
-test('platform chat URL accepts exact BIND/OWNER/ADMIN codes only on official OA message URLs', () => {
+test('platform chat URL accepts exact BIND/OWNER codes and rejects removed ADMIN codes', () => {
   const ui = harness(), validate = ui.window.DormLinePlatform.messageUrl;
-  for (const prefix of ['BIND', 'OWNER', 'ADMIN']) { const code = prefix + '-' + 'F'.repeat(32); assert.equal(validate(message(code), code), message(code)); }
+  for (const prefix of ['BIND', 'OWNER']) { const code = prefix + '-' + 'F'.repeat(32); assert.equal(validate(message(code), code), message(code)); }
+  const retired = 'ADMIN-' + 'F'.repeat(32); assert.equal(validate(message(retired), retired), '');
   for (const url of ['javascript:alert(1)', message(codeA) + '#fragment', message(codeB), message(codeA).replace('line.me', 'line.me.evil.test'), message(codeA).replace('%40', '@')]) assert.equal(validate(url, codeA), '');
 });
 
@@ -185,12 +186,32 @@ test('late QR success after dialog close cannot reveal the code again', async ()
 });
 
 test('recipient status refresh preserves draft label and category mutes while recognizing a claim', async () => {
-  const ui = harness(), row = { id: 9, oa_id: 0, oa_name: 'เดิม', label: 'ผู้ดูแล', enabled: true, is_owner: false, status: 'pending', muted_categories: [], code: 'ADMIN-' + 'A'.repeat(32), expires_at: new Date(Date.now() + 60000).toISOString() }; row.line_message_url = message(row.code);
+  const ui = harness(), row = { id: 9, oa_id: 0, oa_name: 'เดิม', label: 'เจ้าของระบบ', enabled: true, is_owner: true, status: 'pending', muted_categories: [], code: 'OWNER-' + 'A'.repeat(32), expires_at: new Date(Date.now() + 60000).toISOString() }; row.line_message_url = message(row.code);
   const work = ui.controller.openRecipient(9); ui.requests[0].resolve(row); ui.requests[1].resolve(readyOas); await work;
   ui.field('line-recipient-form', 'label').value = 'ชื่อร่าง'; ui.$$('[name="muted_categories"]', ui.form('line-recipient-form'))[0].checked = true;
   const refresh = ui.controller.refreshDialog(true); ui.requests.at(-1).resolve({ ...row, status: 'claimed', code: undefined, line_user_id_hint: 'U***1234' }); await refresh;
   assert.equal(ui.field('line-recipient-form', 'label').value, 'ชื่อร่าง'); assert.equal(ui.$$('[name="muted_categories"]', ui.form('line-recipient-form'))[0].checked, true);
   assert.equal(ui.$('#line-recipient-code').children.length, 0); assert.ok(ui.effects.toasts.includes('ยืนยันบัญชีผู้รับแจ้งเตือนแล้ว'));
+});
+
+test('new notification recipient always sends owner intent and cannot select a removed admin role', async () => {
+  const ui = harness(), opening = ui.controller.openRecipient(); ui.requests[0].resolve(readyOas); await opening;
+  ui.field('line-recipient-form', 'label').value = 'เจ้าของระบบ';
+  const saving = ui.form('line-recipient-form').dispatch('submit'); await settle();
+  const write = ui.requests.at(-1); assert.equal(write.url, '/api/admin/line/recipients'); assert.equal(write.options.body.is_owner, true);
+  const row = {id:19,oa_id:0,is_owner:true,label:'เจ้าของระบบ',enabled:true,status:'pending',code:'OWNER-'+'F'.repeat(32),expires_at:new Date(Date.now()+60000).toISOString()}; row.line_message_url=message(row.code);
+  write.resolve(row); await saving;
+  assert.match(ui.$('#line-recipient-status').textContent,/รอส่งรหัส/);
+  assert.equal(ui.field('line-recipient-form', 'is_owner'), undefined);
+});
+
+test('removed admin notification recipient is read-only without a code or a reactivation request', async () => {
+  const ui = harness(), row = {id:9,oa_id:0,label:'บัญชีเดิม',enabled:true,is_owner:false,status:'pending',code:'ADMIN-'+'F'.repeat(32),expires_at:new Date(Date.now()+60000).toISOString()}; row.line_message_url=message(row.code);
+  const opening=ui.controller.openRecipient(9);ui.requests[0].resolve(row);ui.requests[1].resolve(readyOas);await opening;
+  assert.equal(ui.$('#line-recipient-code').children.length,0);assert.equal(ui.field('line-recipient-form','label').disabled,true);
+  assert.equal(ui.$('button[type="submit"]',ui.form('line-recipient-form')).hidden,true);assert.equal(ui.$('#line-recipient-delete').hidden,false);
+  await ui.form('line-recipient-form').dispatch('submit');assert.equal(ui.requests.length,2);
+  assert.match(ui.$('#line-recipient-status').textContent,/ทำได้เฉพาะปิด/);
 });
 
 test('OA save blocks switching modal and clears secret fields before a post-save list read', async () => {

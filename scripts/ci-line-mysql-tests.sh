@@ -2,6 +2,24 @@
 # Sourced by ci.yml to share its database setup function, containers and traps.
 # Keep these suites in isolated schemas before the web quota tests begin.
 
+# Owner-role retirement imports its own pre-upgrade fixtures and needs DDL.
+owner_migration_database=appj_owner_schema_ci
+docker exec \
+  --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+  "$database" mysql --host=127.0.0.1 --user=root \
+  --execute="CREATE DATABASE ${owner_migration_database} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+docker run --rm \
+  --network "$network" \
+  --entrypoint php \
+  --env APP_ENV=testing \
+  --env DB_HOST="$database" \
+  --env DB_PORT=3306 \
+  --env DB_DATABASE="$owner_migration_database" \
+  --env DB_USERNAME=root \
+  --env DB_PASSWORD="$CI_DBA_PASSWORD" \
+  --env DB_SSL=false \
+  "$image" tests/owner_only_migration_mysql.php
+
 # Legacy opening-reading upgrade guards run with the schema owner in an
 # otherwise empty disposable database. The test imports its own fixtures.
 pending_migration_database=appj_pending_schema_ci

@@ -87,7 +87,7 @@ $residentInitial = preg_match('/^./us', $residentName, $initialMatch) === 1 ? $i
       </section>
 
       <section class="portal-view" id="resident-view-profile" data-view-panel="profile" aria-labelledby="resident-profile-title" hidden>
-        <div class="section-heading"><div><span class="eyebrow">Account</span><h2 id="resident-profile-title">ข้อมูลส่วนตัว</h2><p>แก้ไขชื่อและอีเมล ห้องและเบอร์โทรเป็นข้อมูลที่ผู้ดูแลยืนยันไว้</p></div></div>
+        <div class="section-heading"><div><span class="eyebrow">Account</span><h2 id="resident-profile-title">ข้อมูลส่วนตัว</h2><p>แก้ไขชื่อและอีเมล ห้องและเบอร์โทรเป็นข้อมูลที่เจ้าของระบบยืนยันไว้</p></div></div>
         <div class="profile-layout">
           <form class="card-block stack-form" id="resident-profile-form" novalidate>
             <div class="card-heading"><div><h3>ข้อมูลติดต่อ</h3><p>ข้อมูลนี้ใช้บนบิลและการติดต่อจากหอพัก</p></div></div>
@@ -95,7 +95,7 @@ $residentInitial = preg_match('/^./us', $residentName, $initialMatch) === 1 ? $i
             <fieldset class="stack-form resident-profile-fields" id="resident-profile-fields" disabled aria-label="ข้อมูลส่วนตัว">
             <label class="field"><span>ชื่อ–นามสกุล</span><input name="full_name" type="text" minlength="2" maxlength="120" autocomplete="name" required></label>
             <label class="field"><span>อีเมล</span><input name="email" type="email" maxlength="190" autocomplete="email" placeholder="name@example.com"></label>
-            <label class="field"><span>เบอร์โทรศัพท์</span><input name="phone" type="tel" readonly aria-readonly="true"><small>หากต้องเปลี่ยนเบอร์ กรุณาติดต่อผู้ดูแลเพื่อยืนยันตัวตน</small></label>
+            <label class="field"><span>เบอร์โทรศัพท์</span><input name="phone" type="tel" readonly aria-readonly="true"><small>หากต้องเปลี่ยนเบอร์ กรุณาติดต่อเจ้าของระบบเพื่อยืนยันตัวตน</small></label>
             <label class="field"><span>ห้อง</span><input name="room_code" type="text" readonly aria-readonly="true"></label>
             <div class="form-error" id="resident-profile-error" role="alert" hidden></div>
             <button class="button button-primary" type="submit" data-submit-label="บันทึกข้อมูล">บันทึกข้อมูล</button>
@@ -124,7 +124,7 @@ $residentInitial = preg_match('/^./us', $residentName, $initialMatch) === 1 ? $i
               <div class="form-actions"><button class="button button-secondary" id="resident-line-code-copy" type="button">คัดลอกรหัส</button><button class="button button-ghost" id="resident-line-code-renew" type="button">สร้างรหัสใหม่</button></div>
             </div>
             <button class="button button-secondary" id="resident-line-status-refresh" type="button">ตรวจสอบสถานะ</button>
-            <p class="field-hint" id="resident-line-readiness" role="status" hidden>ผู้ดูแลยังตั้งค่า LINE ไม่ครบ กรุณาติดต่อหอพัก</p>
+            <p class="field-hint" id="resident-line-readiness" role="status" hidden>เจ้าของระบบยังตั้งค่า LINE ไม่ครบ กรุณาติดต่อหอพัก</p>
             <button class="button button-ghost" id="resident-line-unlink" type="button" hidden>ยกเลิกการผูก LINE</button>
             <div class="form-error" id="resident-line-error" role="alert" hidden></div>
           </div>
@@ -182,7 +182,7 @@ $residentInitial = preg_match('/^./us', $residentName, $initialMatch) === 1 ? $i
           <button class="button button-secondary button-full" id="resident-payment-refresh" type="button" hidden>ตรวจสถานะการชำระอีกครั้ง</button>
           <aside class="payment-notice" id="resident-line-slip-fallback" hidden>
             <strong>แนบสลิปไม่ได้หรือตรวจยังไม่สำเร็จ ส่งทาง LINE Bot ได้</strong>
-            <p>เปิดแชต กดส่งข้อความเลขบิล แล้วแนบรูปสลิปในแชตเดียวกันให้ผู้ดูแลตรวจ ไม่ต้องโอนซ้ำ</p>
+            <p>เปิดแชต กดส่งข้อความเลขบิล แล้วแนบรูปสลิปในแชตเดียวกันให้เจ้าของระบบตรวจ ไม่ต้องโอนซ้ำ</p>
             <a class="button button-secondary button-full" id="resident-send-slip-line" target="_blank" rel="noopener noreferrer" hidden>ส่งสลิปทาง LINE Bot พร้อมเลขบิล</a>
             <p id="resident-line-slip-message"></p>
             <small>ปุ่มนี้ยังไม่ส่งข้อความหรือแนบภาพให้เอง รูปอยู่ในแชต LINE OA ไม่ได้บันทึกเป็นสลิปในเว็บ และยังไม่ยืนยันว่าชำระแล้ว</small>

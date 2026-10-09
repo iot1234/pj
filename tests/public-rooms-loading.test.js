@@ -17,10 +17,11 @@ function harness() {
   const requests = [], typeFilter = select(), floorFilter = select();
   const grid = { attributes: {}, children: [], setAttribute(k, v) { this.attributes[k] = v; }, replaceChildren() { this.children = []; }, append(node) { this.children.push(node); } };
   const count = { textContent: '' }, empty = { hidden: true }, errorBox = { hidden: true }, errorText = {};
-  const context = { grid, count, empty, errorBox, typeFilter, floorFilter, create: () => option(), $: () => errorText, listFrom: (data) => data.rooms, errorMessage: (error) => error.message,
+  const context = { ApiError: Error, grid, count, empty, errorBox, typeFilter, floorFilter, create: () => option(), $: () => errorText, listFrom: (data) => data.rooms, errorMessage: (error) => error.message,
     api: () => { const pending = deferred(); requests.push(pending); return pending.promise; }, render: () => { grid.setAttribute('aria-busy', 'false'); grid.children = Array.from(vm.runInContext('rooms', context)); } };
   vm.createContext(context);
-  vm.runInContext(`let rooms = []; let roomLoadRequest = 0; let roomsReady = false; ${populate}\n${loader}`, context);
+  const validator = source.slice(source.indexOf('const requiredEntityList ='), source.indexOf('const errorMessagesByCode ='));
+  vm.runInContext(`let rooms = []; let roomLoadRequest = 0; let roomsReady = false; ${validator}\n${populate}\n${loader}`, context);
   return { ...context, requests, load: context.load, rooms: () => Array.from(vm.runInContext('rooms', context)), errorText };
 }
 const room = (id, type = 'standard', floor = 1) => ({ id, room_type: type, floor, status: 'available' });
@@ -51,4 +52,10 @@ test('refresh resets a filter only when its option no longer exists', async () =
   const ui = harness(); ui.typeFilter.value = 'suite'; ui.floorFilter.value = '3';
   const work = ui.load(); ui.requests[0].resolve({ rooms: [room(1)] }); await work;
   assert.equal(ui.typeFilter.value, ''); assert.equal(ui.floorFilter.value, '');
+});
+test('malformed room success cannot claim there are no rooms or expose invalid booking targets', async () => {
+  for (const reply of [{}, { rooms: [room(0)] }, { rooms: [room(1), room(1)] }, { rooms: [null] }]) {
+    const ui = harness(), work = ui.load(); ui.requests[0].resolve(reply); await work;
+    assert.equal(ui.errorBox.hidden, false); assert.equal(ui.empty.hidden, true); assert.equal(ui.count.textContent, '—'); assert.equal(ui.grid.children.length, 0);
+  }
 });

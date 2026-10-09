@@ -8,8 +8,9 @@ function harness() {
   const $ = selector => { if (!nodes.has(selector)) nodes.set(selector, { disabled: false, hidden: false, textContent: '', setAttribute() {} }); return nodes.get(selector); };
   $('#resident-profile-fields').disabled = true;
   const profileForm = { dataset: {}, elements: Object.fromEntries(['full_name', 'email', 'phone', 'room_code'].map(name => [name, { value: '' }])) };
-  const context = { $, profileForm, state: { profile: {}, bills: [], loadRequest: 0, profileRevision: 0 }, api: (url) => { const item = { url, ...deferred() }; requests.push(item); return item.promise; }, objectFrom: value => value, listFrom: value => value, renderLineStatus() {}, renderBills() {}, errorMessage: error => error.message };
-  vm.createContext(context); vm.runInContext(source.slice(start, end), context);
+  const context = { ApiError: Error, $, profileForm, state: { profile: {}, bills: [], loadRequest: 0, profileRevision: 0 }, api: (url) => { const item = { url, ...deferred() }; requests.push(item); return item.promise; }, objectFrom: value => value, listFrom: value => value, renderLineStatus() {}, renderBills() {}, errorMessage: error => error.message };
+  const validator = source.slice(source.indexOf('const requiredEntityList ='), source.indexOf('const errorMessagesByCode ='));
+  vm.createContext(context); vm.runInContext(validator + source.slice(start, end), context);
   return { $, profileForm, requests, context };
 }
 const profile = { full_name: 'ชื่อที่บันทึก', email: 'saved@example.test', phone: '0812345678', room_code: 'A101' };
@@ -36,4 +37,16 @@ test('an obsolete initial response cannot overwrite a newer populated profile', 
   ui.profileForm.elements.full_name.value = 'ข้อความหลังโหลด'; ui.profileForm.dataset.dirty = 'true';
   ui.requests[0].resolve({ ...profile, full_name: 'ข้อมูลเก่า' }); ui.requests[1].resolve([]); await old;
   assert.equal(ui.profileForm.elements.full_name.value, 'ข้อความหลังโหลด'); assert.equal(ui.$('#resident-profile-fields').disabled, false);
+});
+test('malformed profile response leaves initial fields locked and offers reload guidance', async () => {
+  for (const reply of [{}, [], {full_name: '   '}]) {
+    const ui = harness(), work = ui.context.loadAll(); ui.requests[0].resolve(reply); ui.requests[1].resolve([]); await work;
+    assert.equal(ui.$('#resident-profile-fields').disabled, true); assert.equal(ui.$('#resident-global-error').hidden, false);
+  }
+});
+test('malformed bill response is a visible read failure instead of a successful empty history', async () => {
+  for (const reply of [{}, {bills:[{id:0}]}, {bills:[{id:1},{id:1}]}]) {
+    const ui = harness(), work = ui.context.loadAll(); ui.requests[0].resolve(profile); ui.requests[1].resolve(reply); await work;
+    assert.equal(ui.$('#resident-global-error').hidden, false); assert.equal(ui.$('#resident-profile-fields').disabled, false);
+  }
 });

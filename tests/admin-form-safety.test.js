@@ -22,9 +22,10 @@ test('closing a guarded form checks the save lock before asking to discard', () 
   assert.ok(close.includes("form.dataset.draftDirty === 'true'"));
   assert.ok(close.includes('return false;'));
 });
-test('the unload guard still protects activation data as well as edited dialogs', () => {
+test('the unload guard protects pending bills and edited dialogs without an activation secret', () => {
   const unload=extract("window.addEventListener('beforeunload'", "integrationSettingsForm?.addEventListener('submit'");
-  for(const expression of ['!residentActivationSecret','!hasDirtySettings()','!hasDirtyMeterRows()','!hasDirtyDialogDrafts()'])assert.ok(unload.includes(expression));
+  for(const expression of ['!state.billWorking','!state.billDraftEdited','!hasDirtySettings()','!hasDirtyMeterRows()','!hasDirtyDialogDrafts()'])assert.ok(unload.includes(expression));
+  assert.ok(!unload.includes('residentActivationSecret'));
 });
 test('room and administrator saves check the in-flight marker before reading the form', () => {
   for(const selector of ['room-form','user-form']){

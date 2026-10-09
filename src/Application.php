@@ -50,6 +50,8 @@ final class Application
     private LineNoticeService $lineNotices;
     private PaymentService $payments;
     private ?\Dormitory\Domain\TransferInstructionService $transferInstructions = null;
+    private ?\Dormitory\Domain\DailyBookingService $dailyBookingService = null;
+    private ?\Dormitory\Domain\DailyPaymentService $dailyPaymentService = null;
     /** @var array<string,mixed>|null|false */
     private array|null|false $actorCache = false;
 
@@ -103,6 +105,8 @@ final class Application
     public function payments(): PaymentService { return $this->payments; }
     public function transfers(): \Dormitory\Domain\TransferInstructionService { return $this->transferInstructions ??= new \Dormitory\Domain\TransferInstructionService($this); }
     public function lineBills(): \Dormitory\Domain\LineBillService { return new \Dormitory\Domain\LineBillService($this); }
+    public function dailyBookings(): \Dormitory\Domain\DailyBookingService { return $this->dailyBookingService ??= new \Dormitory\Domain\DailyBookingService($this); }
+    public function dailyPayments(): \Dormitory\Domain\DailyPaymentService { return $this->dailyPaymentService ??= new \Dormitory\Domain\DailyPaymentService($this); }
 
     /** @return array<string,mixed>|null */
     public function actor(bool $refresh = false): ?array
@@ -127,6 +131,9 @@ final class Application
             $actor = $this->actor();
             if (!$actor || ($actor['type'] ?? null) !== $required) {
                 throw new HttpException(401, 'Authentication required', 'UNAUTHENTICATED');
+            }
+            if ($required === 'admin' && (($actor['role'] ?? null) !== 'owner' || ($actor['retired_at'] ?? null) !== null)) {
+                throw new HttpException(403, 'Owner permission required', 'FORBIDDEN');
             }
         }
 

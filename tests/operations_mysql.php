@@ -129,13 +129,15 @@ $test('outer transaction failure rolls back direct check-in and all dependent re
 });
 $test('administrator safety guards protect self, last owner and conflicting active flags',function()use($app,$assert,$expect,$owner):void{
     $expect(fn()=>$app->adminUsers()->delete($owner,$owner),'SELF_DELETE');
-    $expect(fn()=>$app->adminUsers()->update($owner,['role'=>'admin'],$owner),'SELF_OWNER_CHANGE');
+    $expect(fn()=>$app->adminUsers()->update($owner,['role'=>'admin'],$owner),'VALIDATION_ERROR');
     $expect(fn()=>$app->adminUsers()->delete($owner,0),'LAST_OWNER');
     $expect(fn()=>$app->adminUsers()->update($owner,['active'=>true,'is_active'=>false],$owner),'VALIDATION_ERROR');
     $assert($app->adminUsers()->list()[0]['role']==='owner' && $app->adminUsers()->list()[0]['active']);
 });
-$test('disabled administrator loses an existing session and cannot sign in again',function()use($app,$assert,$expect,$owner,$request):void{
-    $password='Operations-Staff-Fixture-2026!';$staff=$app->adminUsers()->create(['username'=>'operations_staff','password'=>$password,'role'=>'admin'],$owner);
+$test('removed admin creation is rejected and a disabled owner loses all access',function()use($app,$assert,$expect,$owner,$request):void{
+    $password='Operations-Staff-Fixture-2026!';
+    $expect(fn()=>$app->adminUsers()->create(['username'=>'operations_staff','password'=>$password,'role'=>'admin'],$owner),'VALIDATION_ERROR');
+    $staff=$app->adminUsers()->create(['username'=>'operations_staff','password'=>$password,'role'=>'owner'],$owner);
     $app->auth()->adminLogin($request(),['username'=>'operations_staff','password'=>$password]);
     $app->adminUsers()->delete($staff['id'],$owner);$assert($app->actor(true)===null);
     $expect(fn()=>$app->auth()->adminLogin($request(),['username'=>'operations_staff','password'=>$password]),'INVALID_CREDENTIALS');

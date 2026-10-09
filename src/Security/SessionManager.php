@@ -84,12 +84,20 @@ final class SessionManager
     {
         if(!$this->start(false))return null;
         $actor = $_SESSION[self::ACTOR_KEY] ?? null;
-        return is_array($actor) ? $actor : null;
+        if ($actor === null) return null;
+        if (!is_array($actor) || !self::isAllowedActor($actor)) {
+            $this->revokeLocal();
+            return null;
+        }
+        return $actor;
     }
 
     /** @param array<string,mixed> $actor */
     public function login(array $actor): void
     {
+        if (!self::isAllowedActor($actor)) {
+            throw new \InvalidArgumentException('Only owners and residents may create sessions');
+        }
         $this->start(true);
         session_regenerate_id(true);
         unset($_SESSION[self::LINE_LINK_KEY]);
@@ -97,6 +105,18 @@ final class SessionManager
         $_SESSION[self::CSRF_KEY] = bin2hex(random_bytes(32));
         $_SESSION[self::CREATED_KEY] = time();
         $_SESSION[self::LAST_SEEN_KEY] = time();
+    }
+
+    /** @param array<string,mixed> $actor */
+    private static function isAllowedActor(array $actor): bool
+    {
+        if (!is_int($actor['id'] ?? null) || $actor['id'] < 1
+            || !is_int($actor['auth_version'] ?? null) || $actor['auth_version'] < 1) return false;
+        return match ($actor['type'] ?? null) {
+            'admin' => ($actor['role'] ?? null) === 'owner' && ($actor['retired_at'] ?? null) === null,
+            'resident' => ($actor['role'] ?? 'resident') === 'resident',
+            default => false,
+        };
     }
 
     public function logout(): void

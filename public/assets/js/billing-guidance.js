@@ -50,7 +50,7 @@
   };
   function explain(issue, context = {}) {
     const code = typeof issue?.code === 'string' ? issue.code : 'UNKNOWN';
-    const route = (Object.hasOwn(routes, code) ? routes[code] : null) || ['ยังไม่สามารถทำรายการนี้ได้', 'โหลดข้อมูลล่าสุดและตรวจอีกครั้ง หากยังพบปัญหา ให้แจ้งรหัสข้อผิดพลาดแก่ผู้ดูแล ระบบจะไม่ข้ามการตรวจเพื่อออกบิล', 'reload', '', 'โหลดข้อมูลล่าสุด'];
+    const route = (Object.hasOwn(routes, code) ? routes[code] : null) || ['ยังไม่สามารถทำรายการนี้ได้', 'โหลดข้อมูลล่าสุดและตรวจอีกครั้ง หากยังพบปัญหา ให้แจ้งรหัสข้อผิดพลาดแก่เจ้าของระบบ ระบบจะไม่ข้ามการตรวจเพื่อออกบิล', 'reload', '', 'โหลดข้อมูลล่าสุด'];
     return { code, title: route[0], detail: route[1], target: route[2], focus: route[3], action: route[4],
       room_id: safeId(issue?.room_id), occupancy_id: safeId(issue?.occupancy_id),
       room_code: typeof issue?.room_code === 'string' ? issue.room_code.slice(0, 50) : '',

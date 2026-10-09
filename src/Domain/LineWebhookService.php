@@ -49,9 +49,9 @@ final class LineWebhookService
     private function handleAccount(Request $request,int $deadlineNanoseconds): array
     {
         $oa=$this->app->lineOfficialAccounts()->credentials($this->oaId);
-        if($request->path==='/api/webhooks/line'){
+        if($request->path==='/api/webhooks/line'||$request->path==='/api/webhooks/line/'){
             if($this->oaId!==0||!($oa['legacy_route_enabled']??true))throw new HttpException(404,'Webhook route is no longer active','LINE_WEBHOOK_ROUTE_REVOKED');
-        }elseif(preg_match('#^/api/webhooks/line/oa/([a-f0-9]{48})$#D',$request->path,$path)){
+        }elseif(preg_match('#^/api/webhooks/line/oa/([a-f0-9]{48})/?$#D',$request->path,$path)){
             $route=$this->app->lineOfficialAccounts()->byRouteToken($path[1]);
             if((int)$route['id']!==$this->oaId)throw new HttpException(404,'Webhook route is no longer active','LINE_WEBHOOK_ROUTE_REVOKED');
         }else throw new HttpException(404,'Unknown webhook route','NOT_FOUND');
@@ -463,7 +463,7 @@ final class LineWebhookService
         if($intent==='admin_claim'){
             try{
                 $this->app->lineAdminRecipients()->consume(strtoupper($message),$candidate['line_user_id'],$this->oaId);
-                return ['text'=>'ผูกบัญชีผู้รับแจ้งเตือนของผู้ดูแลสำเร็จแล้ว สามารถตั้งค่าหมวดแจ้งเตือนในหลังบ้านได้','outcome'=>'admin_claimed'];
+                return ['text'=>'ผูกบัญชีผู้รับแจ้งเตือนของเจ้าของระบบสำเร็จแล้ว สามารถตั้งค่าหมวดแจ้งเตือนในหลังบ้านได้','outcome'=>'admin_claimed'];
             }catch(HttpException $error){return ['text'=>'คีย์ผู้รับแจ้งเตือนไม่ถูกต้อง หมดอายุ หรือส่งผิด OA กรุณาขอคีย์ใหม่จากผู้ดูแล','outcome'=>'admin_claim_invalid'];}
         }
         if (in_array($intent, ['help', 'status', 'bills'], true)) {

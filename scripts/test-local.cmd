@@ -50,6 +50,14 @@ echo === PHP unit and contract tests; no live database ===
 "%PHP_EXE%" -c "%PHPRC%" tests/run.php
 set "RESULT=%ERRORLEVEL%"
 if not "%RESULT%"=="0" goto cleanup
+echo === Daily booking unit and capability contracts; no live database ===
+"%PHP_EXE%" -c "%PHPRC%" tests/daily_booking_unit.php
+set "RESULT=%ERRORLEVEL%"
+if not "%RESULT%"=="0" goto cleanup
+echo === Phone-only deployment configuration; no live database ===
+"%PHP_EXE%" -c "%PHPRC%" tests/phone_config_readiness.php
+set "RESULT=%ERRORLEVEL%"
+if not "%RESULT%"=="0" goto cleanup
 echo === JavaScript interaction tests ===
 node --test --test-timeout=10000 --test-reporter=spec tests/*.test.js
 set "RESULT=%ERRORLEVEL%"

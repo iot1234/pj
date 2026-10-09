@@ -19,6 +19,18 @@ final class PaymentService
     private readonly SlipVerifier $verifier;
     public function __construct(private readonly Application $app, ?\Closure $transport=null){$this->verifier=new SlipVerifier($app,$transport);}
 
+    /** Shared canonical private evidence storage; callers must authorize the subject first. */
+    public function storeEvidence(array $file,int $principalId,int $subjectId): array
+    {
+        return $this->store($file,$principalId,$subjectId);
+    }
+
+    /** Shared integrity checking used by authorized daily-payment evidence reads/retries. */
+    public function evidencePath(array $record): string
+    {
+        return $this->storedSlipAbsolute((string)$record['slip_path'],(string)$record['slip_mime'],(string)$record['slip_hmac']);
+    }
+
     /**
      * @param array<string,mixed> $file
      * @param null|callable(array<string,mixed>):void $afterFinalize
@@ -117,6 +129,7 @@ final class PaymentService
             $statement=$pdo->prepare("UPDATE payments SET status='rejected',transaction_ref=NULL,verified_at=NULL,rejection_reason=?,verification_lease_until=NULL,verification_token=NULL,updated_at=UTC_TIMESTAMP() WHERE id=? AND status='pending'");
             $statement->execute([mb_substr('ปิดโดยผู้ดูแล: '.$reason,0,500),$paymentId]);
             if($statement->rowCount()!==1)throw new HttpException(409,'สถานะรายการชำระเปลี่ยนแปลงแล้ว','PAYMENT_CHANGED');
+            (new PaymentEvidenceRegistry($this->app))->releaseRejected($pdo,'monthly',$paymentId);
             LineAdminEvents::enqueue($this->app,'payment.rejected',$paymentId);
             return $this->get($pdo,$paymentId);
         });
@@ -218,13 +231,14 @@ final class PaymentService
         try{return $this->app->database()->transaction(function(PDO $pdo)use($bill,$residentId,$relative,$mime,$hmac,$token):array{
             $lock=$pdo->prepare('SELECT id,resident_id,status,total_amount FROM bills WHERE id=? FOR UPDATE');$lock->execute([$bill['id']]);$current=$lock->fetch();
             if(!$current||(int)$current['resident_id']!==$residentId)throw new HttpException(404,'ไม่พบบิล','BILL_NOT_FOUND');
-            $duplicate=$pdo->prepare('SELECT id,bill_id,resident_id FROM payments WHERE slip_hmac=? LIMIT 1 FOR UPDATE');$duplicate->execute([$hmac]);
+            $duplicate=$pdo->prepare("SELECT id,bill_id,resident_id FROM payments WHERE slip_hmac=? AND bill_id=? AND resident_id=? ORDER BY (status IN('pending','verified')) DESC,id DESC LIMIT 1 FOR UPDATE");$duplicate->execute([$hmac,$bill['id'],$residentId]);
             if($row=$duplicate->fetch()){
                 if((int)$row['bill_id']===(int)$bill['id']&&(int)$row['resident_id']===$residentId){
                     $replay=$this->get($pdo,(int)$row['id']);$replay['idempotent_replay']=true;return $replay;
                 }
                 throw new HttpException(409,'สลิปนี้เคยถูกส่งแล้ว','DUPLICATE_SLIP',['payment_id'=>(int)$row['id']]);
             }
+            $activeProof=$pdo->prepare("SELECT id FROM payments WHERE slip_hmac=? AND status IN('pending','verified') LIMIT 1 FOR UPDATE");$activeProof->execute([$hmac]);if($activeProof->fetchColumn()!==false)throw new HttpException(409,'สลิปนี้ยังรอตรวจหรือยืนยันกับบิลอื่นแล้ว','DUPLICATE_SLIP');
             // Check the natural idempotency key before bill status so a client
             // that lost the original verified response can recover it even
             // though the first request has already marked the bill paid.
@@ -235,12 +249,13 @@ final class PaymentService
             $insert=$pdo->prepare("INSERT INTO payments (bill_id,resident_id,amount,status,slip_path,slip_mime,slip_hmac,provider,rejection_reason,verification_lease_until,verification_token,verification_attempts,created_at,updated_at) VALUES (?,?,?,'pending',?,?,?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 60 SECOND),?,1,UTC_TIMESTAMP(),UTC_TIMESTAMP())");
             $insert->execute([$bill['id'],$residentId,$current['total_amount'],$relative,$mime,$hmac,$provider,'กำลังตรวจสอบกับผู้ให้บริการ',$token]);
             $paymentId=(int)$pdo->lastInsertId();
+            (new PaymentEvidenceRegistry($this->app))->claimSlip($pdo,'monthly',$paymentId,$hmac);
             LineAdminEvents::enqueue($this->app,'payment.submitted',$paymentId);
             return $this->get($pdo,$paymentId);
         });}catch(PDOException $e){
             if(MySqlError::isDuplicateKey($e,'uq_payments_slip_hmac','uq_payments_one_active_per_bill')){
-                $duplicate=$this->app->database()->pdo()->prepare('SELECT id,bill_id,resident_id FROM payments WHERE slip_hmac=? LIMIT 1');
-                $duplicate->execute([$hmac]);$row=$duplicate->fetch();
+                $duplicate=$this->app->database()->pdo()->prepare("SELECT id,bill_id,resident_id FROM payments WHERE slip_hmac=? AND bill_id=? AND resident_id=? ORDER BY (status IN('pending','verified')) DESC,id DESC LIMIT 1");
+                $duplicate->execute([$hmac,$bill['id'],$residentId]);$row=$duplicate->fetch();
                 if($row&&(int)$row['bill_id']===(int)$bill['id']&&(int)$row['resident_id']===$residentId){
                     $replay=$this->get($this->app->database()->pdo(),(int)$row['id']);$replay['idempotent_replay']=true;return $replay;
                 }
@@ -289,7 +304,11 @@ final class PaymentService
     {
         $status=(string)($v['decision']??'pending');if(!in_array($status,['pending','verified','rejected'],true))throw new \RuntimeException('Invalid slip verification decision');
         $reason=$status==='verified'?null:mb_substr((string)($v['reason']??'รอตรวจสอบซ้ำ'),0,500);
+        if($status!=='verified'&&is_string($v['transaction_ref']??null)&&$v['transaction_ref']!==''){$v['payload']['unverified_transaction_ref']=$v['transaction_ref'];$v['transaction_ref']=null;}
         $payload=json_encode($v['payload']??[],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR);
+        if($status==='verified'&&is_string($v['transaction_ref']??null)&&$v['transaction_ref']!==''&&!(new PaymentEvidenceRegistry($this->app))->claimTransaction($pdo,'monthly',$paymentId,$v['transaction_ref'])){
+            $status='rejected';$reason='เลขอ้างอิงธุรกรรมนี้ถูกใช้กับรายการชำระอื่นแล้ว';$v['transaction_ref']=null;
+        }
         try{
             $statement=$pdo->prepare("UPDATE payments SET status=?,provider=?,transaction_ref=?,receiver_ref=?,provider_payload=?,rejection_reason=?,verified_at=".($status==='verified'?'UTC_TIMESTAMP()':'NULL').",verification_lease_until=NULL,verification_token=NULL,updated_at=UTC_TIMESTAMP() WHERE id=? AND status='pending'");
             $statement->execute([$status,$v['provider']??null,$v['transaction_ref']??null,$v['receiver_ref']??null,$payload,$reason,$paymentId]);
@@ -299,6 +318,7 @@ final class PaymentService
                 $duplicate=$pdo->prepare("UPDATE payments SET status='rejected',provider=?,transaction_ref=NULL,receiver_ref=?,provider_payload=?,rejection_reason='เลขอ้างอิงธุรกรรมนี้ถูกใช้กับบิลอื่นแล้ว',verified_at=NULL,verification_lease_until=NULL,verification_token=NULL,updated_at=UTC_TIMESTAMP() WHERE id=? AND status='pending'");
                 $duplicate->execute([$v['provider']??null,$v['receiver_ref']??null,$payload,$paymentId]);
                 if($duplicate->rowCount()!==1)throw new HttpException(409,'สถานะรายการชำระเปลี่ยนแปลงแล้ว','PAYMENT_CHANGED');
+                (new PaymentEvidenceRegistry($this->app))->releaseRejected($pdo,'monthly',$paymentId);
                 return;
             }
             throw $e;
@@ -309,6 +329,37 @@ final class PaymentService
             if($bill->rowCount()!==1)throw new HttpException(409,'สถานะบิลเปลี่ยนแปลงแล้ว','BILL_CHANGED');
             $this->app->transfers()->settle($pdo,$billId);
         }
+        if($status==='rejected')(new PaymentEvidenceRegistry($this->app))->releaseRejected($pdo,'monthly',$paymentId);
+    }
+
+    /** Restore precisely the immutable canonical proof; never swaps it for a different image. */
+    public function restoreStoredEvidence(array $record,array $file,int $principalId,int $subjectId): array
+    {
+        [$candidate,$relative,$mime,$hmac]=$this->store($file,$principalId,$subjectId);$stage=null;
+        try{
+            // A backup of the server's canonical JPEG must be restored byte for
+            // byte: another lossy encode can change its fingerprint. The upload
+            // has already passed size/type/dimension checks, and the immutable
+            // HMAC authorizes these exact original bytes only.
+            $raw=is_string($file['tmp_name']??null)?$file['tmp_name']:null;
+            $rawHmac=$raw!==null?hash_hmac_file('sha256',$raw,$this->app->config->appKey()):false;
+            if(is_string($rawHmac)&&is_string($record['slip_hmac']??null)&&hash_equals($record['slip_hmac'],$rawHmac)&&($record['slip_mime']??null)===$mime){
+                if(!copy($raw,$candidate))throw new HttpException(500,'อ่านไฟล์หลักฐานต้นฉบับไม่ได้','SLIP_STORAGE_PERMISSION_FAILED');$hmac=$rawHmac;$this->secureStoredSlipPermissions($candidate);
+            }
+            if(!is_string($record['slip_hmac']??null)||!hash_equals($record['slip_hmac'],$hmac)||($record['slip_mime']??null)!==$mime)
+                throw new HttpException(409,'ไฟล์ที่ส่งไม่ตรงกับหลักฐานเดิม กรุณาใช้ไฟล์ต้นฉบับเดิม การกู้ไฟล์นี้ไม่เปลี่ยนหลักฐานหรือยืนยันเงิน','SLIP_RESTORE_MISMATCH');
+            try{$this->storedSlipAbsolute((string)$record['slip_path'],$mime,$hmac);return ['evidence_restored'=>false,'idempotent_replay'=>true];}catch(HttpException $error){if(!in_array($error->errorCode,['SLIP_FILE_MISSING','SLIP_FILE_INTEGRITY_FAILED'],true))throw $error;}
+            $stored=str_replace('\\','/',(string)$record['slip_path']);
+            if(preg_match('#^storage/private/slips/([0-9]{4})/([0-9]{2})/([A-Za-z0-9][A-Za-z0-9._-]{0,255})$#D',$stored,$parts)!==1)throw new HttpException(409,'ตำแหน่งไฟล์หลักฐานเดิมไม่ถูกต้อง กรุณาให้เจ้าของตรวจระบบจัดเก็บ','SLIP_FILE_INVALID');
+            $base=realpath($this->app->config->root.'/storage/private/slips');if($base===false)throw new HttpException(500,'ระบบจัดเก็บหลักฐานไม่พร้อม','SLIP_STORAGE_PERMISSION_FAILED');
+            $directory=$base;
+            foreach([$parts[1],$parts[2]]as$component){$next=$directory.DIRECTORY_SEPARATOR.$component;if(is_link($next))throw new HttpException(409,'ตำแหน่งจัดเก็บหลักฐานไม่ปลอดภัย','SLIP_FILE_INVALID');if(!is_dir($next)&&!mkdir($next,0700))throw new HttpException(500,'สร้างตำแหน่งไฟล์หลักฐานไม่ได้','SLIP_STORAGE_PERMISSION_FAILED');$resolved=realpath($next);if($resolved===false||!str_starts_with($resolved,$base.DIRECTORY_SEPARATOR))throw new HttpException(409,'ตำแหน่งจัดเก็บหลักฐานไม่ถูกต้อง','SLIP_FILE_INVALID');$directory=$resolved;}
+            $destination=$directory.DIRECTORY_SEPARATOR.$parts[3];if(is_link($destination))throw new HttpException(409,'ตำแหน่งหลักฐานเดิมไม่ปลอดภัย','SLIP_FILE_INVALID');
+            $stage=$directory.DIRECTORY_SEPARATOR.'restore-'.bin2hex(random_bytes(16)).'.tmp';if(!copy($candidate,$stage))throw new HttpException(500,'เตรียมไฟล์หลักฐานเดิมไม่ได้ กรุณาลองใหม่','SLIP_STORAGE_PERMISSION_FAILED');$this->secureStoredSlipPermissions($stage);
+            if(!hash_equals($hmac,(string)hash_hmac_file('sha256',$stage,$this->app->config->appKey())))throw new HttpException(409,'ไฟล์หลักฐานกู้คืนไม่ผ่านการตรวจความถูกต้อง','SLIP_FILE_INTEGRITY_FAILED');
+            if(!rename($stage,$destination))throw new HttpException(500,'กู้ไฟล์หลักฐานเดิมไม่ได้ กรุณาลองใหม่','SLIP_STORAGE_PERMISSION_FAILED');$stage=null;$this->storedSlipAbsolute($stored,$mime,$hmac);
+            return ['evidence_restored'=>true,'idempotent_replay'=>false];
+        }finally{if(is_string($stage)&&is_file($stage))@unlink($stage);if(is_file($candidate))@unlink($candidate);}
     }
 
     /** @return array<string,mixed> */

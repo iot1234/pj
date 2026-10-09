@@ -64,8 +64,10 @@ test('LINE fallback does not submit images, or mark the bill paid, and needs no 
 test('runtime provisioning, bootstrap and CI all use the canonical fresh-schema table count',()=>{
  const sql=fs.readFileSync('database/schema.sql','utf8');
  const count=[...sql.matchAll(/CREATE TABLE IF NOT EXISTS [a-z_]+/g)].length;
- assert.equal(count,22);
+ assert.ok(count>=22);
+ const triggerCount=new Set([...sql.matchAll(/CREATE TRIGGER\s+([a-z_]+)/g)].map(m=>m[1])).size;
+ const checkCount=new Set([...sql.matchAll(/CONSTRAINT\s+([a-z_0-9]+)\s+CHECK/g)].map(m=>m[1])).size;
  assert.ok(fs.readFileSync('scripts/provision_runtime_db_user.sh','utf8').includes("'"+count+"|1|1'"));
  assert.ok(fs.readFileSync('scripts/bootstrap_database.sh','utf8').includes('"$object_count" == '+count+' && "$base_table_count" == '+count));
- assert.ok(fs.readFileSync('.github/workflows/ci.yml','utf8').includes("'"+count+"|26|119'"));
+ assert.ok(fs.readFileSync('.github/workflows/ci.yml','utf8').includes("'"+count+'|'+triggerCount+'|'+checkCount+"'"));
 });

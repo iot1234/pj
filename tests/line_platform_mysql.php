@@ -76,7 +76,7 @@ $test('bill list contains one row and reports all delivery outcomes',function()u
 $test('a newly linked account gets its own delivery without resending to existing recipients',function()use($app,$resident,$a,$admin,$users,$send,$notifications,$bill,$assert,&$sent,&$codes):void{
     $code=$app->lineRoomBindings()->issue($resident,['oa_id'=>$a],$admin);$codes[]=$code;$send($a,$code['code'],$users[3]);$queued=$notifications->enqueueBill($bill);$assert($queued['recipient_count']===4&&$queued['newly_queued']);$before=count($sent);$result=$notifications->process(1);$assert($result['sent']===1&&count($sent)===$before+1);
 });
-$test('admin claims require the correct OA, preserve active owner when a pending key is disabled, and validate mute values',function()use($app,$a,$b,$admin,$oas,$expect,$assert,&$owner,&$staff,&$claimCodes):void{
+$test('owner claims reject admin recipients, require the correct OA and preserve the current owner until replacement is claimed',function()use($app,$a,$b,$admin,$oas,$expect,$assert,&$owner,&$staff,&$claimCodes):void{
     $service=$app->lineAdminRecipients();$owner=$service->issue(['oa_id'=>$a,'label'=>'Owner test','is_owner'=>true],$admin);$claimCodes[]=$owner['code'];
     $expect(fn()=>$oas->withRegistryLock(fn()=>$service->consume($owner['code'],'U'.str_repeat('a',32),1)),'LINE_SINGLE_BOT_ONLY');
     $oas->withRegistryLock(fn()=>$service->consume($owner['code'],'U'.str_repeat('a',32),$a));
@@ -84,13 +84,23 @@ $test('admin claims require the correct OA, preserve active owner when a pending
     $expect(fn()=>$oas->withRegistryLock(fn()=>$service->consume($pending['code'],'U'.str_repeat('b',32),$a)),'LINE_RECIPIENT_DISABLED');
     $assert($service->get($owner['id'])['enabled']===true&&$service->get($owner['id'])['status']==='claimed');
     $expect(fn()=>$service->update($owner['id'],['muted_categories'=>[['payment']]],$admin),'VALIDATION_ERROR');
-    $staff=$service->issue(['oa_id'=>$b,'label'=>'Staff test'],$admin);$claimCodes[]=$staff['code'];$oas->withRegistryLock(fn()=>$service->consume($staff['code'],'U'.str_repeat('c',32),$b));
+    $before=count($service->all());
+    $expect(fn()=>$service->issue(['oa_id'=>$b,'label'=>'Removed admin','is_owner'=>false],$admin),'OWNER_ONLY');
+    $expect(fn()=>$service->consume('ADMIN-'.str_repeat('A',32),'U'.str_repeat('c',32),$b),'LINE_ADMIN_CODE_INVALID');
+    $assert(count($service->all())===$before);
+    $staff=$service->issue(['oa_id'=>$b,'label'=>'Replacement owner'],$admin);$claimCodes[]=$staff['code'];
+    $assert($staff['is_owner']===true&&str_starts_with($staff['code'],'OWNER-'));
+    $oas->withRegistryLock(fn()=>$service->consume($staff['code'],'U'.str_repeat('c',32),$b));
+    $assert($service->get($owner['id'])['status']==='revoked'&&count($service->eligible('billing'))===1);
 });
-$test('admin notices encrypt message bodies, deduplicate events, and recheck mutes before sending',function()use($app,$pdo,$admin,$owner,$staff,$assert,&$sent):void{
+$test('owner notices encrypt message bodies, deduplicate events, and recheck mutes before sending',function()use($app,$pdo,$admin,$owner,$staff,$assert,&$sent):void{
     $notice=$app->lineNotices();$before=(int)$pdo->query('SELECT COUNT(*) FROM line_notice_outbox')->fetchColumn();$message='มีสถานะบิลใหม่ กรุณาตรวจสอบในหน้าผู้ดูแล';
-    $notice->enqueueAdmin('billing',$message,'integration-event-1');$notice->enqueueAdmin('billing',$message,'integration-event-1');$assert((int)$pdo->query('SELECT COUNT(*) FROM line_notice_outbox')->fetchColumn()===$before+2);
+    $notice->enqueueAdmin('billing',$message,'integration-event-1');$notice->enqueueAdmin('billing',$message,'integration-event-1');$assert((int)$pdo->query('SELECT COUNT(*) FROM line_notice_outbox')->fetchColumn()===$before+1);
     $assert(!str_contains((string)$pdo->query('SELECT message_enc FROM line_notice_outbox ORDER BY id DESC LIMIT 1')->fetchColumn(),$message));
-    $app->lineAdminRecipients()->update($owner['id'],['muted_categories'=>['billing']],$admin);$old=count($sent);$result=$notice->process(100);$assert($result['sent']===1&&$result['failed']===1);$assert(count($sent)===$old+1&&end($sent)['token']==='platform-token-a');
+    $app->lineAdminRecipients()->update($staff['id'],['muted_categories'=>['billing']],$admin);$old=count($sent);$result=$notice->process(100);$assert($result['sent']===0&&$result['failed']===1);$assert(count($sent)===$old);
+    $app->lineAdminRecipients()->update($staff['id'],['muted_categories'=>[]],$admin);
+    $notice->enqueueAdmin('billing',$message,'integration-event-2');$result=$notice->process(100);
+    $assert($result['sent']===1&&count($sent)===$old+1&&end($sent)['token']==='platform-token-a');
 });
 $test('queued account revocation and room blocking prevent later bill and command disclosure',function()use($app,$resident,$admin,$a,$users,$send,$pdo,$notifications,$assert,&$sent,&$replies,$codes):void{
     $pdo->exec("UPDATE notification_outbox SET status='pending',sent_at=NULL,line_request_id=NULL,line_accepted_request_id=NULL,next_attempt_at=UTC_TIMESTAMP(6),attempts=0 WHERE line_binding_id=".(int)$codes[0]['id']);
@@ -109,5 +119,67 @@ $test('compatibility unlink and access reissue invalidate every new account and 
 $test('strict audit metadata contains neither invitation codes nor raw LINE recipients or tokens',function()use($pdo,$assert,$codes,$claimCodes,$users):void{
     $json=implode('',array_column($pdo->query('SELECT details FROM audit_logs')->fetchAll(),'details'));
     foreach(array_merge(array_column($codes,'code'),$claimCodes,$users,['platform-token-a','platform-token-b'])as$secret)$assert(!str_contains($json,$secret),'Audit leaked a LINE secret');
+});
+$test('disabled and retired creators cannot expose or claim pending owner keys or mutate owner recipients',function()use($app,$pdo,$a,$admin,$staff,$expect,$assert):void{
+    $q=$pdo->prepare("INSERT INTO admin_users(username,password_hash,role,auth_version,active) VALUES('platform_suspended_owner',?,'owner',1,1)");
+    $q->execute([Password::hash('Suspended-Owner-Fixture-2026!')]);$creator=(int)$pdo->lastInsertId();
+    $service=$app->lineAdminRecipients();
+    $pending=$service->issue(['oa_id'=>$a,'label'=>'Suspended creator fixture'],$creator);
+    $currentBefore=$pdo->query('SELECT * FROM line_admin_recipients WHERE id='.(int)$staff['id'])->fetch();
+    $app->adminUsers()->update($creator,['active'=>false],$admin);
+    foreach([false,true]as$retired){
+        if($retired)$pdo->prepare('UPDATE admin_users SET retired_at=UTC_TIMESTAMP(6) WHERE id=?')->execute([$creator]);
+        $before=(int)$pdo->query('SELECT COUNT(*) FROM line_admin_recipients')->fetchColumn();
+        $expect(fn()=>$service->issue(['oa_id'=>$a,'label'=>'Forbidden creator fixture'],$creator),'OWNER_ONLY');
+        $expect(fn()=>$service->update($staff['id'],['enabled'=>false],$creator),'OWNER_ONLY');
+        $expect(fn()=>$service->revoke($staff['id'],$creator),'OWNER_ONLY');
+        $expect(fn()=>$service->consume($pending['code'],'U'.str_repeat('d',32),$a),'LINE_ADMIN_CODE_INVALID');
+        $assert(!array_key_exists('code',$service->get($pending['id'])),'Disabled creator key remained visible');
+        $assert((int)$pdo->query('SELECT COUNT(*) FROM line_admin_recipients')->fetchColumn()===$before,'Denied issue inserted a recipient');
+        $assert($pdo->query('SELECT * FROM line_admin_recipients WHERE id='.(int)$staff['id'])->fetch()===$currentBefore,'Denied change altered the current owner');
+    }
+    $service->revoke($pending['id'],$admin);
+});
+$test('queued owner notices lock current creator access and stop after deactivation without altering sent history',function()use($app,$pdo,$a,$admin,$staff,$assert,&$sent):void{
+    $q=$pdo->prepare("INSERT INTO admin_users(username,password_hash,role,auth_version,active) VALUES('platform_notice_owner',?,'owner',1,1)");
+    $q->execute([Password::hash('Notice-Owner-Fixture-2026!')]);$creator=(int)$pdo->lastInsertId();
+    $user='U'.str_repeat('9',32);
+    // Model an already claimed historical recipient without replacing the
+    // current owner's live claim or changing any existing recipient row.
+    $pdo->prepare("INSERT INTO line_admin_recipients(oa_id,label,is_owner,enabled,muted_categories,line_user_id,claimed_at,created_by)
+        VALUES(?,'Creator access fixture',1,1,JSON_ARRAY(),?,UTC_TIMESTAMP(6),?)")->execute([$a,$user,$creator]);
+    $recipient=(int)$pdo->lastInsertId();$service=$app->lineAdminRecipients();
+    $assert($service->mayDeliver($recipient,$user,$a,'security'));
+    $assert(in_array($recipient,array_map(static fn(array $row):int=>(int)$row['id'],$service->eligible('security')),true));
+    $peerPdo=(new Dormitory\Database($app->config))->pdo();$peerPdo->exec('SET SESSION innodb_lock_wait_timeout=1');
+    $app->database()->transaction(function()use($service,$recipient,$user,$a,$peerPdo,$creator,$assert):void{
+        $assert($service->mayDeliver($recipient,$user,$a,'security'));
+        try{
+            $peerPdo->prepare('UPDATE admin_users SET active=0 WHERE id=?')->execute([$creator]);
+            throw new RuntimeException('Creator access changed during the delivery transaction');
+        }catch(PDOException $error){$assert((int)($error->errorInfo[1]??0)===1205,'Expected creator shared lock');}
+    });
+    $notice=$app->lineNotices();$enqueue=new ReflectionMethod(Dormitory\Domain\LineNoticeService::class,'enqueue');
+    $noticeId=$enqueue->invoke($notice,$a,$user,'security','Queued owner access fixture',null,null,$recipient,hash('sha256','owner-access-fixture'));
+    $currentBefore=$pdo->query('SELECT * FROM line_admin_recipients WHERE id='.(int)$staff['id'])->fetch();
+    $sentBefore=$pdo->query("SELECT * FROM line_notice_outbox WHERE status='sent' ORDER BY id")->fetchAll();
+    $app->adminUsers()->update($creator,['active'=>false],$admin);
+    $assert(!$service->mayDeliver($recipient,$user,$a,'security'));
+    $assert(!in_array($recipient,array_map(static fn(array $row):int=>(int)$row['id'],$service->eligible('security')),true));
+    // Lock unrelated pending fixture rows from a second connection, so the
+    // real worker's SKIP LOCKED selects only this notice without modifying
+    // other queued work or performing any simulated send for it.
+    $otherPending=$pdo->query("SELECT id FROM line_notice_outbox WHERE status='pending' AND id<>".(int)$noticeId)->fetchAll();
+    $peerPdo->beginTransaction();
+    try{
+        $lock=$peerPdo->prepare('SELECT id FROM line_notice_outbox WHERE id=? FOR UPDATE');
+        foreach($otherPending as$row){$lock->execute([$row['id']]);$lock->fetchAll();}
+        $calls=count($sent);$result=$notice->process(1);
+        $assert($result['failed']===1&&$result['sent']===0&&count($sent)===$calls,'Disabled creator received a queued notice');
+    }finally{$peerPdo->rollBack();}
+    $assert($pdo->query("SELECT status FROM line_notice_outbox WHERE id=".(int)$noticeId)->fetchColumn()==='failed');
+    $assert($pdo->query("SELECT * FROM line_notice_outbox WHERE status='sent' ORDER BY id")->fetchAll()===$sentBefore,'Sent notice history changed');
+    $assert($pdo->query('SELECT * FROM line_admin_recipients WHERE id='.(int)$staff['id'])->fetch()===$currentBefore,'Current owner claim changed');
+    $service->revoke($recipient,$admin);
 });
 echo "{$passed} LINE platform integration groups passed; provider calls were simulated in process.\n";

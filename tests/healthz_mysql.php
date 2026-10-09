@@ -17,7 +17,8 @@ $assert = static function (bool $condition, string $message): void {
     if (!$condition) throw new RuntimeException($message);
 };
 $tables = $pdo->query("SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_type='BASE TABLE'")->fetchAll(PDO::FETCH_COLUMN);
-$assert(count($tables) === ($legacy ? 16 : 22), 'The regression requires the expected fresh table set');
+preg_match_all('/CREATE TABLE IF NOT EXISTS\s+([a-z0-9_]+)/i',(string)file_get_contents($root.'/database/schema.sql'),$canonicalTables);
+$assert(count($tables) === ($legacy ? 16 : count(array_unique($canonicalTables[1]))), 'The regression requires the expected fresh table set');
 foreach ($tables as $table) {
     $assert(preg_match('/^[a-z_]+$/D', $table) === 1, 'Unexpected testing table name');
     if (in_array($table, ['billing_settings', 'integration_settings', 'line_official_accounts'], true)) continue;
@@ -180,6 +181,34 @@ try {
             $pass('the migration-015 check must be enforced');
         } finally {
             $schema->exec('ALTER TABLE occupancies ALTER CHECK chk_occupancies_opening_readings_v2 ENFORCED');
+        }
+        $schema->exec("ALTER TABLE admin_users DROP CHECK chk_admin_users_owner, MODIFY COLUMN role ENUM('owner','admin') NOT NULL DEFAULT 'admin'");
+        try {
+            $unavailable($request(), 'Migration 017 required: owner-only role and retired_at column');
+            $pass('a legacy admin-role schema cannot pass HTTP readiness');
+        } finally {
+            $schema->exec("ALTER TABLE admin_users MODIFY COLUMN role ENUM('owner') NOT NULL DEFAULT 'owner', ADD CONSTRAINT chk_admin_users_owner CHECK (role='owner')");
+        }
+        $schema->exec('ALTER TABLE admin_users DROP CHECK chk_admin_users_retired');
+        try {
+            $unavailable($request(), 'Migration 017 missing or incompatible enforced CHECK: chk_admin_users_retired');
+            $pass('a missing retirement guard fails HTTP readiness');
+        } finally {
+            $schema->exec('ALTER TABLE admin_users ADD CONSTRAINT chk_admin_users_retired CHECK (retired_at IS NULL OR active=0)');
+        }
+        $schema->exec('ALTER TABLE admin_users DROP CHECK chk_admin_users_retired, ADD CONSTRAINT chk_admin_users_retired CHECK (retired_at IS NULL OR active IN (0,1))');
+        try {
+            $unavailable($request(), 'Migration 017 missing or incompatible enforced CHECK: chk_admin_users_retired');
+            $pass('a permissive same-name retirement guard fails HTTP readiness');
+        } finally {
+            $schema->exec('ALTER TABLE admin_users DROP CHECK chk_admin_users_retired, ADD CONSTRAINT chk_admin_users_retired CHECK (retired_at IS NULL OR active=0)');
+        }
+        $schema->exec('ALTER TABLE admin_users ALTER CHECK chk_admin_users_retired NOT ENFORCED');
+        try {
+            $unavailable($request(), 'Migration 017 missing or incompatible enforced CHECK: chk_admin_users_retired');
+            $pass('an unenforced retirement guard fails HTTP readiness');
+        } finally {
+            $schema->exec('ALTER TABLE admin_users ALTER CHECK chk_admin_users_retired ENFORCED');
         }
         $restored = $request();
         $assert($restored['status'] === 200 && $restored['body'] === '{"status":"ok"}', 'The restored schema must pass readiness');

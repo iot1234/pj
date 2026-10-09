@@ -32,8 +32,9 @@ final class Request
 
     public static function isLineWebhookPath(string $path): bool
     {
-        return $path === '/api/webhooks/line'
-            || preg_match('#^/api/webhooks/line/oa/[a-f0-9]{48}$#D', $path) === 1;
+        // Match the router's optional single trailing slash. Capture and the
+        // CSRF guard must agree so signatures use the untouched webhook body.
+        return preg_match('#^/api/webhooks/line(?:/oa/[a-f0-9]{48})?/?$#D', $path) === 1;
     }
 
     public static function capture(): self

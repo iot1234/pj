@@ -97,6 +97,7 @@ function harness(kind) {
     context.lineStartForm.querySelector = () => $('#resident-line-submit');
     const residentSource = between('function stopLineCodeTracking(', 'function replaceResidentHash(')
       + between('function renderLineStatus()', 'function fillProfile()')
+      + between('function requiredResidentProfile(', 'async function loadAll()')
       + between("lineStartForm.addEventListener('submit'", "$('#resident-load-qr').addEventListener('click'")
       + between("doc.addEventListener('visibilitychange', () => {\n      if (doc.visibilityState === 'visible') refreshVerifyingBills(true);", '    loadAll();');
     vm.runInContext(residentSource, context);
@@ -351,4 +352,43 @@ test('resident unlink preserves unsaved profile fields and fences an older bound
   assert.equal(ui.context.state.profile.email, 'draft@example.test');
   assert.equal(ui.context.state.profile.line_verified, false);
   assert.equal(ui.$('#resident-line-unlink').hidden, true);
+});
+
+test('resident unlink double click cannot invalidate the successful pending operation', async () => {
+  const ui = harness('resident');
+  ui.context.state.profile.line_verified = true;
+  const first = ui.$('#resident-line-unlink').dispatch('click'); await settle();
+  const revision = ui.context.state.profileRevision;
+  await ui.$('#resident-line-unlink').dispatch('click');
+  assert.equal(ui.requests.length, 1); assert.equal(ui.effects.confirms.length, 1); assert.equal(ui.context.state.profileRevision, revision);
+  assert.equal(ui.$('#resident-line-unlink').disabled, true);
+  ui.requests[0].resolve(ui.status()); await first;
+  assert.equal(ui.context.state.profile.line_verified, false); assert.equal(ui.$('#resident-line-unlink').hidden, true);
+  assert.equal(ui.context.state.lineUnlinkRequest, false); assert.equal(ui.$('#resident-line-unlink').disabled, false);
+});
+
+test('cancelled resident unlink releases its lock without changing LINE revisions or issuing a request', async () => {
+  const ui = harness('resident'); ui.setConfirm(false);
+  await ui.$('#resident-line-unlink').dispatch('click');
+  assert.equal(ui.requests.length, 0); assert.equal(ui.context.state.profileRevision, 0); assert.equal(ui.context.state.lineStateRevision, 0);
+  assert.equal(ui.$('#resident-line-unlink').disabled, false); assert.equal(ui.context.state.lineUnlinkRequest, false);
+});
+
+test('a LINE status read started during unlink cannot restore old linked state after success', async () => {
+  const ui = harness('resident'); ui.context.state.profile.line_verified = true;
+  const unlink = ui.$('#resident-line-unlink').dispatch('click'); await settle();
+  const read = ui.context.refreshLineStatus(true);
+  ui.requests[0].resolve(ui.status()); await unlink;
+  ui.requests[1].resolve(ui.status({ line_verified: true, line_user_id_hint: '•••123456' }));
+  assert.equal(await read, false); assert.equal(ui.context.state.profile.line_verified, false);
+  assert.equal(ui.$('#resident-line-unlink').hidden, true);
+});
+
+test('malformed resident LINE status reads preserve known linked state and surface an error', async () => {
+  for (const reply of [{}, { full_name: 'Alice' }, { full_name: 'Alice', line_verified: 'false', line_binding_ready: true }]) {
+    const ui = harness('resident'); ui.context.state.profile.line_verified = true;
+    const read = ui.context.refreshLineStatus(false); ui.requests[0].resolve(reply); assert.equal(await read, false);
+    assert.equal(ui.context.state.profile.line_verified, true); assert.equal(ui.$('#resident-line-error').hidden, false);
+    assert.equal(ui.context.state.lineStatusRequest, false);
+  }
 });

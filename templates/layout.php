@@ -28,6 +28,7 @@ if (!isset($contentTemplate) || !is_string($contentTemplate) || !is_file($conten
   <title><?= e($documentTitle) ?></title>
   <link rel="stylesheet" href="<?= e($assetUrl('/assets/css/app.css')) ?>">
   <link rel="stylesheet" href="<?= e($assetUrl('/assets/css/simple.css')) ?>">
+  <?php if (in_array($pageId, ['daily-home', 'admin-console'], true)): ?><link rel="stylesheet" href="<?= e($assetUrl('/assets/css/daily.css')) ?>"><?php endif; ?>
 </head>
 <body data-page="<?= e($pageId) ?>" data-user-role="<?= e($userRole) ?>">
   <a class="skip-link" href="#main-content">ข้ามไปยังเนื้อหาหลัก</a>
@@ -42,6 +43,7 @@ if (!isset($contentTemplate) || !is_string($contentTemplate) || !is_file($conten
   <?php if ($pageId === 'resident-portal'): ?><script src="<?= e($assetUrl('/assets/js/transfer-payment.js')) ?>" defer></script><?php endif; ?>
   <script src="<?= e($assetUrl('/assets/js/recovery-guidance.js')) ?>" defer></script>
   <script src="<?= e($assetUrl('/assets/js/action-guidance.js')) ?>" defer></script>
+  <?php if (in_array($pageId, ['daily-home', 'admin-console'], true)): ?><script src="<?= e($assetUrl('/assets/js/daily-booking.js')) ?>" defer></script><?php endif; ?>
   <script src="<?= e($assetUrl('/assets/js/app.js')) ?>" defer></script>
 </body>
 </html>

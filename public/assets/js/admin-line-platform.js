@@ -4,7 +4,7 @@
   const statuses = { bound: 'ผูกแล้ว', pending: 'รอส่งรหัส', unbound: 'ยังไม่ผูก', blocked: 'ระงับการผูก', claimed: 'ยืนยันผู้รับแล้ว', expired: 'หมดอายุ', revoked: 'ยกเลิกแล้ว' };
   const list = (value) => Array.isArray(value) ? value : Array.isArray(value?.rows) ? value.rows : [];
   const messageUrl = (value, code) => {
-    const match = /^https:\/\/line\.me\/R\/oaMessage\/%40[A-Za-z0-9._-]{1,32}\/\?((?:BIND|OWNER|ADMIN)-[A-F0-9]{32})$/.exec(String(value || ''));
+    const match = /^https:\/\/line\.me\/R\/oaMessage\/%40[A-Za-z0-9._-]{1,32}\/\?((?:BIND|OWNER)-[A-F0-9]{32})$/.exec(String(value || ''));
     return match && match[1] === code ? match[0] : '';
   };
   const expiryTime = (value) => {
@@ -98,7 +98,7 @@
     function codeSurface(row) {
       const wrap = create('div');
       const code = String(row.code || ''), expires = expiryTime(row.expires_at);
-      if (!/^(?:BIND|OWNER|ADMIN)-[A-F0-9]{32}$/.test(code) || !Number.isFinite(expires) || expires <= Date.now()) {
+      if (!/^(?:BIND|OWNER)-[A-F0-9]{32}$/.test(code) || !Number.isFinite(expires) || expires <= Date.now()) {
         wrap.append(note('ไม่มีรหัสที่ยังใช้ได้ กรุณาสร้างรหัสใหม่')); return wrap;
       }
       const input = create('input', 'line-platform-code'); input.value = code; input.readOnly = true; input.setAttribute('aria-label', 'รหัสใช้ครั้งเดียว');
@@ -243,8 +243,9 @@
       if (!container.children.length) container.append(note(state.oaListState === 'loading' ? 'กำลังโหลดบัญชีบอท · ไม่เกิน 12 วินาที' : 'อ่านบัญชีบอทไม่ได้ กรุณากดรีเฟรชหรือตั้งค่า LINE Bot'));
       const recipients = $('#line-recipient-list'); recipients.replaceChildren();
       state.recipients.forEach((row) => {
-        const item = card(`${row.label} · ${row.is_owner ? 'OWNER' : 'ADMIN'}`);
-        item.append(note(`${txt(row.oa_name)} · ${statuses[row.status] || txt(row.status)} · ${row.enabled ? 'เปิดแจ้งเตือน' : 'ปิดแจ้งเตือน'}`), note(txt(row.line_user_id_hint, 'ยังไม่ยืนยันบัญชี LINE')), btn('รหัส / จัดการผู้รับ', () => openRecipient(row.id)));
+        const owner = row.is_owner === true;
+        const item = card(`${row.label} · ${owner ? 'เจ้าของระบบ' : 'บัญชีแอดมินเดิม (ยกเลิกแล้ว)'}`);
+        item.append(note(owner ? `${txt(row.oa_name)} · ${statuses[row.status] || txt(row.status)} · ${row.enabled ? 'เปิดแจ้งเตือน' : 'ปิดแจ้งเตือน'}` : 'หยุดรับแจ้งเตือนแล้ว เปิดใช้งานหรือสร้างรหัสใหม่ไม่ได้'), note(txt(row.line_user_id_hint, 'ยังไม่ยืนยันบัญชี LINE')), btn(owner ? 'รหัส / จัดการผู้รับ' : 'ปิดผู้รับเดิม', () => openRecipient(row.id)));
         recipients.append(item);
       });
       if (!recipients.children.length) recipients.append(note(state.recipientListState === 'loading' ? 'กำลังโหลดผู้รับแจ้งเตือน · ไม่เกิน 12 วินาที' : state.recipientListState === 'error' ? 'อ่านผู้รับแจ้งเตือนไม่สำเร็จ · บัญชีบอทยังจัดการได้' : 'ยังไม่มีผู้รับแจ้งเตือนฝ่ายจัดการ'));
@@ -446,18 +447,21 @@
       if (populate) {
         field(recipientForm, 'label').value = row.label || '';
         field(recipientForm, 'enabled').checked = row.enabled !== false;
-        field(recipientForm, 'is_owner').checked = row.is_owner === true;
         $$('[name="muted_categories"]', recipientForm).forEach((node) => { node.checked = list(row.muted_categories).includes(node.value); });
       }
       const editing = state.id !== null;
+      const retired = editing && row.is_owner !== true;
+      field(recipientForm, 'label').disabled = retired;
+      field(recipientForm, 'enabled').disabled = retired;
+      $$('[name="muted_categories"]', recipientForm).forEach((node) => { node.disabled = retired; });
+      $('button[type="submit"]', recipientForm).hidden = retired;
       showPrimaryBot($('#line-recipient-bot'), editing && Number(row.oa_id) !== 0 ? txt(row.oa_name) : '');
-      $('#line-recipient-owner-field').hidden = editing;
       $('#line-recipient-enabled-field').hidden = !editing; $('#line-recipient-mutes').hidden = !editing;
       $('#line-recipient-delete').hidden = !editing; $('#line-recipient-refresh').hidden = !editing;
-      $('#line-platform-summary').textContent = editing ? `${txt(row.oa_name)} · ${row.is_owner ? 'OWNER' : 'ADMIN'}` : 'ผู้รับต้องส่งรหัสจาก LINE ของตนเองก่อนรับแจ้งเตือน';
-      $('#line-recipient-status').textContent = editing ? `${statuses[row.status] || txt(row.status)} · ${txt(row.line_user_id_hint, 'ยังไม่ยืนยัน LINE')}` : 'รหัส OWNER ใช้ได้ 5 นาที · ADMIN ใช้ได้ 10 นาที';
+      $('#line-platform-summary').textContent = editing ? `${txt(row.oa_name)} · ${retired ? 'บัญชีแอดมินเดิม (ยกเลิกแล้ว)' : 'เจ้าของระบบ'}` : 'เจ้าของระบบต้องส่งรหัสจาก LINE ของตนเองก่อนรับแจ้งเตือน';
+      $('#line-recipient-status').textContent = retired ? 'หยุดรับแจ้งเตือนแล้ว ทำได้เฉพาะปิดผู้รับเดิม' : editing ? `${statuses[row.status] || txt(row.status)} · ${txt(row.line_user_id_hint, 'ยังไม่ยืนยัน LINE')}` : 'รหัส OWNER ใช้ได้ 5 นาที';
       const code = $('#line-recipient-code'); code.replaceChildren();
-      if (row.status === 'pending') code.append(codeSurface(row), note('ให้เจ้าตัวเปิด LINE พร้อมรหัส แล้วกด “ส่ง” ไปยัง OA ที่ระบุ'));
+      if (!retired && row.status === 'pending') code.append(codeSurface(row), note('ให้เจ้าตัวเปิด LINE พร้อมรหัส แล้วกด “ส่ง” ไปยัง OA ที่ระบุ'));
       recipientForm.hidden = false;
       if (state.id !== null) {
         const index = state.recipients.findIndex((item) => String(item.id) === String(row.id));
@@ -531,8 +535,9 @@
     recipientForm.addEventListener('submit', async (event) => {
       event.preventDefault(); if (state.mode !== 'recipient' || state.busy || !recipientForm.reportValidity()) return;
       const id = state.id, creating = id === null;
+      if (!creating && state.detail?.is_owner !== true) return;
       if (creating && !primaryBotReady()) { error(new Error('เลือก OA ที่พร้อมใช้งาน')); return; }
-      const values = creating ? { label: field(recipientForm, 'label').value, is_owner: field(recipientForm, 'is_owner').checked } : { label: field(recipientForm, 'label').value, enabled: field(recipientForm, 'enabled').checked, muted_categories: $$('[name="muted_categories"]', recipientForm).filter((node) => node.checked).map((node) => node.value) };
+      const values = creating ? { label: field(recipientForm, 'label').value, is_owner: true } : { label: field(recipientForm, 'label').value, enabled: field(recipientForm, 'enabled').checked, muted_categories: $$('[name="muted_categories"]', recipientForm).filter((node) => node.checked).map((node) => node.value) };
       const succeeded = await mutate($('button[type="submit"]', recipientForm), () => api('/api/admin/line/recipients' + (creating ? '' : `/${pathId(id)}`), { method: creating ? 'POST' : 'PUT', body: values }), (row) => { state.id = row.id; renderRecipient(row); toast(creating ? 'สร้างรหัสแล้ว ให้ผู้รับกดส่งจาก LINE ของตนเอง' : 'บันทึกผู้รับแล้ว'); }, creating && values.is_owner ? ['สร้างรหัสผู้รับหลัก OWNER', 'เมื่อยืนยันรหัสนี้ ระบบจะเปลี่ยนผู้รับหลักของ OA ตามรายการที่เลือก ให้เจ้าของตัวจริงส่งรหัสด้วยตนเอง', 'สร้างรหัส OWNER', false] : null);
       if (succeeded) loadOas();
     });

@@ -3,12 +3,12 @@
   <section class="auth-aside" aria-labelledby="admin-welcome-title">
     <a class="brand brand-inverse" href="/">
       <span class="brand-mark" aria-hidden="true">H</span>
-      <span><strong>หอพักของคุณ</strong><small>Admin Console</small></span>
+      <span><strong>หอพักของคุณ</strong><small>Owner Console</small></span>
     </a>
     <div class="auth-aside-copy">
       <span class="eyebrow">Secure administration</span>
       <h1 id="admin-welcome-title">จัดการห้อง ผู้เช่า และการเงินในที่เดียว</h1>
-      <p>บัญชีผู้ดูแลได้รับการป้องกันด้วย session ฝั่งเซิร์ฟเวอร์ การจำกัดความถี่ และ CSRF token</p>
+      <p>บัญชีเจ้าของระบบได้รับการป้องกันด้วย session ฝั่งเซิร์ฟเวอร์ การจำกัดความถี่ และ CSRF token</p>
     </div>
     <ul class="auth-points">
       <li> ห้องและการจองอัปเดตจากฐานข้อมูลจริง</li>
@@ -20,9 +20,9 @@
   <section class="auth-card" aria-labelledby="admin-login-title">
     <div class="auth-card-heading">
       <a class="back-link" href="/">กลับหน้าห้องว่าง</a>
-      <span class="eyebrow">Administrator</span>
-      <h2 id="admin-login-title">เข้าสู่ระบบผู้ดูแล</h2>
-      <p>ใช้ชื่อผู้ใช้และรหัสผ่านของบัญชีผู้ดูแลระบบ</p>
+      <span class="eyebrow">Owner</span>
+      <h2 id="admin-login-title">เข้าสู่ระบบเจ้าของระบบ</h2>
+      <p>ใช้ชื่อผู้ใช้และรหัสผ่านของบัญชีเจ้าของระบบ</p>
     </div>
     <form id="admin-login-form" class="stack-form" novalidate>
       <div class="field">

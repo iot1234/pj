@@ -31,8 +31,8 @@
     </form>
     <div class="support-note">
       <strong>เบอร์ไม่ตรงหรือเปลี่ยนเบอร์?</strong>
-      <p>ติดต่อผู้ดูแลหอพักเพื่อตรวจเบอร์และห้อง ระบบเปิดให้เฉพาะผู้พักที่ยังเข้าอยู่ เมื่อเปลี่ยนเบอร์หรือย้ายออก เซสชันเดิมจะใช้ไม่ได้</p>
-      <a class="button button-secondary button-full" href="#" data-public-support-line target="_blank" rel="noopener noreferrer" hidden>ติดต่อผู้ดูแลผ่าน LINE</a>
+      <p>ติดต่อเจ้าของระบบหอพักเพื่อตรวจเบอร์และห้อง ระบบเปิดให้เฉพาะผู้พักที่ยังเข้าอยู่ เมื่อเปลี่ยนเบอร์หรือย้ายออก เซสชันเดิมจะใช้ไม่ได้</p>
+      <a class="button button-secondary button-full" href="#" data-public-support-line target="_blank" rel="noopener noreferrer" hidden>ติดต่อเจ้าของระบบผ่าน LINE</a>
     </div>
   </section>
 </main>

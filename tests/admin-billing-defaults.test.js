@@ -13,12 +13,12 @@ function harness() {
  const nodes={'#bill-room-options':node(),'#bill-period':node('2026-08'),'#bill-admin-rows':node(),'#line-bulk-button':node(),'#bill-admin-state':node(),'#select-all-bill-rooms':node(),'#preview-bills-button':node(),'#create-bills-button':node()};
  nodes['#bill-builder-form']={elements:{period:nodes['#bill-period'],confirm_current_period:{checked:true}}};
  const requests=[], selections=[], input={checked:true,disabled:false};
- const context={state,AbortController,currentBillBlockers:()=>[],renderBillingGuide:()=>{},rememberBillDraft:()=>{},$:id=>nodes[id],$$:()=>[input],todayPeriod:()=> '2026-09',billPayloadSignature:()=> 'same',setStat:()=>{},
+ const context={state,AbortController,ApiError:Error,currentBillBlockers:()=>[],renderBillingGuide:()=>{},rememberBillDraft:()=>{},$:id=>nodes[id],$$:()=>[input],todayPeriod:()=> '2026-09',billPayloadSignature:()=> 'same',setStat:()=>{},
   setTableState:(n,v)=>{n.dataset.state=v;},errorMessage:e=>e.message,listFrom:(data,key)=>data[key],
   fillBillRooms:preserve=>selections.push(preserve),renderAdminBills:()=>{nodes['#line-bulk-button'].disabled=!context.billDataReady();},
   api:(url,options)=>{if(url.includes('/candidates?'))return Promise.resolve({period:new URL(url,'https://test.invalid').searchParams.get('period'),rooms:[{id:7,room_code:'7',is_billed:false}]});return new Promise((resolve,reject)=>requests.push({url,options,resolve,reject}));}};
  vm.createContext(context);
- vm.runInContext(extract('function billDataReady()', 'function selectedBillRooms()')+extract('function syncBillActionState()', 'function syncCurrentPeriodConfirmation()')+extract('async function loadBills()', 'function clearPromptPayTestQr()'),context);
+ vm.runInContext(extract('const requiredEntityList =', 'const errorMessagesByCode =')+extract('function billDataReady()', 'function selectedBillRooms()')+extract('function syncBillActionState()', 'function syncCurrentPeriodConfirmation()')+extract('async function loadBills()', 'function clearPromptPayTestQr()'),context);
  return {state,nodes,requests,selections,load:context.loadBills,ready:context.billDataReady,sync:context.syncBillActionState};
 }
 test('bill reload locks both issuance buttons until the selected month has loaded',async()=>{
@@ -36,6 +36,12 @@ test('a late old failure does not hide a successful current month',async()=>{
 test('a failed current reload removes stale bills and keeps all issuance disabled',async()=>{
  const h=harness(),work=h.load();h.requests[0].reject(new Error('offline'));await work;assert.equal(h.ready(),false);assert.equal(h.state.bills.length,0);
  assert.equal(h.nodes['#bill-admin-state'].dataset.state,'error');assert.equal(h.nodes['#preview-bills-button'].disabled,true);assert.equal(h.nodes['#create-bills-button'].disabled,true);assert.equal(h.nodes['#line-bulk-button'].disabled,true);
+});
+test('malformed and duplicate bill identities cannot enable monthly billing or LINE actions',async()=>{
+ for(const payload of [{bills:[null]},{bills:[{id:0}]},{bills:[{id:2},{id:2}]}]){
+  const h=harness(),work=h.load();h.requests[0].resolve(payload);await work;
+  assert.equal(h.ready(),false);assert.equal(h.state.bills.length,0);assert.equal(h.nodes['#line-bulk-button'].disabled,true);assert.equal(h.nodes['#create-bills-button'].disabled,true);
+ }
 });
 test('bill payload omits calculated values even if obsolete controls are injected',()=>{
  const context={$:()=>({elements:{period:{value:'2026-08'},other_description:{value:''},other_amount:{value:'0'},water_rate:{value:'999'},electric_rate:{value:'888'},due_date:{value:'2099-01-01'},confirm_current_period:{checked:false}}}),selectedBillRooms:()=>[7],number:Number,todayPeriod:()=> '2026-09',FormData:class {entries(){return Object.entries({period:'2026-08',water_rate:'999',electric_rate:'888',due_date:'2099-01-01',other_amount:'0'});}}};

@@ -1,6 +1,13 @@
 <?php
 declare(strict_types=1);
 // Included by tests/run.php: no database or network access.
+$test('LINE webhook classification matches trailing-slash aliases without exempting other routes',function()use($same):void{
+ foreach(['/api/webhooks/line','/api/webhooks/line/oa/'.str_repeat('a',48)]as$path){
+  $same(true,Dormitory\Http\Request::isLineWebhookPath($path));
+  $same(true,Dormitory\Http\Request::isLineWebhookPath($path.'/'));
+ }
+ foreach(['/api/webhooks/line//','/api/webhooks/line/oa/'.str_repeat('a',48).'//','/api/webhooks/line/other/','/api/webhooks/line/oa/not-a-token/','/api/admin/settings/','/api/webhooks/line-extra/']as$path)$same(false,Dormitory\Http\Request::isLineWebhookPath($path));
+});
 $test('LINE setup maps provider and network errors without exposing raw diagnostics',function()use($same):void{
  $guard=new ReflectionMethod(Dormitory\Domain\LineOfficialAccountService::class,'assertSetupResponse');
  $guard->invoke(null,200,0,false,'/v2/bot/info');

@@ -4,21 +4,21 @@
 
 ## ขอบเขตความเชื่อถือ
 
-- Browser ของ Guest/Resident/Admin ถือว่าไม่น่าเชื่อถือทั้งหมด รวมถึง hidden fields, total, room status, file name, MIME จาก browser และ client IP header
+- Browser ของ Guest/Resident/Owner ถือว่าไม่น่าเชื่อถือทั้งหมด รวมถึง hidden fields, total, room status, file name, MIME จาก browser และ client IP header
 - MySQL, PHP host และ reverse proxy อยู่ใน trusted infrastructure แต่ต้องใช้บัญชี/สิทธิ์แยกกัน
 - LINE, SlipOK และ EasySlip เป็น third party ที่อาจช้า ล่ม ส่งข้อมูลผิดรูป หรือถูกโจมตี ระบบจึงตรวจ response ก่อนเปลี่ยนสถานะทางการเงิน
 - `.env`, `APP_KEY`, database backup (รวม ciphertext ใน `integration_settings`), `storage/private/slips` และ provider payload เป็นข้อมูลลับ ห้ามอยู่ใต้ public web root หรือ artifact ที่เผยแพร่
 
 ## Authentication และ authorization
 
-- Admin/Owner ใช้ username/password ความยาว 12-200 ตัวตามเดิมและ password เก็บด้วย `password_hash()` โดยเลือก Argon2id เมื่อ runtime รองรับและ fallback เป็น bcrypt ไม่มี default password หรือ plaintext credential ใน SQL
+- Owner ใช้ username/password ความยาว 12-200 ตัวตามเดิมและ password เก็บด้วย `password_hash()` โดยเลือก Argon2id เมื่อ runtime รองรับและ fallback เป็น bcrypt ไม่มี default password หรือ plaintext credential ใน SQL
 - Resident ใช้เฉพาะเบอร์ที่ normalize แล้วตรงกับ resident/occupancy active หนึ่งรายการ ไม่มีรหัสผ่าน OTP หรือลิงก์ยืนยันจากทุกเครื่อง บันทึก assurance เป็น low และ phone_verified=false เบอร์เป็นเพียงตัวระบุ ไม่ใช่ตัวพิสูจน์ตัวตน
-- โครงสร้าง activation/password เดิมและขั้นตอนการเก็บข้อมูลสำหรับ compatibility ยังคงอยู่ แต่ไม่ใช้ตัดสิน residentLogin และไม่มีหน้าขอคีย์หรือตั้งรหัสผ่านลูกบ้าน เซสชันแบบรหัสผ่านเดิมจะให้เข้าใหม่ด้วยเบอร์หลังเปลี่ยนรุ่น
-- Admin ยังตรวจ password hash และ dummy KDF ตามเดิม Resident ตอบข้อผิดพลาดทั่วไปและมี delay/rate limit แต่ข้อจำกัดเหล่านี้ไม่ป้องกันผู้ที่รู้เบอร์แล้วเข้าแทนในโหมด phone-only
-- rate limit เก็บใน MySQL และ lock ด้วย transactionทั้งต่อ IP และคู่บัญชี+source โดย bucket key เป็น HMAC จึงไม่เก็บ phone/username ตรง ๆ ค่า malformed/ไม่พบไม่สร้างเซสชัน ข้อผิดพลาดทั่วไปไม่บอกเหตุผลละเอียด แต่ผลเข้าสำเร็จอาจใช้ตรวจว่าเบอร์ใดมีบัญชีได้ Signed HttpOnly trusted-device cookie ใช้ได้เฉพาะ Admin ที่เคยยืนยัน password สำเร็จ ไม่ใช้กับ Resident
-- session ID ถูก rotate เมื่อ login และล้างเมื่อ logout ใช้ strict mode, cookie only, HttpOnly, SameSite=Lax และ Secure เมื่อเปิด HTTPS; Resident session หมดอายุเมื่อ idle 15 นาทีหรืออายุรวม 1 ชั่วโมง ส่วน Admin ใช้นโยบาย session ที่ตั้งไว้ ระบบเริ่ม file session แบบ lazy เฉพาะเมื่อมี session ที่บันทึกอยู่หรือ login สำเร็จ Anonymous GET จึงไม่สร้างไฟล์ใหม่
-- ทุก request ที่มี session จะตรวจ `active` และ `auth_version` กับฐานข้อมูล การปิดบัญชี, เปลี่ยน password Admin, เปลี่ยนเบอร์ Resident หรือเพิ่ม auth version จึง revoke session เก่าได้
-- Route guard แยก Guest, Resident, Admin และ owner; เฉพาะ owner จัดการบัญชี admin และเปลี่ยนค่า PromptPay/LINE/slip integrations ส่วน service ต้องกันการปิด/ลบ owner คนสุดท้าย
+- คอลัมน์ activation/password เดิมยังคงอยู่เพื่อ compatibility ของฐานข้อมูล แต่ flow เพิ่มผู้พัก/ย้ายเข้า/ใช้ประวัติเดิม/reissue ไม่สร้างหรือคืนรหัสอีกต่อไป reissue ใช้เพิ่ม `auth_version` ยกเลิก session และเพิกถอนการผูก LINE เดิม ตัวแปร `RESIDENT_ACTIVATION_TTL_SECONDS` เลิกใช้และไม่ถูกตรวจโดย readiness หรือส่งผ่าน Compose ไม่มีหน้าขอคีย์หรือตั้งรหัสผ่านลูกบ้าน เซสชันแบบรหัสผ่านเดิมจะให้เข้าใหม่ด้วยเบอร์หลังเปลี่ยนรุ่น
+- Owner ยังตรวจ password hash และ dummy KDF ตามเดิม Resident ตอบข้อผิดพลาดทั่วไปและมี delay/rate limit แต่ข้อจำกัดเหล่านี้ไม่ป้องกันผู้ที่รู้เบอร์แล้วเข้าแทนในโหมด phone-only
+- rate limit เก็บใน MySQL และ lock ด้วย transactionทั้งต่อ IP และคู่บัญชี+source โดย bucket key เป็น HMAC จึงไม่เก็บ phone/username ตรง ๆ ค่า malformed/ไม่พบไม่สร้างเซสชัน ข้อผิดพลาดทั่วไปไม่บอกเหตุผลละเอียด แต่ผลเข้าสำเร็จอาจใช้ตรวจว่าเบอร์ใดมีบัญชีได้ Signed HttpOnly trusted-device cookie ใช้ได้เฉพาะ Owner ที่เคยยืนยัน password สำเร็จ ไม่ใช้กับ Resident
+- session ID ถูก rotate เมื่อ login และล้างเมื่อ logout ใช้ strict mode, cookie only, HttpOnly, SameSite=Lax และ Secure เมื่อเปิด HTTPS; Resident session หมดอายุเมื่อ idle 15 นาทีหรืออายุรวม 1 ชั่วโมง ส่วน Owner ใช้นโยบาย session ที่ตั้งไว้ ระบบเริ่ม file session แบบ lazy เฉพาะเมื่อมี session ที่บันทึกอยู่หรือ login สำเร็จ Anonymous GET จึงไม่สร้างไฟล์ใหม่
+- ทุก request ที่มี session จะตรวจ `active` และ `auth_version` กับฐานข้อมูล สำหรับ Owner ต้องมี role owner และ `retired_at IS NULL` ส่วน Resident ต้องมีเบอร์/ห้อง/occupancy ตรงกับ session การปิดบัญชี, เปลี่ยน password Owner, เปลี่ยนเบอร์ Resident หรือเพิ่ม auth version จึง revoke session เก่าได้
+- บทบาทที่ login ได้มี Owner และ Resident เท่านั้น Guest เข้าถึงหน้า public โดยไม่ login ทุก route หลังบ้านต้องเป็น owner ที่ active และ `retired_at IS NULL` รวมการอ่านข้อมูล จัดการเจ้าของและตั้งค่า integrations service กันการปิด owner คนสุดท้ายและปิดบัญชีของตนเอง แอดมินเดิมถูก migration `017` ปิดถาวรโดยไม่ยกระดับสิทธิ์ และบัญชีที่เลิกใช้ไม่สามารถแก้ credential หรือเปิดใช้งานอีกได้ ชื่อ `/admin`, `admin_users` และ actor type `admin` คงไว้เป็นตัวระบุ compatibility/audit ดู [คู่มือ migration 017](OWNER_ONLY_MIGRATION.md)
 - Query ของผู้เช่าต้อง bind `resident_id` จาก session เสมอ ห้ามเชื่อ bill/resident/room ID จาก URL เพียงอย่างเดียว
 
 ข้อจำกัดสำคัญ: โหมด phone-only ไม่พิสูจน์การครอบครองเบอร์ คนที่รู้เบอร์สามารถเข้าแทนและใช้สิทธิ์ลูกบ้านรายนั้นได้ การจำกัด IP, CSRF และแยกสิทธิ์ห้องไม่ทดแทนรหัสลับ การยกเลิกเซสชันไม่กันการเข้าใหม่ด้วยเบอร์เดิม นโยบายนี้ทำตามคำขอให้ใช้เบอร์อย่างเดียว ไม่ใช่การยืนยันตัวตนระดับสูง
@@ -45,30 +45,30 @@ MySQL ต้องเป็น 8.0.16+ เพื่อให้ `CHECK` ทำ�
 
 - active booking ใช้ generated `active_room_id`/`active_phone_norm` + unique indexes เพื่อกัน booking pending/confirmed ซ้ำทั้งห้องเดียวและเบอร์เดียว
 - active occupancy ใช้ generated room/resident IDs + unique indexes เพื่อกันหนึ่งห้องหรือหนึ่งผู้เช่ามี occupancy active ซ้ำ
-- booking/move-in/bill/payment/admin-owner flows ใช้ transaction และ `SELECT ... FOR UPDATE`; duplicate-key เป็น conflict ไม่ใช่ retry แบบ blind
+- booking/move-in/bill/payment/owner flows ใช้ transaction และ `SELECT ... FOR UPDATE`; duplicate-key เป็น conflict ไม่ใช่ retry แบบ blind
 - meter กำหนดหนึ่งแถวต่อห้อง/ประเภท/เดือน, current ≥ previous และ units เท่ากับผลต่างที่ปัด 2 ตำแหน่ง
 - booking เก็บ snapshot ค่าเช่าขณะจอง และ bill เก็บ snapshot ชื่อผู้พัก รหัสห้อง ค่าเช่า มิเตอร์ rate และ amount เพื่อไม่ให้การแก้ข้อมูลปัจจุบันเปลี่ยนประวัติย้อนหลัง; total คำนวณฝั่ง server และ unique ต่อ occupancy/period
-- integrity triggers 19 รายการป้องกันสถานะเริ่มต้นของ booking/occupancy, snapshot/หลักฐานเปลี่ยนสถานะ/ความสัมพันธ์ข้ามตาราง, occupancy-meter binding, payment ที่สรุปแล้วและการลบ payment, bill/bill items, notification outbox กับ audit logs; schema audit ตรวจทั้ง event/timing/table และ body ตรง canonical ผู้ใช้ฐานข้อมูล runtime ไม่ควรมีสิทธิ์ `DELETE`, `DROP`, `ALTER`, `TRIGGER` หรือปิด constraint
-- payment transaction reference และ slip HMAC เป็น global unique; generated unique key กัน payment pending/verified หลายรายการต่อ bill และ verification lease/token กัน worker/request หลายตัวสรุปรายการเดียวกันพร้อมกัน
-- outbox unique ต่อ `(bill_id,purpose)` และ `retry_key`; key เป็น UUID v4 lowercase ที่เก็บเดิมตลอด retry ส่วน claim token/lease และ compare-and-set fencing ป้องกัน stale worker สรุปงานของ worker อื่น และ heartbeat เก็บเพียง worker ID ที่ HMAC แล้ว
+- integrity triggers 63 รายการป้องกันสถานะเริ่มต้นของ booking/occupancy, snapshot/หลักฐานเปลี่ยนสถานะ/ความสัมพันธ์ข้ามตาราง, occupancy-meter binding, payment ที่สรุปแล้วและการลบ payment, bill/bill items, transfer instructions, LINE bindings/outbox, audit logs และ retirement marker; schema audit ตรวจทั้ง event/timing/table และ body ตรง canonical ผู้ใช้ฐานข้อมูล runtime ไม่ควรมีสิทธิ์ `DELETE`, `DROP`, `ALTER`, `TRIGGER` หรือปิด constraint
+- transaction reference ที่ยืนยันเงินแล้วใช้รับเงินซ้ำข้ามรายเดือน/รายวันไม่ได้; slip HMAC ที่รอตรวจ ยืนยัน หรือพักตรวจยังกันใช้ซ้ำ หลักฐานที่ถูกปฏิเสธปล่อยเฉพาะ lookup projection เพื่อให้ตรวจใหม่กับรายการที่ถูกต้อง โดยไม่ลบ raw history; generated unique key กัน payment pending/verified หลายรายการต่อ bill และ verification lease/token กัน worker/request หลายตัวสรุปรายการเดียวกันพร้อมกัน
+- outbox unique ต่อ `(bill_id,purpose,line_delivery_key)` และ `retry_key` เพื่อส่งแยกตาม binding โดยไม่ซ้ำ; key เป็น UUID v4 lowercase ที่เก็บเดิมตลอด retry ส่วน claim token/lease และ compare-and-set fencing ป้องกัน stale worker สรุปงานของ worker อื่น และ heartbeat เก็บเพียง worker ID ที่ HMAC แล้ว
 - `line_link_codes` เก็บเฉพาะ HMAC-SHA256 ของรหัส `BIND-` ไม่เก็บ bearer code; unique `code_hash` กันรหัสซ้ำ และ generated `pending_resident_id` + unique index บังคับให้ผู้พักหนึ่งคนมีรหัส pending ได้ไม่เกินหนึ่งรายการ โดย FK/CHECK บังคับ resident, รูปแบบ LINE ID, state และ timestamp
 - `integration_settings` ใช้ singleton `id=1`, FK `updated_by` และ CHECK จำกัดรูปแบบ/range รวม LINE Basic ID สาธารณะ; runtime web/worker มีเฉพาะ `SELECT`, `INSERT`, `UPDATE` ไม่ต้องมี `DELETE` หรือสิทธิ์ DDL
 
 constraint ไม่สามารถกัน active booking กับ active occupancy ที่อยู่คนละตารางพร้อมกันได้ด้วย unique index ตัวเดียว service จึงต้อง lock ห้องและตรวจทั้งสองตารางใน transaction การแก้ business flow ต้องรักษา invariant นี้
 
-Fresh schema ไม่มี `residents.pin_hash` และ source ปัจจุบันไม่อ่านหรือเขียนคอลัมน์นี้ ฐานรุ่นเก่าต้อง deploy transitional commit `a52bc33`, รอทุก replica healthy, สำรอง/ทดสอบ restore, รัน `006_remove_resident_pin.sql`, ตรวจว่าคอลัมน์หาย แล้วปิด public write, หยุด worker และ pause monthly-billing cron ก่อนรัน `007` → `008` → `009` → `010` → `011` → `012` โดยคง maintenance window ไว้จน deploy source ปัจจุบัน, reissue activation code ให้ผู้พัก active เดิมที่ยังไม่มี credential และผ่าน strict/schema gate แล้วจึงเปิด traffic/worker/cron หลังลบ `pin_hash` แล้วแอปรุ่น PIN เดิม rollback กลับมาใช้ schema นี้ไม่ได้โดยไม่ restore schema/backup
+Fresh schema ไม่มี `residents.pin_hash` และ source ปัจจุบันไม่อ่านหรือเขียนคอลัมน์นี้ ฐานรุ่นเก่าต้อง deploy transitional commit `a52bc33`, รอทุก replica healthy, สำรอง/ทดสอบ restore, รัน `006_remove_resident_pin.sql`, ตรวจว่าคอลัมน์หาย แล้วปิด public write, หยุด worker และ pause monthly-billing cron ก่อนรัน `007` → `008` → `009` → `010` → `011` → `012` → `013` → `014` → `015` → `016` → `017` → `018` → `019` → `020` โดยคง maintenance window ไว้จน deploy source ปัจจุบัน ตรวจเบอร์ผู้พักและห้อง active ให้ตรงหนึ่งรายการต่อคน และผ่าน strict/schema gate ก่อนเปิด traffic/worker/cron แอดมินเดิมต้องมีเจ้าของที่ active อยู่ก่อนเลิกใช้ตาม [คู่มือ migration 017](OWNER_ONLY_MIGRATION.md) ผู้พักไม่ต้อง reissue activation code เพื่อเข้าใช้หรือผ่าน gate หลังลบ `pin_hash` แล้วแอปรุ่น PIN เดิม rollback กลับมาใช้ schema นี้ไม่ได้โดยไม่ restore schema/backup
 
 ## Slip upload และการเปลี่ยนสถานะ paid
 
 - รับเฉพาะ JPEG/PNG/WebP ไม่เกิน 4 MiB; ตรวจ MIME ด้วย `finfo`, parse image จริง, จำกัด 4,096 px ต่อด้านและ 8 ล้านพิกเซล พร้อมตรวจ memory budget ก่อน decode เพื่อกัน decompression bomb/หน่วยความจำหมด
-- ไม่ใช้ชื่อไฟล์เดิม ไฟล์ตั้งชื่อสุ่ม เก็บใต้ `storage/private/slips/YYYY/MM` ด้วย permission จำกัดและไม่มี public download route; Admin เปิดหลักฐานได้เฉพาะ endpoint ที่ตรวจ session/role, rate limit และ audit
+- ไม่ใช้ชื่อไฟล์เดิม ไฟล์ตั้งชื่อสุ่ม เก็บใต้ `storage/private/slips/YYYY/MM` ด้วย permission จำกัดและไม่มี public download route; Owner เปิดหลักฐานได้เฉพาะ endpoint ที่ตรวจ session/role, rate limit และ audit
 - สร้าง HMAC-SHA256 ของเนื้อหาโดยใช้ `APP_KEY` เพื่อจับการอัปโหลดไฟล์เดิม โดยไม่ใช้ checksum ธรรมดาที่เดา/สร้างจากไฟล์สาธารณะได้
-- ก่อนใช้หลักฐานเดิมเพื่อตรวจซ้ำหรือส่งให้ Admin ระบบ canonicalize path ให้อยู่ใต้ slip root แล้วตรวจไฟล์จริง, MIME, ขนาด, มิติ/จำนวนพิกเซล และ HMAC เทียบฐานข้อมูลอีกครั้ง หากไม่ตรงจะหยุดแบบ fail-closed
-- ผู้ให้บริการต้องคืน transaction reference ที่ valid และ unique ยอดต้องตรง bill ถึง 1 สตางค์ และ receiver reference ต้องตรงเลขบัญชีปลายทาง/เลขท้าย 6–20 หลักที่ Owner ตั้งไว้
+- ก่อนใช้หลักฐานเดิมเพื่อตรวจซ้ำหรือส่งให้ Owner ระบบ canonicalize path ให้อยู่ใต้ slip root แล้วตรวจไฟล์จริง, MIME, ขนาด, มิติ/จำนวนพิกเซล และ HMAC เทียบฐานข้อมูลอีกครั้ง หากไม่ตรงจะหยุดแบบ fail-closed
+- ผู้ให้บริการต้องคืน transaction reference ที่ valid และ unique ยอดต้องตรงยอดโอนที่จองไว้ประจำบิลถึง 1 สตางค์ (รวมยอดปรับสตางค์ที่ระบบล็อกไว้) และ receiver reference ต้องตรงเลขบัญชีปลายทาง/เลขท้าย 6–20 หลักที่ Owner ตั้งไว้
 - เวลาโอนต้องไม่ก่อนเวลาสร้างบิลและไม่อยู่ในอนาคตเกินช่วงเผื่อเวลาที่ Owner ตั้งไว้ (0–3,600 วินาที); เวลา provider ที่หาย/parse ไม่ได้ต้องคง pending ไม่ใช่ paid
 - ระบบ reserve payment พร้อม verification lease ใน transaction ก่อนเรียก provider แล้วจึง lock bill/payment เพื่อ finalize payment + bill paid ใน transaction เดียว; token ป้องกันผลตอบกลับที่หมดอายุทับผลตรวจปัจจุบัน และ browser ส่งยอด/สถานะ paid เองไม่ได้
 - provider unavailable/response malformed/ผลที่สรุปไม่ได้ รวมถึง receiver ที่ provider ยังยืนยันกับบัญชีที่ Owner ตั้งไว้ไม่ได้ ต้องคง `pending` เพื่อให้แก้ configuration แล้วตรวจหลักฐานเดิมซ้ำได้ ส่วนยอดไม่ตรงและเวลาที่ผิดเงื่อนไขเป็น `rejected` โดยผลตรวจอัตโนมัติ ห้าม fail-open หรือเปิดปุ่มบังคับให้เป็น paid
-- Admin ตรวจซ้ำได้เฉพาะรายการ `pending` โดยใช้ verification lease/token และจำกัด 20 ครั้ง; การปิดรายการต้องรอให้ lease หมดและระบุเหตุผล ระบบเปลี่ยนเป็น `rejected` เพื่อปล่อยให้ผู้พักส่งหลักฐานใหม่ ไม่ได้เปลี่ยนบิลเป็น paid
+- Owner ตรวจซ้ำได้เฉพาะรายการ `pending` โดยใช้ verification lease/token และจำกัด 20 ครั้ง; การปิดรายการต้องรอให้ lease หมดและระบุเหตุผล ระบบเปลี่ยนเป็น `rejected` เพื่อปล่อยให้ผู้พักส่งหลักฐานใหม่ ไม่ได้เปลี่ยนบิลเป็น paid
 - provider payload อาจมีข้อมูลธนาคาร ให้จำกัด retention, จำกัดสิทธิ์ query และ redact token/image ก่อนบันทึก ห้ามนำ payload เต็มไปเขียน application log
 
 ## Outbound integrations และ SSRF
@@ -86,7 +86,7 @@ Fresh schema ไม่มี `residents.pin_hash` และ source ปัจจ�
 
 ## การปกป้อง integration settings
 
-- PromptPay/LINE/SlipOK/EasySlip เป็น operational settings ใน MySQL ไม่ใช่ environment settings และไม่มี environment fallback; Owner เปลี่ยนค่าจาก Admin → ตั้งค่า ส่วน Admin ทั่วไปอ่านได้เฉพาะค่าปกติและสถานะความพร้อม
+- PromptPay/LINE/SlipOK/EasySlip เป็น operational settings ใน MySQL ไม่ใช่ environment settings และไม่มี environment fallback; Owner เท่านั้นที่เข้าถึง/อ่าน/เปลี่ยนค่าจากหน้าเจ้าของ → ตั้งค่า ผู้พักและบัญชีที่เลิกใช้เข้า API เหล่านี้ไม่ได้
 - LINE Channel access token/Channel secret, SlipOK API key และ EasySlip API key เข้ารหัสแบบ AES-256-GCM; key ขนาด 256 บิต derive จาก `APP_KEY` ด้วย HKDF-SHA256 และใช้ nonce สุ่ม 12 bytes/tag 16 bytes
 - AAD มี namespace/version และชื่อ field จึงย้าย ciphertext ที่ valid ไปอีกคอลัมน์ไม่ได้โดยไม่ทำให้ authentication fail; หาก payload, key หรือ AAD ไม่ตรง ระบบปฏิเสธการถอดรหัสด้วย error เดียวกัน
 - API หลังบ้านไม่คืน plaintext หรือ ciphertext ของ credential แต่คืนเฉพาะ `*_configured` และ hint แบบ `********` ตามด้วยท้ายค่าไม่เกิน 4 ตัว รวมทั้ง readiness ที่ไม่เผยค่า secret
@@ -96,7 +96,7 @@ Fresh schema ไม่มี `residents.pin_hash` และ source ปัจจ�
 ## Secrets และ deployment
 
 - `.env` ถูก ignore จาก Git และ Docker build context แต่ operator ต้องตรวจ secret scanning ใน CI, image เก่า และ history ด้วย การเพิ่ม ignore file ไม่ลบ secret ที่เคย commit/build
-- `APP_KEY`, `APP_URL`, DB credential และ admin bootstrap password เป็น infrastructure configuration ที่ต้องมาจาก environment/secret manager หรือไฟล์ permission จำกัด; ห้ามย้าย `APP_KEY` เข้า `integration_settings` เพราะต้องใช้ถอดรหัสตารางนั้น
+- `APP_KEY`, `APP_URL`, DB credential และ owner bootstrap password เป็น infrastructure configuration ที่ต้องมาจาก environment/secret manager หรือไฟล์ permission จำกัด; ห้ามย้าย `APP_KEY` เข้า `integration_settings` เพราะต้องใช้ถอดรหัสตารางนั้น
 - LINE Channel access token/Channel secret และ SlipOK/EasySlip key ต้องกรอกผ่าน Owner UI และเก็บเข้ารหัสใน MySQL ไม่ควรซ้ำไว้ใน `.env`, command line, log หรือ audit payload
 - รหัสผ่าน Owner bootstrap เป็น input ชั่วคราวของ one-shot process แนะนำ `scripts/create_admin.php --password-stdin` เพื่อไม่ให้ปรากฏใน command line; Compose ไม่ส่งรหัสนี้หรือ `DB_ROOT_PASSWORD` ให้ app/worker ระยะยาว
 - `DB_ROOT_PASSWORD` ใช้เฉพาะ database service ของ Docker; XAMPP/Laragon ต้องเว้นว่าง/ลบจาก runtime `.env` หลัง DBA สร้าง user แล้ว
@@ -115,7 +115,7 @@ Fresh schema ไม่มี `residents.pin_hash` และ source ปัจจ�
 - ห้าม log request body ของ login, `.env`, Authorization header, image/base64, password หรือ provider secret รวมถึง payload PIN legacy
 - จำกัดผู้ที่อ่าน phone/email/LINE ID/slip/provider payload และกำหนด retention ตามวัตถุประสงค์และกฎหมายคุ้มครองข้อมูลส่วนบุคคล
 - schedule ให้บัญชี DBA/maintenance ลบ `rate_limits` ที่ `updated_at` เก่ากว่านโยบาย (ตัวอย่าง 30 วัน) โดยไม่ให้สิทธิ์ `DELETE` แก่ runtime; กำหนด capacity/retention ของ audit แยกกันเพราะ audit มี append-only trigger และต้อง archive/ลบผ่าน migration ที่ควบคุม
-- monitor อย่างน้อย: login fail/rate-limit surge, owner/admin change, booking conflict, bill generation failure, duplicate transaction, receiver mismatch, provider unavailable และ LINE terminal failure
+- monitor อย่างน้อย: login fail/rate-limit surge, การเปลี่ยนบัญชีเจ้าของ (audit identifiers เดิมยังคงอยู่), booking conflict, bill generation failure, duplicate transaction, receiver mismatch, provider unavailable และ LINE terminal failure
 
 ## Backup, restore และ incident response
 
@@ -128,16 +128,16 @@ Fresh schema ไม่มี `residents.pin_hash` และ source ปัจจ�
 ## Checklist ก่อนเปิด production
 
 - [ ] `php scripts/check_requirements.php --production` ผ่าน; Docker ต้องผ่านทั้ง service `app` และ `worker` ตาม README
-- [ ] ฐานข้อมูลใหม่ชื่อ `dormitory` import `install.sql` ไฟล์เดียว หรือฐานชื่ออื่นใช้วิธีขั้นสูงโดยเลือกฐานเป้าหมายแล้ว import `schema.sql` + `defaults.sql` ครบและยืนยันว่าไม่มี `residents.pin_hash`; ฐานเดิมต้องสำรอง/ทดสอบ restore แล้วรัน `001` เมื่อจำเป็น → `002` หนึ่งครั้ง → `003` → `004` หลังแก้ LINE ID legacy → `005` หลังปิด active booking ซ้ำต่อเบอร์ → transitional commit `a52bc33` → `006` → ปิด public write/หยุด worker/pause monthly-billing cron → `007` → `008` → `009` → `010` → `011` → `012` → deploy source ปัจจุบันโดยยังไม่เปิด traffic → reissue activation code ให้ผู้พัก active เดิม → ผ่าน `--db --strict --production` และ `--schema-audit` → เปิด traffic/worker/cron; ต้องพบ 16 ตาราง, 19 triggers พร้อม body ตรง canonical, CHECK อย่างน้อย 86 รายการ และห้ามลบ trigger `DEFINER` หลังติดตั้ง
+- [ ] ฐานใหม่ import `install.sql` หรือเลือกฐานเป้าหมายแล้ว import `schema.sql` + `defaults.sql` ครบและไม่มี `residents.pin_hash`; ฐานเดิมสำรอง/ทดสอบ restore แล้วรัน migrations ที่ยังขาดตาม [SQL_SETUP](SQL_SETUP.md) จนถึง `020` โดยหยุด traffic/worker/cron และผ่านเงื่อนไขเจ้าของเดิมตาม [คู่มือยกเลิกแอดมิน](OWNER_ONLY_MIGRATION.md) จากนั้น deploy source ตรวจเบอร์/ห้อง active ของผู้พัก ผ่าน `--db --strict --production` และ `--schema-audit` ก่อนเปิด traffic/worker/cron ต้องพบ 34 ตาราง, 63 triggers พร้อม body ตรง canonical, CHECK 155 รายการ และห้ามลบ trigger `DEFINER` หลังติดตั้ง
 - [ ] HTTPS/HSTS/CSP/security headers ตรวจจากภายนอกแล้ว
 - [ ] `.env`, source และ `storage/private` เปิดผ่าน URL ไม่ได้
 - [ ] ไม่มี default credential, สร้าง Owner ผ่าน `--password-stdin`/secret store และลบตัวแปรรหัสผ่านชั่วคราวหลัง bootstrap
 - [ ] owner คนแรก login ได้ และ role/IDOR/CSRF/rate-limit negative tests ผ่าน
-- [ ] Owner ตั้ง integration ได้, Admin ทั่วไปแก้ไม่ได้, API ไม่คืน secret, ช่องว่างเก็บค่าเดิม, explicit clear ลบจริง และ web/worker เห็นค่ารอบถัดไปโดยไม่ restart
+- [ ] Owner ตั้ง integration ได้ ส่วน Resident/Guest/บัญชีที่เลิกใช้เข้าถึงไม่ได้ API ไม่คืน secret, ช่องว่างเก็บค่าเดิม, explicit clear ลบจริง และ web/worker เห็นค่ารอบถัดไปโดยไม่ restart
 - [ ] ตั้ง LINE Channel access token/Channel secret แล้วนำ `<APP_URL>/api/webhooks/line` ไปตั้งใน LINE Developers Console เปิด Use webhook และ Webhook redelivery แล้วกด Verify; ใช้ credential จริงบน staging ทดสอบรหัส `BIND-` แบบสำเร็จ/หมดอายุ/ใช้ซ้ำ, unlink/rebind และ push บิล; request ที่ไม่มี/ปลอม `X-Line-Signature` ถูกปฏิเสธ, event ซ้ำไม่ตอบซ้ำ และ audit ไม่มีเนื้อหาข้อความ รหัส หรือ LINE User ID ดิบ
 - [ ] ทดลอง booking race, move-in race, duplicate bill และ duplicate slip/transaction
 - [ ] ทดสอบ LINE retry ด้วย payload/key เดิม: 409 พร้อม `x-line-accepted-request-id` ที่ valid ต้อง finalize เป็น sent ส่วน bare/invalid 409 ต้อง retry หรือ fail-closed และห้ามถูกนับว่าส่งสำเร็จ
 - [ ] ทดสอบ SlipOK/EasySlip ด้วย amount mismatch, receiver mismatch, duplicate และ timeout รวมเปิดดูหลักฐาน, แก้ค่า receiver แล้ว retry รายการ pending และปิดรายการหลัง verification lease หมด
 - [ ] backup + restore drill ผ่าน และมีผู้รับผิดชอบ alert/incident ชัดเจน
 
-**หมายเหตุรุ่น phone-only 21 กันยายน 2026:** ข้อความเกี่ยวกับ reissue activation ในขั้นตอนย้ายฐานด้านบนเป็นโครงสร้างเดิม ไม่ใช่ขั้นตอนที่ลูกบ้านต้องทำก่อนเข้าใช้รุ่นนี้ ไม่มี migration ใหม่และห้ามลบตาราง/คอลัมน์เดิมตามเดา
+**ข้อมูล legacy จากรุ่น phone-only 21 กันยายน 2026:** activation/password ไม่ใช่ขั้นตอนที่ลูกบ้านต้องทำก่อนเข้าใช้ด้วยเบอร์ และการเปลี่ยนเป็น phone-only ไม่ลบคอลัมน์เหล่านี้ รุ่นปัจจุบันต้องมี migration `017` สำหรับยกเลิกแอดมินตามคู่มือข้างต้น ห้ามลบตาราง/คอลัมน์ legacy ตามเดา

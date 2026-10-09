@@ -20,7 +20,6 @@ use Dormitory\Http\Router;
 use Dormitory\Http\Routes;
 use Dormitory\Integration\SlipVerifier;
 use Dormitory\Security\Password;
-use Dormitory\Security\ResidentAccessCredential;
 use Dormitory\Security\SecretCipher;
 use Dormitory\Support\MySqlError;
 use Dormitory\Support\SchemaGuard;
@@ -62,6 +61,11 @@ $test=static function(string $name,callable $callback)use(&$passed,&$failed):voi
 $same=static function(mixed $expected,mixed $actual):void{if($expected!==$actual)throw new RuntimeException('expected '.var_export($expected,true).', got '.var_export($actual,true));};
 $throws=static function(callable $callback,string $code):void{try{$callback();}catch(HttpException $e){if($e->errorCode!==$code)throw new RuntimeException("expected {$code}, got {$e->errorCode}");return;}throw new RuntimeException("expected exception {$code}");};
 $throwsHttp=static function(callable $callback,string $code,int $status):void{try{$callback();}catch(HttpException $e){if($e->errorCode!==$code||$e->status!==$status)throw new RuntimeException("expected {$status} {$code}, got {$e->status} {$e->errorCode}");return;}throw new RuntimeException("expected exception {$status} {$code}");};
+$canonicalShape=static function():array{
+    $sql=(string)file_get_contents(dirname(__DIR__).'/database/schema.sql');$shape=[];
+    foreach(['tables'=>'CREATE TABLE IF NOT EXISTS','triggers'=>'CREATE TRIGGER','checks'=>'CONSTRAINT']as$key=>$prefix){preg_match_all('/'.$prefix.'\s+([a-z0-9_]+)'.($key==='checks'?'\s+CHECK':'').'/i',$sql,$matches);$shape[$key]=count(array_unique($matches[1]));}
+    return $shape;
+};
 
 $test('session release persists state and resident idle/absolute limits expire behaviorally',function()use($same,$app):void{
     $manager=$app->session();$cookieName=session_name();$sessionFiles=[];
@@ -304,8 +308,11 @@ $test('FR-16 payment recovery has no manual paid endpoint',function()use($same,$
 });
 $test('all SQL bootstraps include the expected integrity triggers',function()use($same):void{
     $root=dirname(__DIR__);
+    $dailyTriggers=[];
+    foreach(['daily_bookings','daily_payments']as$source){preg_match_all('/^CREATE TRIGGER\s+([a-z0-9_]+)/mi',(string)file_get_contents($root.'/database/'.$source.'.sql'),$dailyMatches);$dailyTriggers=array_merge($dailyTriggers,$dailyMatches[1]);}
+    $currentTriggerCount=27+count(array_unique($dailyTriggers));
     foreach([
-        'database/schema.sql'=>26,
+        'database/schema.sql'=>$currentTriggerCount,
         'database/migrations/002_operational_hardening.sql'=>15,
     ]as$file=>$expected){
         $sql=file_get_contents($root.'/'.$file);if(!is_string($sql))throw new RuntimeException("cannot read {$file}");
@@ -315,7 +322,7 @@ $test('all SQL bootstraps include the expected integrity triggers',function()use
     $repair=file_get_contents($root.'/database/migrations/003_append_only_guards.sql');if(!is_string($repair))throw new RuntimeException('cannot read migration 003');
     preg_match_all('/^CREATE TRIGGER\s+([a-z0-9_]+)/mi',$repair,$matches);$same(4,count(array_unique($matches[1])));
     $installer=file_get_contents($root.'/database/install.sql');if(!is_string($installer))throw new RuntimeException('cannot read fresh installer');
-    preg_match_all('/^CREATE TRIGGER\s+([a-z0-9_]+)/mi',$installer,$matches);$same(26,count(array_unique($matches[1])));
+    preg_match_all('/^CREATE TRIGGER\s+([a-z0-9_]+)/mi',$installer,$matches);$same($currentTriggerCount,count(array_unique($matches[1])));
     $schema=file_get_contents($root.'/database/schema.sql');if(!is_string($schema))throw new RuntimeException('cannot read fresh schema');
     foreach([
         'trg_bookings_insert_guard',
@@ -882,23 +889,15 @@ $test('admin rehash and phone-only resident access retain throttling and honest 
     $same(true,str_contains($limiterSource,'blocked_until IS NULL AND hits>0'));
     $same(true,str_contains($limiterSource,"if(!\$pdo->inTransaction())throw new \\LogicException"));
 });
-$test('resident activation codes are deterministic, high entropy, expiring and stored only as hashes',function()use($same,$app):void{
-    $issued=ResidentAccessCredential::issue($app->config,17,4);
-    $same(1,preg_match('/^[0-9A-HJKMNP-TV-Z]{5}(?:-[0-9A-HJKMNP-TV-Z]{5}){3}$/D',$issued['code']));
-    $same(64,strlen($issued['hash']));
-    $same(true,ResidentAccessCredential::verify($app->config,17,4,$issued['code'],$issued['hash']));
-    $same(true,ResidentAccessCredential::verify($app->config,17,4,strtolower(str_replace('-',' ',$issued['code'])),$issued['hash']));
-    $same(false,ResidentAccessCredential::verify($app->config,17,5,$issued['code'],$issued['hash']));
-    $same(false,ResidentAccessCredential::verify($app->config,17,4,'00000-00000-00000-00000',$issued['hash']));
-    $same($issued['code'],ResidentAccessCredential::restore($app->config,17,4,$issued['hash']));
-    $same(604800,ResidentAccessCredential::ttlSeconds($app->config));
-
+$test('runtime check-in and access reset use only phone while retaining historical credential column compatibility',function()use($same):void{
     $booking=file_get_contents(dirname(__DIR__).'/src/Domain/BookingService.php');
+    $resident=file_get_contents(dirname(__DIR__).'/src/Domain/ResidentService.php');
     $migration=file_get_contents(dirname(__DIR__).'/database/migrations/008_resident_access_credentials.sql');
-    if(!is_string($booking)||!is_string($migration))throw new RuntimeException('cannot read resident credential sources');
-    $same(true,str_contains($booking,'ResidentAccessCredential::issue'));
-    $same(true,str_contains($booking,'access_password_hash=NULL'));
-    $same(true,str_contains($booking,"'activation_code'=>\$activation['code']"));
+    if(!is_string($booking)||!is_string($resident)||!is_string($migration))throw new RuntimeException('cannot read resident phone-only sources');
+    foreach([$booking,$resident]as$source){
+        foreach(['ResidentAccessCredential','RESIDENT_ACTIVATION_TTL_SECONDS',"'activation_code'=>",'activation_code_hash=?']as$retired)$same(false,str_contains($source,$retired));
+        foreach(['access_password_hash=NULL','activation_code_hash=NULL','activation_expires_at=NULL','activation_consumed_at=NULL',"'auth_method'=>'phone','activation_required'=>false"]as$contract)$same(true,str_contains($source,$contract));
+    }
     foreach(['access_password_hash','activation_code_hash','activation_expires_at','activation_consumed_at']as$column)$same(true,str_contains($migration,$column));
     $same(false,str_contains($migration,'activation_code_plain'));
 });
@@ -929,7 +928,7 @@ $test('direct admin resident check-in is authenticated, rate-limited, audited, a
     $collection=array_values(array_filter($registered,static fn(array$route):bool=>$route['regex']==='#^/api/admin/residents/?$#'));
     $same(2,count($collection));$same(['GET','POST'],array_column($collection,'method'));
     $create=array_values(array_filter($collection,static fn(array$route):bool=>$route['method']==='POST'));
-    $same(1,count($create));$same(['auth'=>'admin'],$create[0]['options']);
+    $same(1,count($create));$same(['auth'=>'admin','role'=>'owner'],$create[0]['options']);
 
     $source=file_get_contents(dirname(__DIR__).'/src/Http/Routes.php');if(!is_string($source))throw new RuntimeException('cannot read direct resident route');
     $start=strpos($source,"\$router->post('/api/admin/residents'");$end=strpos($source,"\$router->put('/api/admin/residents/{id}'",$start===false?0:$start);
@@ -964,7 +963,7 @@ $test('direct resident UI keeps one idempotency key, lists only available rooms,
     $openEnd=strpos($js,'function renderResidents',$populateEnd===false?0:$populateEnd);
     if($populateStart===false||$populateEnd===false||$openEnd===false)throw new RuntimeException('cannot isolate direct resident form setup');
     $populate=substr($js,$populateStart,$populateEnd-$populateStart);$open=substr($js,$populateEnd,$openEnd-$populateEnd);
-    $same(true,str_contains($populate,"state.rooms.filter((room) => room.status === 'available')"));
+    $same(true,str_contains($populate,"state.rooms.filter((room) => room.status === 'available' && room.rental_mode !== 'daily')"));
     $same(true,str_contains($populate,'select.replaceChildren(prompt)'));
     $same(true,str_contains($open,"room?.status === 'available' ? room.id : ''"));
     $same(true,str_contains($open,'await loadRooms()'));
@@ -975,7 +974,7 @@ $test('direct resident UI keeps one idempotency key, lists only available rooms,
     $same(1,substr_count($open,'form.elements.idempotency_key.value ='));
     $same(true,str_contains($open,'form.elements.move_in_date.max = isoToday()'));
     $same(true,str_contains($js,"actionButton('เพิ่มผู้พัก', 'add-resident-to-room'"));
-    $same(true,str_contains($js,"if (room.status === 'available') actions.push"));
+    $same(true,str_contains($js,"if (room.status === 'available' && room.rental_mode !== 'daily') actions.push"));
     $same(true,str_contains($js,"button.dataset.action === 'add-resident-to-room'"));
     foreach(['resident.access_active === true','resident.opening_readings_pending === true','ตรวจข้อมูลผู้พัก']as$accessState)$same(true,str_contains($js,$accessState));
 
@@ -1051,7 +1050,7 @@ $test('direct admin resident check-in locks room first and replays only the cano
     $same(true,str_contains($create,"preg_match('/^[A-Za-z0-9_-]{16,64}$/',\$idempotency)"));
     $same(true,str_contains($create,'$this->app->database()->transaction(function(PDO $pdo)'));
 
-    $roomLock=strpos($create,'SELECT id,monthly_rent,deleted_at FROM rooms WHERE id=? FOR UPDATE');
+    $roomLock=strpos($create,'SELECT id,monthly_rent,deleted_at,rental_mode FROM rooms WHERE id=? FOR UPDATE');
     $keyRead=strpos($create,'SELECT * FROM bookings WHERE idempotency_key=? LIMIT 1');
     $firstFingerprint=strpos($create,'if(!hash_equals($reference');
     $bookingLock=strpos($create,'SELECT * FROM bookings WHERE id=? FOR UPDATE');
@@ -1089,7 +1088,7 @@ $test('direct admin resident check-in locks room first and replays only the cano
     $same(true,str_contains($source,'if($reuseResidentId!==$residentId)'));
     $same(true,str_contains($source,"'RESIDENT_REUSE_CONFIRMATION_REQUIRED'"));
     $same(true,str_contains($source,"SELECT id FROM occupancies WHERE resident_id=? AND status='active' LIMIT 1 FOR UPDATE"));
-    $roomLockGlobal=strpos($source,'SELECT id,deleted_at FROM rooms WHERE id=? FOR UPDATE');
+    $roomLockGlobal=strpos($source,'SELECT id,deleted_at,rental_mode FROM rooms WHERE id=? FOR UPDATE');
     $meterConflict=strpos($source,'FROM meter_readings',$roomLockGlobal===false?0:$roomLockGlobal);
     $meterConflictCode=strpos($source,"'MOVE_IN_METER_PERIOD_CONFLICT'",$meterConflict===false?0:$meterConflict);
     $same(true,$roomLockGlobal!==false&&$meterConflict!==false&&$meterConflictCode!==false
@@ -1170,7 +1169,7 @@ $test('booking holds use the database clock and inactive replays fail closed',fu
     if($createEnd===false)throw new RuntimeException('cannot isolate public booking method');
     $createBlock=substr($source,$createStart,$createEnd-$createStart);
     $same(false,str_contains($createBlock,"lockBucket('public-booking-phone',\$phone)"));
-    $roomLock=strpos($createBlock,"SELECT id,monthly_rent,deleted_at FROM rooms WHERE id=? FOR UPDATE");
+    $roomLock=strpos($createBlock,"SELECT id,monthly_rent,deleted_at,rental_mode FROM rooms WHERE id=? FOR UPDATE");
     $firstIdempotencyRead=strpos($createBlock,'SELECT * FROM bookings WHERE idempotency_key=? LIMIT 1');
     $deletedGuard=strpos($createBlock,"\$roomRow['deleted_at']!==null");
     $scopedExpiry=strpos($createBlock,'$this->expirePending($roomId);');
@@ -1199,7 +1198,7 @@ $test('booking holds use the database clock and inactive replays fail closed',fu
     if($moveInStart===false||$transitionStart===false)throw new RuntimeException('cannot isolate booking mutators');
     $moveInBlock=substr($source,$moveInStart,$transitionStart-$moveInStart);
     $moveInLookup=strpos($moveInBlock,'SELECT room_id FROM bookings WHERE id=?');
-    $moveInRoomLock=strpos($moveInBlock,'SELECT id,deleted_at FROM rooms WHERE id=? FOR UPDATE');
+    $moveInRoomLock=strpos($moveInBlock,'SELECT id,deleted_at,rental_mode FROM rooms WHERE id=? FOR UPDATE');
     $moveInBookingLock=strpos($moveInBlock,'SELECT * FROM bookings WHERE id=? FOR UPDATE');
     $same(true,$moveInLookup!==false&&$moveInRoomLock!==false&&$moveInBookingLock!==false
         &&$moveInLookup<$moveInRoomLock&&$moveInRoomLock<$moveInBookingLock);
@@ -1728,14 +1727,17 @@ $test('canonical slip HMAC provides safe upload idempotency',function()use($same
     $same(false,str_contains($upload,"\$bill['status']!=='pending'"));
     $same(true,str_contains($upload,'if(is_file($absolute))@unlink($absolute)'));
     $reserveStart=strpos($source,'private function reserve(');$reserveEnd=strpos($source,'private function finalizeReserved(',$reserveStart?:0);$reserve=substr($source,(int)$reserveStart,(int)$reserveEnd-(int)$reserveStart);
-    $duplicate=strpos($reserve,'WHERE slip_hmac=? LIMIT 1 FOR UPDATE');$active=strpos($reserve,"status IN ('pending','verified')");$insert=strpos($reserve,'INSERT INTO payments');
-    if($duplicate===false||$active===false||$insert===false||!($duplicate<$active&&$active<$insert))throw new RuntimeException('slip HMAC replay is checked too late');
+    $duplicate=strpos($reserve,'WHERE slip_hmac=? AND bill_id=? AND resident_id=?');$replayResult=strpos($reserve,"\$replay['idempotent_replay']=true");
+    $activeProof=strpos($reserve,'$activeProof=');$activeBill=strpos($reserve,'$active=$pdo->prepare(');$insert=strpos($reserve,'INSERT INTO payments');
+    if($duplicate===false||$replayResult===false||$activeProof===false||$activeBill===false||$insert===false||!($duplicate<$replayResult&&$replayResult<$activeProof&&$activeProof<$activeBill&&$activeBill<$insert))throw new RuntimeException('scoped slip replay must precede other active proof and bill guards');
     $billStatus=strpos($reserve,"\$current['status']!=='pending'");
     if($billStatus===false||$duplicate>$billStatus)throw new RuntimeException('paid-bill status blocks a matching idempotent replay');
     $same(true,substr_count($reserve,"['idempotent_replay']=true")>=2);
     $same(true,str_contains($reserve,"(int)\$row['bill_id']===(int)\$bill['id']&&(int)\$row['resident_id']===\$residentId"));
     $same(true,str_contains($reserve,"'DUPLICATE_SLIP'"));
-    $same(1,preg_match('/UNIQUE KEY\s+uq_payments_slip_hmac\s*\(slip_hmac\)/i',$schema));
+    $projection=file_get_contents(dirname(__DIR__).'/database/daily_payments.sql');if(!is_string($projection))throw new RuntimeException('cannot read proof projection guards');
+    $same(true,str_contains($projection,'ADD UNIQUE KEY uq_payments_slip_hmac(active_slip_hmac)'));
+    $same(1,preg_match("/CASE WHEN status IN\\('+pending'+,'+verified'+\\) THEN slip_hmac ELSE NULL END/i",$projection));
 });
 $test('LINE and slip safety states are wired through UI, routes, and schema',function()use($same,$app):void{
     $root=dirname(__DIR__);$js=file_get_contents($root.'/public/assets/js/app.js');$admin=file_get_contents($root.'/templates/admin/console.php');$residentPortal=file_get_contents($root.'/templates/resident/portal.php');$settingsService=file_get_contents($root.'/src/Domain/SystemSettingsService.php');$schema=file_get_contents($root.'/database/schema.sql');$migration=file_get_contents($root.'/database/migrations/004_line_webhook.sql');$bindingMigration=file_get_contents($root.'/database/migrations/010_line_self_service_binding.sql');$friendMigration=file_get_contents($root.'/database/migrations/011_line_add_friend_identity.sql');
@@ -1783,7 +1785,7 @@ $test('LINE and slip safety states are wired through UI, routes, and schema',fun
     $health=file_get_contents($root.'/public/healthz.php');if(!is_string($health))throw new RuntimeException('cannot read health check');
     foreach(['line_channel_secret_enc','line_request_id','line_accepted_request_id']as$column)$same(true,str_contains($health,$column));
 });
-$test('runtime readiness rejects legacy PIN schemas and incomplete unique guards',function()use($same):void{
+$test('runtime readiness rejects legacy PIN schemas and incomplete unique guards',function()use($same,$canonicalShape):void{
     $root=dirname(__DIR__);
     $health=file_get_contents($root.'/public/healthz.php');
     $bootstrap=file_get_contents($root.'/scripts/bootstrap_database.sh');
@@ -1812,7 +1814,7 @@ $test('runtime readiness rejects legacy PIN schemas and incomplete unique guards
         '$invalidMeterOccupancyLinks',
         '$invalidMeterChains',
         '$invalidFinancialRelationships',
-        '$activeResidentsWithoutCredential',
+        '$activeResidentsWithoutPhoneAccess',
         '$overlappingOccupancyMonths',
         '$invalidResidentOccupancyStates',
         'prior_row.period=DATE_SUB(current_row.period,INTERVAL 1 MONTH)',
@@ -1828,7 +1830,7 @@ $test('runtime readiness rejects legacy PIN schemas and incomplete unique guards
         'resident/occupancy/room/booking lifecycle state',
         'ความสัมพันธ์ occupancy/bill/items/payment/notification',
         'meter chain ขาดเดือนหรือ previous reading',
-        'active residents ไม่มี password หรือ activation key',
+        'active residents ไม่มีเบอร์โทรหรือห้อง active ที่ผูกตรงหนึ่งรายการ',
     ]as$guard)$same(true,str_contains($requirements,$guard));
     $same(true,str_contains($requirements,"addResult(\$errors,'data readiness ไม่ผ่าน: active residents"));
     foreach([$health,$bootstrap,$requirements]as$currentGate)$same(true,str_contains($currentGate,'chk_occupancies_opening_readings_v2'));
@@ -1841,9 +1843,9 @@ $test('runtime readiness rejects legacy PIN schemas and incomplete unique guards
         'normalizeTriggerAction',
         'expectedTriggerActions',
         'event/timing/body',
-        'triggers 26 รายการ',
+        'count($expectedTriggers)',
     ]as$bodyAuditGuard)$same(true,str_contains($requirements,$bodyAuditGuard));
-    $same(true,str_contains($bootstrap,'actual_trigger_count" == 26'));
+    $same(true,str_contains($bootstrap,'actual_trigger_count" == '.$canonicalShape()['triggers']));
     $same(true,str_contains($bootstrap,'trg_bookings_insert_guard|BEFORE|INSERT|bookings'));
     $same(true,str_contains($bootstrap,'trg_occupancies_relationship_guard|BEFORE|INSERT|occupancies'));
 });
@@ -1922,7 +1924,7 @@ $test('database CLI scripts enforce fail-closed TLS identity verification',funct
         &&$createUser<$identifiedBy&&$identifiedBy<$requireSsl
         &&$requireSsl<$passwordExpiry&&$passwordExpiry<$accountUnlock);
 });
-$test('container runtime command dispatches by fail-closed role',function()use($same):void{
+$test('container runtime command dispatches by fail-closed role',function()use($same,$canonicalShape):void{
     $root=dirname(__DIR__);
     $script=file_get_contents($root.'/scripts/start-runtime.sh');
     $docker=file_get_contents($root.'/Dockerfile');
@@ -1941,9 +1943,10 @@ $test('container runtime command dispatches by fail-closed role',function()use($
     $roleGuard=strpos($setup,'RUNTIME_ROLE:-');
     $bootstrapCall=strpos($setup,'bootstrap_database.sh');
     $same(true,$roleGuard!==false&&$bootstrapCall!==false&&$roleGuard<$bootstrapCall);
-    $same(true,str_contains($provision,"[[ \"\$readiness\" == '22|1|1' ]]"));
+    $shape=$canonicalShape();
+    $same(true,str_contains($provision,"[[ \"\$readiness\" == '".$shape['tables']."|1|1' ]]"));
     $same(false,str_contains($provision,"[[ \"\$readiness\" == '15|1|1' ]]"));
-    $same(true,str_contains($workflow,"[ \"\$install_shape\" = '22|26|119' ]"));
+    $same(true,str_contains($workflow,"[ \"\$install_shape\" = '".$shape['tables'].'|'.$shape['triggers'].'|'.$shape['checks']."' ]"));
     $same(false,str_contains($workflow,"[ \"\$install_shape\" = '15|19|80' ]"));
     $checker=file_get_contents(dirname(__DIR__).'/scripts/check_requirements.php');if(!is_string($checker))throw new RuntimeException('cannot read requirement checker');
     $same(true,str_contains($checker,"\$runtimeRole=(string)envValue(\$env,'RUNTIME_ROLE','all')"));
@@ -2122,7 +2125,7 @@ $test('resident and admin logout use shared in-flight locks and recover after fa
     $admin=substr($js,$adminStart,$adminEnd-$adminStart);
     $adminGuard=strpos($admin,'if (adminLogoutInProgress) return;');
     $adminLock=strpos($admin,'adminLogoutInProgress = true;');
-    $activationGuard=strpos($admin,'const hasUncopiedAccess = Boolean(residentActivationSecret);');
+    $draftGuard=strpos($admin,'const hasUnsavedChanges = state.billWorking || state.billDraftEdited || hasDirtySettings() || hasDirtyMeterRows() || hasDirtyDialogDrafts();');
     $confirm=strpos($admin,'&& !await confirmAction(');
     $cancelUnlock=strpos($admin,'adminLogoutInProgress = false;',$confirm===false?0:$confirm);
     $adminDisable=strpos($admin,"adminLogoutButtons.forEach((item) => { item.disabled = true; item.setAttribute('aria-busy', 'true'); });");
@@ -2130,13 +2133,9 @@ $test('resident and admin logout use shared in-flight locks and recover after fa
     $adminRedirect=strpos($admin,"location.assign('/admin/login');");
     $failureUnlock=strpos($admin,'adminLogoutInProgress = false;',$adminRequest===false?0:$adminRequest);
     $adminEnable=strpos($admin,"adminLogoutButtons.forEach((item) => { item.disabled = false; item.removeAttribute('aria-busy'); });");
-    $same(true,$adminGuard!==false&&$adminLock!==false&&$activationGuard!==false&&$confirm!==false&&$cancelUnlock!==false&&$adminDisable!==false&&$adminRequest!==false&&$adminRedirect!==false&&$failureUnlock!==false&&$adminEnable!==false
-        &&$adminGuard<$adminLock&&$adminLock<$activationGuard&&$activationGuard<$confirm&&$confirm<$cancelUnlock&&$cancelUnlock<$adminDisable&&$adminDisable<$adminRequest&&$adminRequest<$adminRedirect&&$adminRedirect<$failureUnlock&&$failureUnlock<$adminEnable);
-    foreach([
-        "hasUncopiedAccess ? 'ยังมี activation code แสดงอยู่'",
-        "hasUncopiedAccess ? 'ยืนยันว่าได้ส่งมอบแล้ว'",
-        'รหัสเปิดใช้งานจะแสดงได้ครั้งเดียวและจะถูกล้างเมื่อออกจากระบบ',
-    ]as$activationWarning)$same(true,str_contains($admin,$activationWarning));
+    $same(true,$adminGuard!==false&&$adminLock!==false&&$draftGuard!==false&&$confirm!==false&&$cancelUnlock!==false&&$adminDisable!==false&&$adminRequest!==false&&$adminRedirect!==false&&$failureUnlock!==false&&$adminEnable!==false
+        &&$adminGuard<$adminLock&&$adminLock<$draftGuard&&$draftGuard<$confirm&&$confirm<$cancelUnlock&&$cancelUnlock<$adminDisable&&$adminDisable<$adminRequest&&$adminRequest<$adminRedirect&&$adminRedirect<$failureUnlock&&$failureUnlock<$adminEnable);
+    $same(false,str_contains($admin,'residentActivationSecret'));
     $same(false,str_contains($admin,'finally { location.assign'));
 });
 
@@ -2346,7 +2345,7 @@ $test('admin console opens on an overview that surfaces pending work and worker 
     $same(true,str_contains($admin,'id="meter-progress"'));
 });
 
-$test('trigger local variables pin their collation instead of inheriting the database default',function()use($same):void{
+$test('trigger local variables pin their collation instead of inheriting the database default',function()use($same,$canonicalShape):void{
     $root=dirname(__DIR__);
     // A stored-program variable declared without CHARACTER SET takes the DATABASE
     // default collation, not the collation of the tables it is compared against.
@@ -2373,7 +2372,7 @@ $test('trigger local variables pin their collation instead of inheriting the dat
     foreach(['database/schema.sql','database/install.sql']as$file){
         $sql=file_get_contents($root.'/'.$file);
         if(!is_string($sql))throw new RuntimeException("cannot read {$file}");
-        $same(26,preg_match_all($bodyPattern,$sql,$bodies,PREG_SET_ORDER));
+        $same($canonicalShape()['triggers'],preg_match_all($bodyPattern,$sql,$bodies,PREG_SET_ORDER));
         foreach($bodies as $trigger)$same(false,str_contains($trigger[2],'--'));
     }
 
@@ -2424,7 +2423,7 @@ $test('LINE account links use the official encoded OA chat with the exact one-ti
     }
 });
 
-$test('admin LINE status, issuance and unlink routes require admin access',function()use($same,$app):void{
+$test('management LINE status, issuance and unlink routes require owner access',function()use($same,$app):void{
     $router=Routes::build($app);
     $registered=(new ReflectionProperty(Router::class,'routes'))->getValue($router);
     foreach([
@@ -2435,7 +2434,7 @@ $test('admin LINE status, issuance and unlink routes require admin access',funct
         $matches=array_values(array_filter($registered,static fn(array$route):bool=>$route['method']===$method&&preg_match($route['regex'],$path)===1));
         $same(1,count($matches));
         $same('admin',$matches[0]['options']['auth']??null);
-        $same(false,array_key_exists('role',$matches[0]['options']));
+        $same('owner',$matches[0]['options']['role']??null);
     }
 });
 
@@ -2462,4 +2461,5 @@ require __DIR__.'/line_setup_unit.php';
 require __DIR__.'/external_api_unit.php';
 require __DIR__.'/meter_readiness_unit.php';
 require __DIR__.'/line_qr_unit.php';
+require __DIR__.'/owner_roles_unit.php';
 fwrite(STDOUT,"\n{$passed} passed, {$failed} failed".PHP_EOL);exit($failed===0?0:1);
