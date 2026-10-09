@@ -142,4 +142,17 @@ $test('removed admin creation is rejected and a disabled owner loses all access'
     $app->adminUsers()->delete($staff['id'],$owner);$assert($app->actor(true)===null);
     $expect(fn()=>$app->auth()->adminLogin($request(),['username'=>'operations_staff','password'=>$password]),'INVALID_CREDENTIALS');
 });
+$test('expired public replay commits cancellation before retirement and remains terminal after soft deletion',function()use($app,$pdo,$assert,$expect,$makeRoom):void{
+    $room=$makeRoom('OPS-EXPIRED-RETIRE');$input=['room_id'=>$room['id'],'full_name'=>'Expired retirement fixture','phone'=>'0817700099','idempotency_key'=>'operations-expired-retire-key'];
+    $pdo->prepare("INSERT INTO bookings(reference_no,room_id,full_name,phone_norm,booked_monthly_rent,status,idempotency_key,created_at,updated_at)
+        VALUES('BK-OPERATIONS-EXPIRED-RETIRE',?,?,?,'3000.00','pending',?,DATE_SUB(UTC_TIMESTAMP(),INTERVAL 2 DAY),DATE_SUB(UTC_TIMESTAMP(),INTERVAL 2 DAY))")
+        ->execute([$room['id'],$input['full_name'],$input['phone'],$input['idempotency_key']]);$bookingId=(int)$pdo->lastInsertId();
+    $expect(fn()=>$app->bookings()->createPublic($input),'BOOKING_EXPIRED');
+    $query=$pdo->prepare('SELECT * FROM bookings WHERE id=?');$query->execute([$bookingId]);$expired=$query->fetch();
+    $assert($expired['status']==='cancelled'&&$expired['cancelled_at']!==null&&str_starts_with($expired['cancel_reason'],'Automatically expired after '),'Expiry must stay committed after the public conflict response');
+    $assert($app->rooms()->find($room['id'])['status']==='available');
+    $app->rooms()->delete($room['id']);$deleted=$pdo->prepare('SELECT deleted_at FROM rooms WHERE id=?');$deleted->execute([$room['id']]);$assert($deleted->fetchColumn()!==null,'Room retirement must follow the closed booking state');
+    $expect(fn()=>$app->bookings()->createPublic($input),'BOOKING_EXPIRED');$query->execute([$bookingId]);$assert($query->fetch()===$expired,'Deleted-room replay must preserve the original immutable terminal booking');
+    $count=$pdo->prepare('SELECT COUNT(*) FROM bookings WHERE room_id=?');$count->execute([$room['id']]);$assert((int)$count->fetchColumn()===1,'Neither expiry nor deleted replay may create another booking');
+});
 fwrite(STDOUT,"{$groups} operations integration groups passed\n");

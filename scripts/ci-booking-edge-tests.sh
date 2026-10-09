@@ -330,9 +330,9 @@ case "$mode" in
     [ "$same_room_replay_count" = 1 ]
     [ "$same_room_booking_count" = 1 ]
 
-    # An original retry must retain its terminal idempotency semantics
-    # after the room is soft-deleted. This also proves expiry commits
-    # before the BOOKING_EXPIRED response is raised.
+    # Expire the old hold through the public workflow before retiring its
+    # room. The room guard must continue rejecting an unclosed pending row,
+    # and a later retry must preserve the same terminal expiry after deletion.
     docker exec \
       --env MYSQL_PWD="$CI_DBA_PASSWORD" \
       "$database" mysql --host=127.0.0.1 --user=root \
@@ -348,11 +348,32 @@ case "$mode" in
         VALUES ('BK-CI-DELETED-REPLAY',${rate_room_ids[7]},'CI Deleted Replay','0855555555',
                @ci_deleted_rent,'pending','ci-deleted-replay-000001',
                DATE_SUB(UTC_TIMESTAMP(),INTERVAL 2 DAY),
-               DATE_SUB(UTC_TIMESTAMP(),INTERVAL 2 DAY));
-        UPDATE rooms SET deleted_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP()
-        WHERE id=${rate_room_ids[7]};"
+               DATE_SUB(UTC_TIMESTAMP(),INTERVAL 2 DAY));"
     deleted_replay_body="$(printf '{\"room_id\":%s,\"full_name\":\"CI Deleted Replay\",\"phone\":\"0855555555\",\"idempotency_key\":\"ci-deleted-replay-000001\"}' \
       "${rate_room_ids[7]}")"
+    before_retire_status="$(curl --silent --show-error \
+      --output /tmp/ci-expired-before-retire.json --write-out '%{http_code}' \
+      --header 'X-Forwarded-Proto: https' \
+      --header 'Content-Type: application/json' \
+      --header 'Origin: https://ci-dormitory.example.co.th' \
+      --header "X-CSRF-Token: ${csrf}" --data "$deleted_replay_body" \
+      http://127.0.0.1:18080/api/public/bookings)"
+    before_retire_state="$(docker exec \
+      --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+      "$database" mysql --batch --skip-column-names \
+      --host=127.0.0.1 --user=root --database="$CI_DB_DATABASE" \
+      --execute="SELECT CONCAT(status,'|',
+          cancel_reason LIKE 'Automatically expired after % seconds')
+        FROM bookings WHERE idempotency_key='ci-deleted-replay-000001'")"
+    [ "$before_retire_status" = 409 ]
+    grep --quiet '"code":"BOOKING_EXPIRED"' /tmp/ci-expired-before-retire.json
+    [ "$before_retire_state" = 'cancelled|1' ]
+    docker exec \
+      --env MYSQL_PWD="$CI_DBA_PASSWORD" \
+      "$database" mysql --host=127.0.0.1 --user=root \
+      --database="$CI_DB_DATABASE" --execute="
+        UPDATE rooms SET deleted_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP()
+        WHERE id=${rate_room_ids[7]};"
     deleted_replay_status="$(curl --silent --show-error \
       --output /tmp/ci-deleted-replay.json --write-out '%{http_code}' \
       --header 'X-Forwarded-Proto: https' \
@@ -364,12 +385,14 @@ case "$mode" in
       --env MYSQL_PWD="$CI_DBA_PASSWORD" \
       "$database" mysql --batch --skip-column-names \
       --host=127.0.0.1 --user=root --database="$CI_DB_DATABASE" \
-      --execute="SELECT CONCAT(status,'|',
-          cancel_reason LIKE 'Automatically expired after % seconds')
-        FROM bookings WHERE idempotency_key='ci-deleted-replay-000001'")"
+      --execute="SELECT CONCAT(b.status,'|',
+          b.cancel_reason LIKE 'Automatically expired after % seconds','|',
+          r.deleted_at IS NOT NULL)
+        FROM bookings b JOIN rooms r ON r.id=b.room_id
+        WHERE b.idempotency_key='ci-deleted-replay-000001'")"
     [ "$deleted_replay_status" = 409 ]
     grep --quiet '"code":"BOOKING_EXPIRED"' /tmp/ci-deleted-replay.json
-    [ "$deleted_replay_state" = 'cancelled|1' ]
+    [ "$deleted_replay_state" = 'cancelled|1|1' ]
     ;;
   *)
     echo "Unknown booking edge-test mode" >&2
