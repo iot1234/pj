@@ -92,7 +92,7 @@ final class DailyRoutes
             return Response::json($data,($data['idempotent_replay']??false)?200:201,'รับหลักฐานชำระแล้ว');
         });
 
-        $router->get('/api/admin/daily/bookings',fn(Request $r)=>Response::json($app->dailyBookings()->all($r->query)),$owner);
+        $router->get('/api/admin/daily/bookings',fn(Request $r)=>Response::json($app->dailyBookings()->all($r->query,true)),$owner);
         $router->post('/api/admin/daily/bookings',function(Request $r)use($app,$ownerMutation):Response{
             $data=$ownerMutation($r,'daily.booking_created_by_owner',fn()=>$app->dailyBookings()->createAdmin((int)$app->actor()['id'],$r->body));
             unset($data['access_token']);return Response::json($data,($data['idempotent_replay']??false)?200:201);

@@ -24,6 +24,31 @@ $assert((int) $pdo->query('SELECT COUNT(*) FROM information_schema.tables WHERE 
 $root = dirname(__DIR__);
 require_once $root . '/src/Support/PendingOpeningSchema.php';
 $schema = (string) file_get_contents($root . '/database/schema.sql');
+// This regression exercises an old migration on top of the current canonical
+// installation. New unrelated modules must stay intact; a historical total
+// such as 121 CHECKs/27 triggers cannot describe today's schema.
+$integrityInventory = static function () use ($pdo): array {
+    $checks=[];
+    foreach($pdo->query("SELECT t.table_name,t.constraint_name,t.enforced,c.check_clause
+        FROM information_schema.table_constraints t JOIN information_schema.check_constraints c
+          ON c.constraint_schema=t.constraint_schema AND c.constraint_name=t.constraint_name
+        WHERE t.constraint_schema=DATABASE() AND t.constraint_type='CHECK'
+        ORDER BY t.constraint_name")->fetchAll(PDO::FETCH_ASSOC) as $row){
+        $row=array_change_key_case($row,CASE_LOWER);
+        $row['check_clause']=preg_replace('/[[:space:]]+/',' ',trim((string)$row['check_clause']));
+        $checks[(string)$row['constraint_name']]=$row;
+    }
+    $triggers=[];
+    foreach($pdo->query("SELECT trigger_name,event_object_table,event_manipulation,action_timing
+        FROM information_schema.triggers WHERE trigger_schema=DATABASE() ORDER BY trigger_name")->fetchAll(PDO::FETCH_ASSOC) as $row){
+        $row=array_change_key_case($row,CASE_LOWER);$triggers[(string)$row['trigger_name']]=$row;
+    }
+    // INFORMATION_SCHEMA orders text using its collation, which is not PHP's
+    // byte order (notably for underscores). Compare identifier sets in one
+    // explicit order instead of relying on the server's display ordering.
+    ksort($checks,SORT_STRING);ksort($triggers,SORT_STRING);
+    return ['checks'=>$checks,'triggers'=>$triggers];
+};
 $runSql = static function (string $sql) use ($pdo): void {
     $delimiter = ';';
     $buffer = '';
@@ -76,6 +101,14 @@ $reject = static function (callable $operation, string $message) use ($assert): 
 };
 $runSql($schema);
 $runSql((string) file_get_contents($root . '/database/defaults.sql'));
+$freshIntegrity=$integrityInventory();
+preg_match_all('/\bCONSTRAINT\s+([a-z0-9_]+)\s+CHECK\b/i',$schema,$canonicalChecks);
+preg_match_all('/\bCREATE\s+TRIGGER\s+([a-z0-9_]+)/i',$schema,$canonicalTriggers);
+$expectedChecks=array_values(array_unique($canonicalChecks[1]));sort($expectedChecks,SORT_STRING);
+$expectedTriggers=array_values(array_unique($canonicalTriggers[1]));sort($expectedTriggers,SORT_STRING);
+$assert(array_keys($freshIntegrity['checks'])===$expectedChecks,'Fresh CHECK names do not match canonical SQL');
+$assert(array_keys($freshIntegrity['triggers'])===$expectedTriggers,'Fresh trigger names do not match canonical SQL');
+foreach($freshIntegrity['checks'] as $name=>$definition)$assert($definition['enforced']==='YES','Canonical CHECK must be enforced: '.$name);
 
 // LIKE copies the real fresh-table CHECKs without the financial-chain foreign
 // keys/triggers, isolating claim fencing from unrelated fixture requirements.
@@ -163,10 +196,15 @@ foreach (['010_line_self_service_binding.sql','011_line_add_friend_identity.sql'
           '015_pending_occupancy_opening_readings.sql'] as $migration) $migrate($migration);
 $migrate('015_pending_occupancy_opening_readings.sql');
 $assert(Dormitory\Support\PendingOpeningSchema::errors($pdo) === [], 'Migrated marker/check rejected');
-$assert((int) $pdo->query("SELECT COUNT(*) FROM information_schema.table_constraints
-    WHERE constraint_schema=DATABASE() AND constraint_type='CHECK'")->fetchColumn() === 121, 'Unexpected CHECK count');
-$assert((int) $pdo->query('SELECT COUNT(*) FROM information_schema.triggers
-    WHERE trigger_schema=DATABASE()')->fetchColumn() === 27, 'Unexpected trigger count');
+$afterUpgrade=$integrityInventory();
+foreach(['checks','triggers'] as $kind){
+    $beforeNames=array_keys($freshIntegrity[$kind]);$afterNames=array_keys($afterUpgrade[$kind]);
+    $missing=array_diff($beforeNames,$afterNames);$unexpected=array_diff($afterNames,$beforeNames);
+    $assert($missing===[]&&$unexpected===[],"Legacy upgrade changed canonical {$kind}: missing=".implode(',',$missing).' unexpected='.implode(',',$unexpected));
+    foreach($freshIntegrity[$kind] as $name=>$definition){
+        $assert($afterUpgrade[$kind][$name]===$definition,'Legacy upgrade changed canonical '.$kind.' definition: '.$name);
+    }
+}
 foreach (['trg_occupancies_identity_immutable','trg_meter_readings_occupancy_guard',
           'trg_meter_readings_occupancy_guard_update','trg_bills_relationship_guard'] as $name) {
     preg_match('/CREATE TRIGGER ' . $name . '\s.*?FOR EACH ROW\s+(BEGIN.*?END)\$\$/s', $schema, $match);
@@ -175,7 +213,7 @@ foreach (['trg_occupancies_identity_immutable','trg_meter_readings_occupancy_gua
     $normalize = static fn(string $body): string => preg_replace('/\s+/', ' ', trim($body));
     $assert($normalize((string) $query->fetchColumn()) === $normalize($match[1]), 'Migration/canonical trigger differs: ' . $name);
 }
-fwrite(STDOUT, "PASS missing-009-columns upgrade through 015 and repeat 015: three unknown pairs preserved, 27 canonical triggers, 121 CHECKs\n");
+fwrite(STDOUT, "PASS missing-009-columns upgrade through 015 and repeat 015: three unknown pairs preserved, ".count($freshIntegrity['triggers'])." canonical triggers and ".count($freshIntegrity['checks'])." enforced CHECK definitions preserved\n");
 
 // Fault injection proves both migrations refuse partial legacy data. No
 // global foreign-key/CHECK bypass is used; only this isolated fixture changes.

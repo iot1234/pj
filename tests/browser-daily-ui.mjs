@@ -50,7 +50,7 @@ async function context(width) {
     else if(url.pathname==='/api/admin/daily/payments/9/close'){assert.equal(input.expected_version,booking.version);assert.equal(typeof input.idempotency_key,'string');reviewPayment.status='closed';reviewClosed=[{...reviewPayment}];data={...reviewedRow(reviewPayment),booking_status:booking.status,version:booking.version};}
     else if(url.pathname==='/api/admin/daily/payments/9/restore'){assert.ok(req.headers()['content-type'].startsWith('multipart/form-data;'));evidenceAvailable=true;data={...reviewedRow(reviewPayment),booking_status:booking.status,version:booking.version};}
     else if(url.pathname==='/api/admin/daily/payments/9/retry'){assert.equal(evidenceAvailable,true);reviewPayment.status='verified';reviewClosed=[];paid=true;booking.status='confirmed';booking.version+=1;data={...reviewedRow(reviewPayment),booking_status:booking.status,version:booking.version};}
-    else if (url.pathname === '/api/admin/daily/bookings') data = { items: booking ? [booking] : [] };
+    else if (url.pathname === '/api/admin/daily/bookings') data = { items: booking ? [booking] : [],has_more:false,next_offset:booking?1:0 };
     else if (url.pathname === '/api/admin/daily/calendar') data = { items: booking ? [booking] : [], rooms: [room], blocks: [], from: input.from, to: input.to };
     else if (url.pathname === '/api/admin/rooms') data = [room];
     else if (url.pathname === '/api/admin/bookings') data = { items: [], pending_count: 0, next_offset: 0, has_more: false };

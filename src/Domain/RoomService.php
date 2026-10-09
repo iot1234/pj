@@ -220,7 +220,7 @@ final class RoomService
     private function selectSql(): string
     {
         $holdSeconds=$this->app->config->intInRange('BOOKING_HOLD_SECONDS',86400,900,604800);
-        $today=(new \DateTimeImmutable('today',new \DateTimeZone((string)$this->app->config->get('APP_TIMEZONE','Asia/Bangkok'))))->format('Y-m-d');
+        $today=$this->databaseToday($this->app->database()->pdo());
         return "SELECT r.id,r.room_code,r.floor,r.room_type,r.monthly_rent,r.description,r.amenities,r.image_key,r.rental_mode,r.daily_rate,r.max_guests,r.daily_deposit,r.housekeeping_status,r.housekeeping_version,
             (EXISTS(SELECT 1 FROM occupancies oi WHERE oi.room_id=r.id AND oi.status='active')
              OR EXISTS(SELECT 1 FROM bookings bi WHERE bi.room_id=r.id AND (bi.status='confirmed' OR (bi.status='pending' AND bi.created_at>DATE_SUB(UTC_TIMESTAMP(),INTERVAL {$holdSeconds} SECOND))))
@@ -277,7 +277,7 @@ final class RoomService
     private function assertNoCurrentUse(PDO $pdo,int $roomId): void
     {
         $hold=$this->app->config->intInRange('BOOKING_HOLD_SECONDS',86400,900,604800);
-        $today=(new \DateTimeImmutable('today',new \DateTimeZone((string)$this->app->config->get('APP_TIMEZONE','Asia/Bangkok'))))->format('Y-m-d');
+        $today=$this->databaseToday($pdo);
         $q=$pdo->prepare("SELECT
           EXISTS(SELECT 1 FROM occupancies WHERE room_id=? AND status='active') AS occupied,
           EXISTS(SELECT 1 FROM bookings WHERE room_id=? AND (status='confirmed' OR (status='pending' AND created_at>DATE_SUB(UTC_TIMESTAMP(),INTERVAL {$hold} SECOND)))) AS reserved,
@@ -285,5 +285,12 @@ final class RoomService
           EXISTS(SELECT 1 FROM daily_room_blocks WHERE room_id=? AND active=1 AND end_date>?) AS blocked");
         $q->execute([$roomId,$roomId,$roomId,$today,$today,$roomId,$today]);$state=$q->fetch();
         if((bool)$state['occupied']||(bool)$state['reserved']||(bool)$state['daily_reserved']||(bool)$state['blocked'])throw new HttpException(409,'ห้องมีผู้พัก การจอง หรือช่วงปิดขายอยู่ กรุณาจัดการรายการเดิมก่อน','ROOM_IN_USE');
+    }
+
+    /** Daily inventory and expiry share MySQL's clock, including across local midnight. */
+    private function databaseToday(PDO $pdo): string
+    {
+        $now=new \DateTimeImmutable((string)$pdo->query('SELECT UTC_TIMESTAMP(6)')->fetchColumn(),new \DateTimeZone('UTC'));
+        return $now->setTimezone(new \DateTimeZone((string)$this->app->config->get('APP_TIMEZONE','Asia/Bangkok')))->format('Y-m-d');
     }
 }

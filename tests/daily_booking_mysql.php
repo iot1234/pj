@@ -163,4 +163,20 @@ $test('near-midnight quotes and holds stop at checkout and overdue occupants rem
     $available=$app->dailyBookings()->availability(['check_in_date'=>$date(1),'check_out_date'=>$date(2),'guests'=>1]);$assert(!in_array($room,array_column($available['items'],'room_id'),true));
     $details=$app->dailyBookings()->guestDetails($row['id'],$row['access_token']);$assert($details['status']==='expired','One-minute hold must expire at checkout even without worker');
 });
+$test('room catalogue and mutation guards use the DB day when PHP and MySQL straddle midnight',function()use($app,$makeRoom,$pdo,$today,$date,$owner,$assert,$expect):void{
+    $checkout=static function(int $room,string $start,string $end,string $label)use($app,$owner):array{
+        $row=$app->dailyBookings()->createAdmin($owner,['room_id'=>$room,'full_name'=>'Room clock fixture','phone'=>'0819900068','check_in_date'=>$start,'check_out_date'=>$end,'guests'=>1,'idempotency_key'=>'room-clock-create-'.$label]);
+        $app->dailyPayments()->cash($row['id'],['expected_version'=>1,'idempotency_key'=>'room-clock-cash-'.$label,'reference'=>'ROOM-CLOCK-CASH-'.$label],$owner);
+        $app->dailyBookings()->transition($row['id'],'check-in',['expected_version'=>2,'idempotency_key'=>'room-clock-checkin-'.$label],$owner);$app->dailyBookings()->transition($row['id'],'check-out',['expected_version'=>3,'idempotency_key'=>'room-clock-checkout-'.$label],$owner);$app->dailyBookings()->markReady($room,['expected_version'=>2,'idempotency_key'=>'room-clock-ready-'.$label],$owner);return$row;
+    };
+    $aheadRoom=$makeRoom('ROOM-CLOCK-AHEAD');$aheadStay=$checkout($aheadRoom,$today,$date(1),'ahead');
+    try{
+        $ahead=(new DateTimeImmutable($date(1).' 00:05:00',new DateTimeZone('Asia/Bangkok')))->getTimestamp();$pdo->exec('SET timestamp='.$ahead);
+        $room=$app->rooms()->find($aheadRoom);$assert($room['status']==='available'&&!$room['in_use']&&$room['can_delete'],'DB-next-day catalogue must release completed retained nights');
+        $availability=$app->dailyBookings()->availability(['check_in_date'=>$date(1),'check_out_date'=>$date(2),'guests'=>1]);$assert(in_array($aheadRoom,array_column($availability['items'],'room_id'),true));$updated=$app->rooms()->update($aheadRoom,['rental_mode'=>'monthly','monthly_rent'=>'3000.00','expected_version'=>$room['room_version']]);$assert($updated['rental_mode']==='monthly','Mode change cannot remain blocked by PHP previous day');
+        $behindRoom=$makeRoom('ROOM-CLOCK-BEHIND');$behind=(new DateTimeImmutable($date(-1).' 23:00:00',new DateTimeZone('Asia/Bangkok')))->getTimestamp();$pdo->exec('SET timestamp='.$behind);$behindStay=$checkout($behindRoom,$date(-1),$today,'behind');
+        $room=$app->rooms()->find($behindRoom);$assert($room['status']==='reserved'&&$room['in_use']&&!$room['can_delete'],'DB-previous-day catalogue must retain booked nights');
+        $expect(fn()=>$app->rooms()->update($behindRoom,['rental_mode'=>'monthly','monthly_rent'=>'3000.00','expected_version'=>$room['room_version']]),'ROOM_IN_USE');$expect(fn()=>$app->rooms()->delete($behindRoom),'ROOM_IN_USE');
+    }finally{$pdo->exec('SET timestamp=0');}
+});
 fwrite(STDOUT,"{$groups} daily booking MySQL groups passed; no external providers\n");

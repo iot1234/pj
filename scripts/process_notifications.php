@@ -52,16 +52,21 @@ if($workerIdentity==='')$workerIdentity=bin2hex(random_bytes(16));
 if(strlen($workerIdentity)>512)$workerIdentity=hash('sha256',$workerIdentity);
 $reportInfrastructureFailure=static function(Throwable $error)use(&$app,$workerIdentity):never{
     $requestId=bin2hex(random_bytes(8));
+    // Stable application error codes help operators identify a missing migration
+    // without exposing an exception message, query, path, or database credential.
+    $diagnostic=$error instanceof Dormitory\Http\HttpException
+        && preg_match('/^[A-Z0-9_]{1,64}$/D',$error->errorCode)===1
+        ? '; code='.$error->errorCode : '';
     if($app instanceof Dormitory\Application){
         try{$app->notifications()->recordWorkerHeartbeat(
             $workerIdentity,
             'error',
             null,
-            'Notification worker infrastructure failure ('.$error::class.')'
+            'Notification worker infrastructure failure ('.$error::class.$diagnostic.')'
         );}
         catch(Throwable){}
     }
-    error_log(sprintf('[notification-worker:%s] infrastructure failure (%s)',$requestId,$error::class));
+    error_log(sprintf('[notification-worker:%s] infrastructure failure (%s%s)',$requestId,$error::class,$diagnostic));
     fwrite(STDERR,json_encode([
         'ok'=>false,
         'message'=>'Notification worker is temporarily unavailable',

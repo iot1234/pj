@@ -261,14 +261,12 @@ jobs:
                     AND constraint_type='CHECK')
               )")"
           [ "$install_shape" = '34|63|155' ]
-          set +e
-          docker exec --interactive \
+          # The expected refusal belongs in an if condition, so the ERR trap
+          # diagnoses genuine integration failures instead of this negative test.
+          if docker exec --interactive \
             --env MYSQL_PWD="$CI_DBA_PASSWORD" \
             "$database" mysql --host=127.0.0.1 --user=root \
-            < database/install.sql >/tmp/ci-install-reimport.log 2>&1
-          install_reimport_status=$?
-          set -e
-          if [ "$install_reimport_status" -eq 0 ]; then
+            < database/install.sql >/tmp/ci-install-reimport.log 2>&1; then
             echo 'install.sql unexpectedly accepted a non-empty database'
             exit 1
           fi

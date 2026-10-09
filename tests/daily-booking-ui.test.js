@@ -52,7 +52,7 @@ function adminHarness(saved = {}) {
   };
   const admin = ui.functions.initAdmin(h);
   function resolveLoad(offset, bookings = [], room = { id: 2, room_code: 'D02', rental_mode: 'daily', housekeeping_status: 'cleaning', housekeeping_version: 7, daily_rate: '500.00' }) {
-    requests[offset].resolve({ items: bookings }); requests[offset + 1].resolve({ items: bookings, blocks: [], rooms: [room] }); requests[offset + 2].resolve([room]); requests[offset + 3].resolve({ items: bookings });
+    requests[offset].resolve({ items: bookings, has_more: false, next_offset: bookings.length }); requests[offset + 1].resolve({ items: bookings, blocks: [], rooms: [room] }); requests[offset + 2].resolve([room]); requests[offset + 3].resolve({ items: bookings, has_more: false, next_offset: bookings.length });
   }
   return { ...ui, admin, resolveLoad };
 }
@@ -233,6 +233,57 @@ test('failed owner refresh removes both room operations and cached booking actio
   const reload = ui.admin.load(); ui.requests[4].reject(new Error('offline')); ui.requests[5].resolve({ items: [], blocks: [], rooms: [] }); ui.requests[6].resolve([]); ui.requests[7].resolve({ items: [] }); await reload;
   assert.equal(ui.$('#daily-admin-rows').children.length, 0); assert.equal(ui.$('#daily-housekeeping').children.length, 0); assert.equal(ui.$('#daily-calendar').children.length, 0);
   ui.$('#daily-owner-create').listeners.click(); assert.notEqual(ui.$('#daily-owner-create-dialog').open, true);
+});
+test('default owner table includes guests due to check out today and already overdue', async () => {
+  const due=booking({id:1,reference_no:'DAY-DUE',status:'checked_in',version:3,check_in_date:'2026-10-08',check_out_date:'2026-10-09'}),overdue=booking({id:2,reference_no:'DAY-OVERDUE',room_id:3,room_code:'D03',status:'checked_in',version:3,check_in_date:'2026-10-06',check_out_date:'2026-10-07'}),ui=adminHarness(),work=ui.admin.load();
+  const rooms=[{id:2,room_code:'D02',rental_mode:'daily',housekeeping_status:'ready',housekeeping_version:1,status:'occupied'},{id:3,room_code:'D03',rental_mode:'daily',housekeeping_status:'ready',housekeeping_version:1,status:'occupied'}];
+  assert.match(ui.requests[0].url,/from=2026-10-09/);ui.requests[0].resolve({items:[overdue,due],has_more:false,next_offset:2});ui.requests[1].resolve({items:[overdue,due],rooms,blocks:[]});ui.requests[2].resolve(rooms);ui.requests[3].resolve({items:[overdue,due],has_more:false,next_offset:2});await work;
+  assert.equal(ui.$('[data-daily-count="departures"]').textContent,2);assert.equal(ui.$('#daily-admin-rows').children.length,2);
+  for(const row of ui.$('#daily-admin-rows').children)assert.equal(row.children[6].children[0].children.some(button=>button.textContent==='เช็กเอาต์'),true);
+});
+test('owner can load the 501st booking and the page button prevents double dispatch', async () => {
+  const ui=adminHarness(),rows=Array.from({length:501},(_,i)=>booking({id:i+1,reference_no:'DAY-'+(i+1),status:'cancelled'})),loading=ui.admin.load();
+  ui.requests[0].resolve({items:rows.slice(0,500),has_more:true,next_offset:500});ui.requests[1].resolve({items:rows,rooms:[],blocks:[]});ui.requests[2].resolve([]);ui.requests[3].resolve({items:[],has_more:false,next_offset:0});await loading;
+  assert.equal(ui.$('#daily-admin-rows').children.length,500);assert.match(ui.$('#daily-admin-note').textContent,/ยังมีรายการ/);assert.equal(ui.$('#daily-booking-load-more').hidden,false);
+  const next=ui.$('#daily-booking-load-more').listeners.click();await ui.$('#daily-booking-load-more').listeners.click();assert.equal(ui.requests.length,5);assert.match(ui.requests[4].url,/offset=500/);
+  ui.requests[4].resolve({items:[rows[500]],has_more:false,next_offset:501});await next;assert.equal(ui.$('#daily-admin-rows').children.length,501);assert.equal(ui.$('#daily-booking-load-more').hidden,true);assert.match(ui.$('#daily-admin-note').textContent,/ครบตามตัวกรอง/);
+});
+test('changing the owner date filter fences a pending page and discards old page controls', async () => {
+  const ui=adminHarness(),loading=ui.admin.load();ui.requests[0].resolve({items:[booking()],has_more:true,next_offset:1});ui.requests[1].resolve({items:[booking()],rooms:[],blocks:[]});ui.requests[2].resolve([]);ui.requests[3].resolve({items:[],has_more:false,next_offset:0});await loading;
+  const page=ui.$('#daily-booking-load-more').listeners.click();ui.$('#daily-admin-filter').elements.from.value='2026-10-10';ui.$('#daily-admin-filter').listeners.input();ui.requests[4].resolve({items:[booking({id:11,reference_no:'DAY-11'})],has_more:false,next_offset:2});await page;
+  assert.equal(ui.$('#daily-admin-rows').children.length,0);assert.equal(ui.$('#daily-booking-load-more').hidden,true);assert.match(ui.$('#daily-admin-note').textContent,/ตัวกรองเปลี่ยน/);
+});
+async function openMixedProofs() {
+  const ui=adminHarness(),loading=ui.admin.load();ui.resolveLoad(0,[booking()]);await loading;ui.$('#daily-admin-rows').children[0].children[6].children[0].children[0].listeners.click();
+  const pending=paymentRecord({id:5,can_close:true,can_restore:true,can_retry:false,evidence_available:false}),closed=paymentRecord({id:6,status:'closed',can_close:false,can_restore:true,can_retry:false,evidence_available:false});
+  ui.requests[4].resolve(paymentSummary({payment:pending,has_closed_unresolved:true,closed_payments:[closed]}));await flushUntil(()=>ui.$('#daily-owner-slip-actions').children.length===2);
+  const groups=ui.$('#daily-owner-slip-actions').children;
+  return {...ui,pending,closed,selectClose:()=>groups[0].children.find(button=>button.textContent==='พักการตรวจหลักฐาน').listeners.click(),selectRestore:()=>groups[1].children.find(button=>button.textContent==='เลือกไฟล์ต้นฉบับเพื่อซ่อม').listeners.click()};
+}
+test('closing one receipt cannot retarget the restore form for another receipt', async () => {
+  const ui=await openMixedProofs();ui.selectRestore();ui.selectClose();assert.match(ui.$('#daily-owner-restore-summary').textContent,/หลักฐาน 6/);assert.match(ui.$('#daily-close-summary').textContent,/หลักฐาน 5/);
+  const form=ui.$('#daily-owner-restore-form');form.elements.slip.files=[new File(['original proof for receipt 6'],'proof.png',{type:'image/png'})];form.listeners.submit({preventDefault(){},currentTarget:form});await flushUntil(()=>ui.requests.length===6);
+  assert.equal(ui.requests[5].url,'/api/admin/daily/payments/6/restore');ui.requests[5].resolve({...ui.closed,evidence_available:true,can_restore:false});await flushUntil(()=>ui.requests.length===7);ui.requests[6].resolve(paymentSummary({payment:ui.pending,has_closed_unresolved:true,closed_payments:[{...ui.closed,evidence_available:true,can_restore:false}]}));await flushUntil(()=>ui.requests.length===11);ui.resolveLoad(7,[booking()]);
+});
+test('selecting a restore receipt cannot retarget the form that closes the pending receipt', async () => {
+  const ui=await openMixedProofs();ui.selectClose();ui.selectRestore();const form=ui.$('#daily-close-form');form.elements.reason.value='รอไฟล์ต้นฉบับ';form.listeners.submit({preventDefault(){},currentTarget:form});await flushUntil(()=>ui.requests.length===6);
+  assert.equal(ui.requests[5].url,'/api/admin/daily/payments/5/close');ui.requests[5].resolve({...ui.pending,status:'closed',can_close:false});await flushUntil(()=>ui.requests.length===7);ui.requests[6].resolve(paymentSummary({payment:{...ui.pending,status:'closed',can_close:false},has_closed_unresolved:true,closed_payments:[{...ui.pending,status:'closed',can_close:false},ui.closed]}));await flushUntil(()=>ui.requests.length===11);ui.resolveLoad(7,[booking()]);
+});
+test('stale close and restore capabilities are rechecked before either form dispatches', async () => {
+  const ui=await openMixedProofs();ui.selectClose();ui.selectRestore();ui.closed.can_restore=false;ui.pending.can_close=false;
+  const restore=ui.$('#daily-owner-restore-form');restore.elements.slip.files=[new File(['proof'],'proof.png',{type:'image/png'})];restore.listeners.submit({preventDefault(){},currentTarget:restore});const close=ui.$('#daily-close-form');close.elements.reason.value='ทดสอบ';close.listeners.submit({preventDefault(){},currentTarget:close});await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(ui.requests.length,5);assert.match(ui.$('#daily-owner-detail-error').textContent,/เปลี่ยนแล้ว/);
+});
+test('a committed evidence restore with a lost response reconciles on reload without posting again', async () => {
+  const pending={booking_id:10,action:'restore',booking:booking(),prior_payment_id:6,payment_id:6,sha256:'a'.repeat(64)},ui=adminHarness({'dorm.daily.owner-proof.v1':JSON.stringify(pending)}),loading=ui.admin.load();ui.resolveLoad(0,[booking()]);await loading;
+  ui.$('#daily-owner-recovery-open').listeners.click();const restored=paymentRecord({id:6,status:'closed',evidence_available:true,can_restore:false,can_retry:true});ui.requests[4].resolve(paymentSummary({payment:restored,has_closed_unresolved:true,closed_payments:[restored]}));await flushUntil(()=>ui.admin.busy()===false);
+  assert.equal(ui.storage.has('dorm.daily.owner-proof.v1'),false);assert.equal(ui.$('#daily-owner-recovery').hidden,true);assert.equal(ui.$('#daily-owner-detail-dialog').dataset.preserveData,'false');assert.equal(ui.$('#daily-owner-restore-form').hidden,true);assert.equal(ui.requests.some(r=>r.url.endsWith('/restore')),false);
+});
+test('exact original-file recovery can replay a pinned restore no longer present in the summary', async () => {
+  const original=new File(['original restored receipt 6'],'proof.png',{type:'image/png'}),sha256=Buffer.from(await webcrypto.subtle.digest('SHA-256',await original.arrayBuffer())).toString('hex'),pending={booking_id:10,action:'restore',booking:booking(),prior_payment_id:6,payment_id:6,sha256},ui=adminHarness({'dorm.daily.owner-proof.v1':JSON.stringify(pending)}),loading=ui.admin.load();ui.resolveLoad(0,[booking()]);await loading;
+  ui.$('#daily-owner-recovery-open').listeners.click();const newer=paymentRecord({id:7,status:'pending',evidence_available:true,can_restore:false,can_retry:true});ui.requests[4].resolve(paymentSummary({payment:newer}));await flushUntil(()=>ui.$('#daily-owner-restore-form').hidden===false&&ui.$('#daily-owner-payment-actions').hidden===false);
+  assert.equal(ui.admin.busy(),true);const form=ui.$('#daily-owner-restore-form');form.elements.slip.files=[original];form.listeners.submit({preventDefault(){},currentTarget:form});await flushUntil(()=>ui.requests.length===6);
+  assert.equal(ui.requests[5].url,'/api/admin/daily/payments/6/restore');ui.requests[5].resolve(paymentRecord({id:6,status:'rejected',evidence_available:true,can_restore:false}));await flushUntil(()=>ui.requests.length===7);ui.requests[6].resolve(paymentSummary({payment:newer}));await flushUntil(()=>ui.requests.length===11);ui.resolveLoad(7,[booking()]);await flushUntil(()=>ui.admin.busy()===false);assert.equal(ui.storage.has('dorm.daily.owner-proof.v1'),false);
 });
 test('an owner refund with a lost response survives reload and resolves by a read-only request lookup', async () => {
   const key='fixture-refund-idempotency-000001',payload={expected_version:1,idempotency_key:key,amount:'40.00',reference:'R-001',reason:'คืนค่าประกัน'},pending={booking_id:10,action:'refund',payload,booking:booking(),payment_id:5};

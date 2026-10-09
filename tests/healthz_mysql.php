@@ -63,7 +63,7 @@ if (is_string($ini)) array_push($command, '-c', $ini);
 array_push($command, '-d', 'error_log=' . $logPath, '-S', $address, '-t', $root . '/public');
 $environment = getenv();
 foreach (array_keys($environment) as $name) {
-    if (str_starts_with($name, 'HEALTHZ_SCHEMA_') || str_starts_with($name, 'DB_DBA_')) unset($environment[$name]);
+    if (str_starts_with($name, 'HEALTHZ_SCHEMA_') || str_starts_with($name, 'PENDING_SCHEMA_') || str_starts_with($name, 'DB_DBA_')) unset($environment[$name]);
 }
 $environment['APP_DEBUG'] = 'false';
 $environment['FORCE_HTTPS'] = 'false';
@@ -109,7 +109,7 @@ try {
         $pass('a real pre-014 sixteen-table schema fails HTTP readiness with the migration name');
     } else {
         $assert($initial['status'] === 200 && $initial['body'] === '{"status":"ok"}', 'The current fresh schema must pass real HTTP readiness');
-        $pass('the current twenty-two-table schema passes real HTTP readiness with the runtime account');
+        $pass('the current canonical '.count($tables).'-table schema passes real HTTP readiness with the runtime account');
 
         $schema->exec('RENAME TABLE transfer_instructions TO healthz_missing_transfer_instructions');
         try {
@@ -213,12 +213,38 @@ try {
         $restored = $request();
         $assert($restored['status'] === 200 && $restored['body'] === '{"status":"ok"}', 'The restored schema must pass readiness');
         $pass('restoring the canonical schema restores HTTP readiness');
+
+        $workerLog=$temporaryDirectory.'/worker.log';
+        $workerCommand=[PHP_BINARY];if(is_string($ini))array_push($workerCommand,'-c',$ini);
+        array_push($workerCommand,'-d','error_log='.$workerLog,$root.'/scripts/process_notifications.php','--limit=1');
+        $workerEnvironment=$environment;$workerEnvironment['RUNTIME_ROLE']='worker';
+        $runWorker=static function()use($workerCommand,$workerEnvironment,$workerLog,$root,$assert):array{
+            $offset=is_file($workerLog)?(int)filesize($workerLog):0;
+            $child=proc_open($workerCommand,[0=>['pipe','r'],1=>['pipe','w'],2=>['file',$workerLog,'a']],$childPipes,$root,$workerEnvironment,['bypass_shell'=>true,'create_new_console'=>false]);
+            $assert(is_resource($child),'Cannot start isolated worker probe');fclose($childPipes[0]);
+            $output=stream_get_contents($childPipes[1]);fclose($childPipes[1]);$exit=proc_close($child);
+            clearstatcache(true,$workerLog);$log=is_file($workerLog)?file_get_contents($workerLog,false,null,$offset):'';
+            return ['exit'=>$exit,'output'=>(string)$output,'log'=>(string)$log];
+        };
+        $q=$schema->query("SELECT check_clause FROM information_schema.check_constraints WHERE constraint_schema=DATABASE() AND constraint_name='chk_daily_payment_review_v20'");
+        $reviewClause=str_replace("\\'","'",(string)$q->fetchColumn());$assert($reviewClause!=='','Missing daily review marker for worker fixture');
+        try{
+            $schema->exec('ALTER TABLE daily_payments DROP CHECK chk_daily_payment_review_v20');
+            $workerFailure=$runWorker();
+            $assert($workerFailure['exit']===1&&str_contains($workerFailure['log'],'code=DAILY_SCHEMA_NOT_READY'),'Incomplete daily schema must stop the worker with a safe actionable error code');
+            $assert(!str_contains($workerFailure['log'],(string)getenv('DB_PASSWORD'))&&!str_contains($workerFailure['log'],$password),'Worker diagnostics leaked runtime/schema-owner credentials');
+            $pass('worker stops before processing with a safe daily migration error code');
+        }finally{$schema->exec('ALTER TABLE daily_payments ADD CONSTRAINT chk_daily_payment_review_v20 CHECK ('.$reviewClause.')');}
+        $workerSuccess=$runWorker();$workerResult=json_decode($workerSuccess['output'],true,512,JSON_THROW_ON_ERROR);
+        $assert($workerSuccess['exit']===0&&($workerResult['ok']??false)===true&&(int)($workerResult['data']['processed']??-1)===0,'Restored schema must let a restricted worker finish one empty batch');
+        $pass('restoring the daily schema lets the restricted worker complete an empty batch');
     }
 } finally {
     proc_terminate($process);
     proc_close($process);
     // Both paths were generated in this runner and contain only its HTTP log.
     unlink($logPath);
+    if(isset($workerLog)&&is_file($workerLog))unlink($workerLog);
     rmdir($temporaryDirectory);
 }
 fwrite(STDOUT, "{$passed} healthz MySQL regression groups passed\n");
