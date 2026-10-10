@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../public/assets/js/app.js'), 'utf8');
 function extract(a,b) {
   const start=source.indexOf(a),end=source.indexOf(b,start);
@@ -47,4 +48,29 @@ test('room loading fences both late results and failures and clears stale cached
 test('bill actions are not ready while the room list is stale or refreshing', () => {
   const ready=extract('function billDataReady()', 'function selectedBillRooms()');
   assert.ok(ready.includes('state.billCandidatesReady === true && state.billListAvailable === true && !state.billController'));
+});
+
+test('switching room rental mode shows its instructions and preserves values for switching back', () => {
+  const elements = Object.fromEntries(['rental_mode', 'monthly_rent', 'daily_rate', 'max_guests', 'daily_deposit'].map(name => [name, { value: '' }]));
+  Object.assign(elements.monthly_rent, { value: '3500.00' });
+  Object.assign(elements.daily_rate, { value: '650.00' });
+  Object.assign(elements.max_guests, { value: '3' });
+  Object.assign(elements.daily_deposit, { value: '200.00' });
+  const fields = ['monthly', 'daily', 'daily', 'daily'].map(mode => ({ dataset: { rentalFields: mode } })), help = {};
+  const context = { $: () => help, $$: () => fields };
+  vm.createContext(context);
+  vm.runInContext(extract('function syncRoomRentalFields(', "$('#room-form').elements.rental_mode?.addEventListener"), context);
+  elements.rental_mode.value = 'daily'; context.syncRoomRentalFields({ elements });
+  assert.equal(elements.monthly_rent.disabled, true); assert.equal(elements.monthly_rent.required, false);
+  for (const name of ['daily_rate', 'max_guests', 'daily_deposit']) assert.equal(elements[name].disabled, false);
+  assert.equal(elements.daily_rate.required, true); assert.equal(elements.max_guests.required, true);
+  assert.equal(fields[0].hidden, true); assert.equal(fields[1].hidden, false);
+  assert.match(help.textContent, /บันทึกห้องแล้วไปเมนู “จองรายวัน”/);
+  elements.rental_mode.value = 'monthly'; context.syncRoomRentalFields({ elements });
+  assert.equal(elements.monthly_rent.disabled, false); assert.equal(elements.monthly_rent.required, true);
+  assert.equal(elements.daily_rate.required, false); assert.equal(elements.max_guests.required, false);
+  for (const name of ['daily_rate', 'max_guests', 'daily_deposit']) assert.equal(elements[name].disabled, true);
+  assert.equal(elements.monthly_rent.value, '3500.00'); assert.equal(elements.daily_rate.value, '650.00');
+  assert.equal(elements.max_guests.value, '3'); assert.equal(elements.daily_deposit.value, '200.00');
+  assert.match(help.textContent, /รายเดือน.*ยังไม่เพิ่มผู้พักหรือสร้างการจอง/);
 });

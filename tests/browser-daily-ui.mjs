@@ -79,9 +79,10 @@ try {
   }
   const ctx = await context(1366), page = await ctx.newPage(); page.on('pageerror', e => errors.push(e.message)); paid = false;
   await page.goto(base + '/admin#daily'); await page.locator('#daily-admin-rows tr').waitFor(); await page.locator('#daily-owner-create').click();
+  await page.locator('#daily-owner-create-form [name="room_id"]').selectOption('2');
   await page.locator('#daily-owner-create-form [name="full_name"]').fill('Owner Walk In'); await page.locator('#daily-owner-create-form [name="phone"]').fill('0812345679'); await page.locator('#daily-owner-create-form [name="guests"]').fill('1');
   await page.locator('#daily-owner-review').click(); await page.locator('#daily-owner-create-form [type="submit"]:not([disabled])').waitFor(); await page.locator('#daily-owner-create-form [type="submit"]').click(); await page.locator('#daily-owner-create-dialog').waitFor({ state: 'hidden' });
-  await page.locator('#daily-admin-rows').getByRole('button', { name: 'รายละเอียด / การเงิน' }).click(); await page.locator('#daily-cash-form').waitFor(); await page.locator('#daily-cash-form [name="reference"]').fill('MOCK-RECEIPT'); await page.locator('#daily-cash-form [type="submit"]').click(); await page.locator('#confirm-dialog [data-confirm-accept]').click();
+  await page.locator('#daily-owner-detail-dialog').waitFor({ state: 'visible' }); await page.locator('#daily-cash-form').waitFor(); await page.locator('#daily-cash-form [name="reference"]').fill('MOCK-RECEIPT'); await page.locator('#daily-cash-form [type="submit"]').click(); await page.locator('#confirm-dialog [data-confirm-accept]').click();
   await page.locator('#daily-owner-payment-status').getByText('ได้รับเงินครบ', { exact: false }).waitFor(); await page.locator('#daily-owner-detail-dialog [data-close-dialog]').click();
   await page.locator('#daily-admin-rows').getByRole('button', { name: 'เช็กอิน', exact: true }).waitFor();
   await page.locator('#daily-admin-rows').getByRole('button', { name: 'เช็กอิน', exact: true }).click(); await page.locator('#confirm-dialog [data-confirm-accept]').click(); await page.locator('#daily-admin-rows').getByRole('button', { name: 'เช็กเอาต์', exact: true }).waitFor();

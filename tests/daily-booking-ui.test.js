@@ -161,20 +161,20 @@ test('changing dates fences older availability responses and unlocks a fresh sea
   const ui = harness(), old = ui.search();
   ui.$('#daily-search-form').elements.check_out_date.value = '2026-10-11'; ui.$('#daily-search-form').listeners.input();
   assert.equal(ui.$('#daily-search-form').querySelector().disabled, false);
-  const latest = ui.search(); ui.requests[1].resolve({ items: [quote({ id: 3, room_id: 3, room_code: 'D03' })] }); await latest;
+  const latest = ui.search(); ui.requests[1].resolve({ items: [quote({ id: 3, room_id: 3, room_code: 'D03', check_out_date: '2026-10-11', nights: 2, room_amount: '1000.00', total_amount: '1100.00' })] }); await latest;
   ui.requests[0].resolve({ items: [quote()] }); await old;
   const roomBody = ui.$('#daily-room-grid').children[0].children[0]; assert.equal(roomBody.children[0].textContent, 'ห้อง D03');
 });
 test('changing search criteria while quote is loading cannot enable stale booking', async () => {
   const ui = harness(), search = ui.search(); ui.requests[0].resolve({ items: [quote()] }); await search;
-  const choose = ui.$('#daily-room-grid').children[0].children[0].children[3].listeners.click();
+  const choose = publicRoomButton(ui).listeners.click();
   ui.$('#daily-search-form').elements.guests.value = '2'; ui.$('#daily-search-form').listeners.input();
   ui.requests[1].resolve(quote()); await choose;
   assert.equal(ui.$('#daily-booking-form').querySelector().disabled, true);
 });
 test('an unknown create outcome retries the identical payload and idempotency key', async () => {
   const ui = harness(), search = ui.search(); ui.requests[0].resolve({ items: [quote()] }); await search;
-  const choose = ui.$('#daily-room-grid').children[0].children[0].children[3].listeners.click(); ui.requests[1].resolve(quote()); await choose;
+  const choose = publicRoomButton(ui).listeners.click(); ui.requests[1].resolve(quote()); await choose;
   ui.$('#daily-booking-form').elements.full_name.value = 'Guest'; ui.$('#daily-booking-form').elements.phone.value = '0812345678'; ui.submit();
   ui.requests[2].reject(Object.assign(new Error('unknown'), { details: { code: 'MUTATION_OUTCOME_UNKNOWN' } })); await new Promise(resolve => setImmediate(resolve));
   const payload = JSON.stringify(ui.requests[2].options.body), retry = ui.$('#daily-recover-submit').listeners.click();
@@ -295,4 +295,236 @@ test('an owner refund with a lost response survives reload and resolves by a rea
   ui.requests[5].resolve({found:true,booking_id:10,action:'refund',result:{id:9,booking_id:10,amount:'40.00',reference_no:'R-001'}});await flushUntil(()=>ui.requests.length===7);
   assert.equal(ui.requests.some(r=>r.url.endsWith('/refund')&&r.options.method==='POST'),false);assert.equal(ui.storage.has('dorm.daily.owner-finance.v1'),false);
   ui.requests[6].resolve(paymentSummary({booking_status:'confirmed',version:2,paid:true,payment:paymentRecord({status:'verified'}),received_amount:'600.00',refunded_amount:'40.00',refundable_amount:'60.00',deposit_remaining:'60.00'}));await flushUntil(()=>ui.requests.length===11);ui.resolveLoad(7,[booking({status:'confirmed',version:2})]);await flushUntil(()=>ui.admin.busy()===false);
+});
+
+const plain = value => JSON.parse(JSON.stringify(value));
+function publicRoomButton(ui, index = 0) {
+  const find = item => {
+    if (item?.type === 'button' && typeof item.listeners?.click === 'function') return item;
+    for (const child of item?.children || []) { const found = find(child); if (found) return found; }
+    return null;
+  };
+  const button = find(ui.$('#daily-room-grid').children[index]);
+  assert.ok(button, 'the room card exposes a booking action'); return button;
+}
+async function startPublicCreate(ui) {
+  const searching = ui.search(); ui.requests[0].resolve({ items: [quote()] }); await searching;
+  const choosing = publicRoomButton(ui).listeners.click();
+  ui.requests[1].resolve(quote()); await choosing;
+  ui.$('#daily-booking-form').elements.full_name.value = 'Guest';
+  ui.$('#daily-booking-form').elements.phone.value = '0812345678';
+  ui.submit(); await flushUntil(() => ui.requests.length === 3);
+  return plain(ui.requests[2].options.body);
+}
+function resolveOwnerInventory(ui, offset, rooms = []) {
+  ui.requests[offset].resolve({ items: [], has_more: false, next_offset: 0 });
+  ui.requests[offset + 1].resolve({ items: [], blocks: [], rooms: rooms.filter(room => room.rental_mode === 'daily') });
+  ui.requests[offset + 2].resolve(rooms);
+  ui.requests[offset + 3].resolve({ items: [], has_more: false, next_offset: 0 });
+}
+test('unknown public creation survives rate limiting, CSRF rejection and reload without changing the request', async () => {
+  const ui = harness(), original = await startPublicCreate(ui);
+  ui.requests[2].reject(Object.assign(new Error('response lost'), { details: { code: 'MUTATION_OUTCOME_UNKNOWN' } }));
+  await flushUntil(() => JSON.parse(ui.storage.get('dorm.daily.pending.v1') || '{}').outcome_unknown === true);
+  for (const [status, code] of [[429, 'RATE_LIMITED'], [403, 'CSRF_INVALID']]) {
+    const retry = ui.$('#daily-recover-submit').listeners.click(), request = ui.requests.at(-1);
+    assert.deepEqual(plain(request.options.body), original);
+    assert.equal(Object.hasOwn(request.options.body, 'outcome_unknown'), false, 'private recovery metadata must never reach the API');
+    request.reject(Object.assign(new Error(code), { status, details: { code } })); await retry;
+    const saved = JSON.parse(ui.storage.get('dorm.daily.pending.v1'));
+    assert.equal(saved.idempotency_key, original.idempotency_key);
+    assert.equal(saved.outcome_unknown, true);
+    assert.equal(ui.$('#daily-recovery').hidden, false);
+    assert.equal(ui.$('#daily-booking-form').querySelector().disabled, true);
+  }
+  const restored = harness(Object.fromEntries(ui.storage)), retry = restored.$('#daily-recover-submit').listeners.click();
+  assert.deepEqual(plain(restored.requests[0].options.body), original);
+  restored.requests[0].resolve(booking()); await flushUntil(() => restored.requests.length === 3);
+  restored.requests[1].resolve(booking()); restored.requests[2].resolve(paymentSummary()); await retry;
+  assert.equal(restored.storage.has('dorm.daily.pending.v1'), false);
+  assert.equal(JSON.parse(restored.storage.get('dorm.daily.access.v1')).id, 10);
+  assert.equal(restored.requests.filter(request => request.options.method === 'POST').length, 1);
+});
+test('a restored pre-marker public request remains unresolved after a later validation error', async () => {
+  const original = { ...dates, room_id: 2, full_name: 'Guest', phone: '0812345678', quote_token: 'signed-quote', idempotency_key: 'legacy-pending-key' };
+  const ui = harness({ 'dorm.daily.pending.v1': JSON.stringify(original) });
+  const retry = ui.$('#daily-recover-submit').listeners.click();
+  assert.deepEqual(plain(ui.requests[0].options.body), original);
+  ui.requests[0].reject(Object.assign(new Error('validation failed on retry'), { status: 422, details: { code: 'VALIDATION_ERROR' } })); await retry;
+  assert.equal(JSON.parse(ui.storage.get('dorm.daily.pending.v1')).idempotency_key, original.idempotency_key);
+  assert.equal(ui.$('#daily-recovery').hidden, false);
+  assert.equal(ui.requests.length, 1, 'a restored request must not start another booking automatically');
+});
+test('initial authentication, CSRF, timeout and quota failures preserve the same public booking key', async () => {
+  for (const status of [401, 403, 408, 429]) {
+    const ui = harness(), original = await startPublicCreate(ui);
+    ui.requests[2].reject(Object.assign(new Error('preflight rejected'), { status }));
+    await flushUntil(() => ui.$('#daily-recovery').hidden === false);
+    const saved = JSON.parse(ui.storage.get('dorm.daily.pending.v1'));
+    const { outcome_unknown, ...body } = saved;
+    assert.equal(outcome_unknown, true); assert.deepEqual(body, original);
+  }
+  const ui = harness(); await startPublicCreate(ui);
+  ui.requests[2].reject(Object.assign(new Error('invalid phone'), { status: 422, details: { code: 'VALIDATION_ERROR' } }));
+  await flushUntil(() => ui.storage.has('dorm.daily.pending.v1') === false);
+  assert.equal(ui.storage.has('dorm.daily.pending.v1'), false, 'a definite initial validation failure can release the draft');
+});
+test('an open confirmed booking keeps its capability when another room is selected', async () => {
+  const access = { id: 10, token: 'a'.repeat(64) }, saved = JSON.stringify(access);
+  const ui = harness({ 'dorm.daily.access.v1': saved });
+  ui.requests[0].resolve(booking({ status: 'confirmed', version: 2 }));
+  ui.requests[1].resolve(paymentSummary({ booking_status: 'confirmed', version: 2, paid: true, payment: paymentRecord({ status: 'verified' }), received_amount: '600.00' }));
+  await flushUntil(() => ui.$('#daily-payment-panel').hidden === false);
+  const searching = ui.search(); ui.requests[2].resolve({ items: [quote({ id: 3, room_id: 3, room_code: 'D03' })] }); await searching;
+  await publicRoomButton(ui).listeners.click(); ui.submit();
+  assert.equal(ui.requests.length, 3, 'neither a new quote nor a new creation can replace the opened booking');
+  assert.equal(ui.storage.get('dorm.daily.access.v1'), saved);
+  assert.notEqual(ui.$('#daily-booking-dialog').open, true);
+  assert.match(ui.$('#daily-search-error').textContent, /แท็บใหม่/);
+});
+test('arrival changes enforce a later departure across year and leap-day boundaries before reviewing a price', async () => {
+  const ui = harness(), form = ui.$('#daily-search-form'), arrival = form.elements.check_in_date, departure = form.elements.check_out_date;
+  for (const [day, tomorrow] of [['2026-12-31', '2027-01-01'], ['2028-02-28', '2028-02-29'], ['2028-02-29', '2028-03-01']]) {
+    arrival.value = day; departure.value = day; form.listeners.input({ target: arrival });
+    assert.equal(departure.min, tomorrow); assert.equal(departure.value, tomorrow);
+    assert.match(ui.$('#daily-search-summary').textContent, /1 คืน/);
+  }
+  departure.value = '2028-03-04'; form.listeners.input({ target: form.elements.guests });
+  assert.equal(departure.value, '2028-03-04', 'changing guests must preserve an already valid stay');
+  assert.equal(ui.requests.length, 0, 'editing dates alone must not reserve or quote a room');
+});
+test('editing the search cannot rewrite an already submitted unknown booking stay', async () => {
+  const ui = harness(), original = await startPublicCreate(ui);
+  ui.requests[2].reject(Object.assign(new Error('unknown'), { details: { code: 'MUTATION_OUTCOME_UNKNOWN' } }));
+  await flushUntil(() => ui.$('#daily-recovery').hidden === false);
+  const form = ui.$('#daily-search-form'); form.elements.check_in_date.value = '2027-01-01';
+  form.listeners.input({ target: form.elements.check_in_date });
+  const retry = ui.$('#daily-recover-submit').listeners.click();
+  assert.deepEqual(plain(ui.requests[3].options.body), original);
+  assert.equal(ui.requests[3].options.body.check_out_date, '2026-10-10');
+  ui.requests[3].reject(Object.assign(new Error('still unknown'), { details: { code: 'MUTATION_OUTCOME_UNKNOWN' } })); await retry;
+});
+test('an empty daily inventory shows setup only after a complete successful load', async () => {
+  const ui = adminHarness(), loading = ui.admin.load();
+  assert.equal(ui.$('#daily-setup-guide').hidden, true); assert.equal(ui.$('#daily-owner-create').disabled, true);
+  resolveOwnerInventory(ui, 0, [{ id: 1, room_code: 'M01', rental_mode: 'monthly' }]); await loading;
+  assert.equal(ui.$('#daily-setup-guide').hidden, false); assert.equal(ui.$('#daily-owner-create').disabled, true);
+  ui.$('#daily-owner-create').listeners.click();
+  assert.notEqual(ui.$('#daily-owner-create-dialog').open, true);
+  const failed = ui.admin.load();
+  ui.requests[4].resolve({ items: [], has_more: false, next_offset: 0 }); ui.requests[5].resolve({ items: [], blocks: [], rooms: [] });
+  ui.requests[6].reject(new Error('inventory unavailable')); ui.requests[7].resolve({ items: [], has_more: false, next_offset: 0 }); await failed;
+  assert.equal(ui.$('#daily-setup-guide').hidden, true, 'an unavailable inventory must not be presented as an empty database');
+  assert.equal(ui.$('#daily-owner-create').disabled, true); assert.match(ui.$('#daily-admin-error').textContent, /inventory unavailable/);
+});
+test('owner creation starts with an explicit room choice and reflects its capacity', async () => {
+  const ui = adminHarness(), loading = ui.admin.load();
+  ui.resolveLoad(0, [], { id: 2, room_code: 'D02', rental_mode: 'daily', housekeeping_status: 'ready', housekeeping_version: 1, daily_rate: '500.00', max_guests: 2 }); await loading;
+  assert.equal(ui.$('#daily-setup-guide').hidden, true); assert.equal(ui.$('#daily-owner-create').disabled, false);
+  ui.$('#daily-owner-create').listeners.click();
+  const form = ui.$('#daily-owner-create-form');
+  assert.equal(form.elements.room_id.value, ''); assert.equal(form.elements.room_id.children[0].value, '');
+  form.elements.room_id.value = '2'; form.listeners.input({ target: form.elements.room_id });
+  assert.equal(form.elements.guests.max, 2); assert.match(ui.$('#daily-owner-room-help').textContent, /ไม่เกิน 2 คน/);
+  assert.equal(ui.requests.length, 4, 'selecting a room must not create or accept a new price automatically');
+});
+test('restored owner creation keeps its body through denied retries and opens the created detail on replay', async () => {
+  const original = { ...dates, room_id: 2, full_name: 'Guest', phone: '0812345678', quote_token: 'signed-quote', idempotency_key: 'owner-recovery-key' };
+  const ui = adminHarness({ 'dorm.daily.owner-create.v1': JSON.stringify(original) }), loading = ui.admin.load(); ui.resolveLoad(0); await loading;
+  ui.$('#daily-owner-recovery-open').listeners.click();
+  for (const [status, code] of [[429, 'RATE_LIMITED'], [403, 'CSRF_INVALID']]) {
+    const offset = ui.requests.length, form = ui.$('#daily-owner-create-form');
+    const retry = form.listeners.submit({ preventDefault() {}, currentTarget: form });
+    assert.deepEqual(plain(ui.requests[offset].options.body), original);
+    ui.requests[offset].reject(Object.assign(new Error(code), { status, details: { code } }));
+    await flushUntil(() => ui.requests.length === offset + 5); ui.resolveLoad(offset + 1); await retry;
+    assert.deepEqual(JSON.parse(ui.storage.get('dorm.daily.owner-create.v1')), original);
+    assert.equal(ui.$('#daily-owner-recovery').hidden, false);
+  }
+  const restored = adminHarness(Object.fromEntries(ui.storage)), reloading = restored.admin.load(); restored.resolveLoad(0); await reloading;
+  restored.$('#daily-owner-recovery-open').listeners.click();
+  const form = restored.$('#daily-owner-create-form'), replay = form.listeners.submit({ preventDefault() {}, currentTarget: form });
+  assert.deepEqual(plain(restored.requests[4].options.body), original);
+  restored.requests[4].resolve(booking()); await flushUntil(() => restored.requests.length === 9); restored.resolveLoad(5, [booking()]);
+  await flushUntil(() => restored.requests.length === 10); assert.equal(restored.requests[9].url, '/api/admin/daily/bookings/10/payment');
+  restored.requests[9].resolve(paymentSummary()); await replay;
+  assert.equal(restored.storage.has('dorm.daily.owner-create.v1'), false);
+  assert.equal(restored.$('#daily-owner-detail-dialog').open, true);
+  assert.equal(restored.requests.filter(request => request.options.method === 'POST').length, 1);
+});
+test('booking guidance preserves evidence and never invites another transfer while unresolved', () => {
+  const f = harness().functions;
+  const unresolved = [
+    [paymentSummary({ payment: paymentRecord() }), /รอผลตรวจสลิป/, /อย่าโอนหรือรับเงินซ้ำ/],
+    [paymentSummary({ payment: paymentRecord({ status: 'closed' }), has_closed_unresolved: true, closed_payments: [paymentRecord({ status: 'closed' })] }), /หลักฐานเดิม/, /อย่าโอนซ้ำ/],
+    [paymentSummary(), /ยอดโอนเดิม/, /ห้ามโอนหรือรับเงินสดซ้ำ/],
+  ];
+  for (const [data, title, instruction] of unresolved) {
+    const guide = f.bookingGuidance(booking(), data); assert.match(guide[0], title); assert.match(guide[1], instruction);
+    assert.doesNotMatch(guide.join(' '), /กด “สร้าง QR|เลือกรับเงินสด/);
+  }
+  const recovery = f.bookingGuidance(null, null, true);
+  assert.match(recovery[0], /ตรวจผลรายการเดิม/); assert.match(recovery[1], /ไม่เริ่มจอง.*โอนซ้ำ/);
+  const waiting = f.bookingGuidance(null, null); assert.match(waiting[1], /รอข้อมูล/);
+  const none = paymentSummary({ has_transfer_instruction: false, can_generate_qr: false, can_upload: false, capabilities: { promptpay_ready: false, slip_verification_ready: false } });
+  const unavailable = f.bookingGuidance(booking(), none); assert.match(unavailable[0], /ติดต่อหอพัก/); assert.match(unavailable[1], /อย่าโอนเอง/);
+  assert.equal(f.paymentGuard(booking(), none).mayTransfer, false);
+});
+test('paid and terminal booking guidance distinguishes arrival from refunds without reopening payment', () => {
+  const f = harness().functions, verified = paymentRecord({ status: 'verified' });
+  for (const status of ['confirmed', 'checked_in', 'checked_out']) {
+    const stay = booking({ status, version: 2 }), receipt = paymentSummary({ booking_status: status, version: 2, paid: true, payment: verified, received_amount: '600.00', deposit_remaining: '100.00' });
+    const guide = f.bookingGuidance(stay, receipt); assert.equal(f.paymentGuard(stay, receipt).mayTransfer, false);
+    assert.doesNotMatch(guide.join(' '), /กด “สร้าง QR|ชำระเงินเพื่อยืนยัน/);
+    if (status === 'confirmed') assert.match(guide[1], /มาเข้าพัก.*ไม่ต้องชำระซ้ำ/);
+    if (status === 'checked_in') assert.match(guide[1], /ตรวจห้อง.*ผลตรวจ/);
+    const recovered = f.bookingGuidance(stay, receipt, true); assert.match(recovered[0], /ตรวจผลรายการเดิม/);
+  }
+  for (const status of ['expired', 'cancelled', 'no_show']) {
+    const stay = booking({ status }), receipt = paymentSummary({ booking_status: status, paid: true, payment: verified, received_amount: '600.00', refundable_amount: '600.00' });
+    const guide = f.bookingGuidance(stay, receipt); assert.match(guide[1], /ห้ามโอนเพิ่ม.*สลิปเดิม.*คืนเงิน/);
+    assert.equal(f.paymentGuard(stay, receipt).mayTransfer, false);
+  }
+});
+test('an availability response with inconsistent or mismatched prices never exposes a bookable card', async () => {
+  for (const malformed of [quote({ room_amount: '499.00' }), quote({ total_amount: '599.00' }), quote({ guests: 2 }), quote({ check_out_date: '2026-10-11' })]) {
+    const ui = harness(), searching = ui.search();
+    ui.requests[0].resolve({ items: [quote({ id: 3, room_id: 3, room_code: 'D03' }), malformed] }); await searching;
+    assert.equal(ui.$('#daily-room-grid').children.length, 0);
+    assert.equal(ui.$('#daily-search-error').hidden, false);
+    assert.equal(ui.$('#daily-booking-form').querySelector().disabled, true);
+    ui.submit(); assert.equal(ui.requests.length, 1, 'unsafe availability cannot produce a booking or a quote');
+  }
+});
+test('unavailable provider guidance respects a reserved QR and the owner cash capability', () => {
+  const f = harness().functions, capabilities = { promptpay_ready: false, slip_verification_ready: false };
+  const reserved = paymentSummary({ capabilities });
+  for (const owner of [false, true]) {
+    const guide = f.bookingGuidance(booking(), reserved, false, owner);
+    assert.match(guide[0], /ยอดโอนเดิม/); assert.match(guide[1], /ห้ามโอนหรือรับเงินสดซ้ำ/);
+    assert.doesNotMatch(guide[1], /เมื่อรับเงินสด|รับเงินสดพร้อมใบรับเงินได้/);
+  }
+  const blocked = paymentSummary({ capabilities, has_transfer_instruction: false, cash_available: false });
+  const blockedAdvice = f.bookingGuidance(booking(), blocked, false, true);
+  assert.match(blockedAdvice[1], /ยังรับชำระเพิ่มไม่ได้/); assert.doesNotMatch(blockedAdvice[1], /เมื่อรับเงินสด|รับเงินสดพร้อมใบรับเงินได้/);
+  const cash = f.bookingGuidance(booking(), { ...blocked, cash_available: true }, false, true);
+  assert.match(cash[1], /เมื่อรับเงินสดครบและออกใบรับเงินแล้ว/);
+});
+test('a proven expired quote on recovery unlocks a new price review without silently creating another booking', async () => {
+  const original = { ...dates, room_id: 2, full_name: 'Guest', phone: '0812345678', quote_token: 'old-signed-quote', idempotency_key: 'expired-price-original-key' };
+  const ui = harness({ 'dorm.daily.pending.v1': JSON.stringify(original) }), retry = ui.$('#daily-recover-submit').listeners.click();
+  assert.deepEqual(plain(ui.requests[0].options.body), original);
+  ui.requests[0].reject(Object.assign(new Error('quote expired after existing-key lookup'), { status: 409, details: { code: 'DAILY_QUOTE_EXPIRED' } })); await retry;
+  assert.equal(ui.storage.has('dorm.daily.pending.v1'), false); assert.equal(ui.$('#daily-recovery').hidden, true);
+  assert.equal(ui.$('#daily-booking-form').querySelector().disabled, true); assert.equal(ui.requests.length, 1);
+  const searching = ui.search(); ui.requests[1].resolve({ items: [quote()] }); await searching;
+  const choosing = publicRoomButton(ui).listeners.click(); ui.requests[2].resolve(quote({ quote_token: 'fresh-signed-quote' })); await choosing;
+  assert.equal(ui.$('#daily-booking-form').querySelector().disabled, false);
+  assert.equal(ui.requests.filter(request => request.url === '/api/public/daily/bookings').length, 1, 'reviewing a replacement price alone must not create a new booking');
+  ui.$('#daily-booking-form').elements.full_name.value = original.full_name; ui.$('#daily-booking-form').elements.phone.value = original.phone; ui.submit();
+  assert.equal(ui.requests[3].options.body.quote_token, 'fresh-signed-quote');
+  assert.notEqual(ui.requests[3].options.body.idempotency_key, original.idempotency_key);
+  assert.equal(Object.hasOwn(ui.requests[3].options.body, 'outcome_unknown'), false);
+  ui.requests[3].reject(Object.assign(new Error('initial input invalid'), { status: 422, details: { code: 'VALIDATION_ERROR' } }));
+  await flushUntil(() => ui.storage.has('dorm.daily.pending.v1') === false);
 });

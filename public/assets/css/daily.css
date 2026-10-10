@@ -2,6 +2,18 @@
 .daily-summary dl { margin: 0; display: grid; grid-template-columns: minmax(8rem,1fr) minmax(0,1fr); gap: .5rem 1rem; }
 .daily-summary dt { color: var(--muted); }
 .daily-summary dd { margin: 0; overflow-wrap: anywhere; font-weight: 600; }
+.daily-steps { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 1rem; list-style: none; margin: 0 0 1.25rem; padding: 0; }
+.daily-steps li { display: grid; gap: .3rem; border-left: 3px solid var(--line); padding: .25rem .75rem; }
+.daily-steps span { color: var(--muted); font-size: .88rem; }
+.daily-stay-preview { font-weight: 600; margin: .8rem 0; }
+.daily-next-step { border: 1px solid var(--line); border-left: 4px solid var(--primary, #3159af); padding: 1rem; margin-bottom: 1rem; border-radius: 6px; background: #f6f8fd; }
+.daily-next-step p { margin: .4rem 0 0; line-height: 1.7; }
+.daily-secondary-options { margin: 1.25rem 0; border-top: 1px solid var(--line); padding-top: 1rem; }
+.daily-secondary-options summary { cursor: pointer; font-weight: 600; min-height: 44px; }
+.daily-empty-state { padding: 1.2rem; color: var(--muted); white-space: normal; }
+.daily-setup-guide { margin-bottom: 1rem; }
+.daily-setup-guide h3 { margin-top: 0; }
+.admin-bottom-nav { grid-template-columns: repeat(5,minmax(0,1fr)); }
 .daily-calendar-cell { min-width: 5.5rem; font-size: .8rem; white-space: normal; }
 .daily-calendar-cell[data-booked="true"] { background: #edf2fc; }
 .daily-calendar-cell[data-blocked="true"] { background: #fff2e0; }
@@ -12,6 +24,12 @@
 #daily-qr-stage:empty { display: none; }
 .admin-content #daily-calendar th:last-child, .admin-content #daily-calendar td:last-child { position: static; box-shadow: none; }
 @media(max-width:600px) {
+  .daily-public-header { flex-wrap: wrap; gap: .6rem; }
+  .daily-public-header .header-actions { display: flex; width: 100%; gap: .4rem; }
+  .daily-public-header .header-actions .button { flex: 1; min-width: 0; padding: .5rem .3rem; }
+  .daily-steps { gap: .4rem; }
+  .daily-steps li { padding: .25rem .4rem; font-size: .8rem; }
+  .daily-steps span { display: none; }
   .daily-summary dl { grid-template-columns: minmax(7rem,1fr) minmax(0,1fr); gap: .6rem; font-size: .88rem; }
   .daily-booking-table, .daily-booking-table tbody { display: block; width: 100%; }
   .daily-booking-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }

@@ -29,22 +29,22 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                 <span>ห้องพัก</span>
             </button>
             <button class="admin-nav-item" type="button" data-admin-nav="bookings">
-                <span>การจอง</span><span class="nav-count" id="booking-nav-count" hidden>0</span>
+                <span>จองรายเดือน</span><span class="nav-count" id="booking-nav-count" hidden>0</span>
             </button>
             <button class="admin-nav-item" type="button" data-admin-nav="daily"><span>จองรายวัน</span></button>
             <button class="admin-nav-item" type="button" data-admin-nav="residents">
-                <span>ผู้พักอาศัย</span>
+                <span>ผู้พักรายเดือน</span>
             </button>
             <button class="admin-nav-item" type="button" data-admin-nav="meters">
-                <span>จดมิเตอร์</span>
+                <span>จดมิเตอร์รายเดือน</span>
             </button>
 
-            <p class="admin-nav-label">การเงิน</p>
+            <p class="admin-nav-label">การเงินรายเดือน</p>
             <button class="admin-nav-item" type="button" data-admin-nav="bills">
-                <span>ใบแจ้งหนี้</span>
+                <span>บิลรายเดือน</span>
             </button>
             <button class="admin-nav-item" type="button" data-admin-nav="payments">
-                <span>การชำระเงิน</span><span class="nav-count" id="payment-nav-count" hidden>0</span>
+                <span>ชำระเงินรายเดือน</span><span class="nav-count" id="payment-nav-count" hidden>0</span>
             </button>
 
             <p class="admin-nav-label">LINE</p>
@@ -89,11 +89,16 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                     <div><strong>โหลดภาพรวมได้ไม่ครบ</strong><p data-error-message></p></div>
                     <button class="button button-small" type="button" data-refresh="overview">ลองใหม่</button>
                 </div>
+                <section class="panel overview-panel" aria-labelledby="overview-start-title">
+                    <div class="panel-heading"><div><h3 id="overview-start-title">เริ่มจากตั้งค่าห้อง แล้วเลือกรูปแบบการพัก</h3><p>เพิ่มหรือแก้ไขห้องให้มีราคาและรูปแบบการให้เช่าที่ถูกต้องก่อนรับผู้พัก</p></div></div>
+                    <div class="form-actions"><button class="button button-secondary" type="button" data-overview-jump="rooms">1. ตั้งค่าห้องและราคา</button><button class="button button-primary" type="button" data-overview-jump="daily">2. รับจองรายวัน</button><button class="button button-secondary" type="button" data-overview-jump="residents">2. รับผู้พักรายเดือน</button></div>
+                    <p class="field-hint">รายวัน: จองตามวันเข้าพักและชำระจากรายละเอียดการจอง · รายเดือน: รับผู้พัก จดมิเตอร์ แล้วออกบิลรายเดือน</p>
+                </section>
                 <div class="stats-grid stats-grid-four" id="overview-stats" aria-live="polite">
-                    <button class="stat-card stat-action" type="button" data-overview-jump="bookings"><span>การจองรอยืนยัน</span><strong data-overview-stat="bookings">—</strong><small data-overview-note="bookings">กำลังโหลด…</small></button>
-                    <button class="stat-card stat-action" type="button" data-overview-jump="payments"><span>สลิปรอตรวจ</span><strong data-overview-stat="payments">—</strong><small data-overview-note="payments">กำลังโหลด…</small></button>
+                    <button class="stat-card stat-action" type="button" data-overview-jump="bookings"><span>จองรายเดือนรอยืนยัน</span><strong data-overview-stat="bookings">—</strong><small data-overview-note="bookings">กำลังโหลด…</small></button>
+                    <button class="stat-card stat-action" type="button" data-overview-jump="payments"><span>สลิปรายเดือนรอตรวจ</span><strong data-overview-stat="payments">—</strong><small data-overview-note="payments">กำลังโหลด…</small></button>
                     <button class="stat-card stat-action" type="button" data-overview-jump="rooms"><span>ห้องว่าง</span><strong data-overview-stat="rooms">—</strong><small data-overview-note="rooms">กำลังโหลด…</small></button>
-                    <button class="stat-card stat-action" type="button" data-overview-jump="bills"><span>ยอดค้างชำระรอบนี้</span><strong data-overview-stat="outstanding">—</strong><small data-overview-note="outstanding">กำลังโหลด…</small></button>
+                    <button class="stat-card stat-action" type="button" data-overview-jump="bills"><span>ยอดค้างบิลรายเดือน</span><strong data-overview-stat="outstanding">—</strong><small data-overview-note="outstanding">กำลังโหลด…</small></button>
                 </div>
                 <div class="overview-grid">
                     <section class="panel overview-panel" aria-labelledby="overview-month-title">
@@ -141,6 +146,8 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
                     <div><p class="eyebrow">สถานะห้องล่าสุด</p><h2 id="rooms-title">ห้องพักทั้งหมด</h2></div>
                     <div class="section-heading-actions"><button class="button button-secondary" type="button" data-refresh="rooms">รีเฟรช</button><button class="button button-primary" type="button" data-open-room-dialog>เพิ่มห้องพัก</button></div>
                 </div>
+                <div class="security-note"><strong>บันทึกห้องก่อน แล้วเริ่มรายการเข้าพัก</strong><span>ห้องรายวันต้องตั้งราคาต่อคืน จำนวนผู้พักสูงสุด และค่าประกัน การเพิ่มห้องหรือเปลี่ยนรูปแบบห้องยังไม่สร้างการจอง</span></div>
+                <div class="form-actions"><button class="button button-primary" type="button" data-overview-jump="daily">ไปจองรายวัน</button><button class="button button-secondary" type="button" data-overview-jump="bookings">ดูคำขอจองรายเดือน</button><button class="button button-secondary" type="button" data-overview-jump="residents">รับผู้พักรายเดือน</button></div>
                 <div class="stats-grid stats-grid-four" id="room-stats" aria-live="polite">
                     <article class="stat-card"><span>ห้องทั้งหมด</span><strong data-room-stat="all">—</strong></article>
                     <article class="stat-card stat-available"><span>ว่าง</span><strong data-room-stat="available">—</strong></article>
@@ -158,7 +165,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
             </section>
 
             <section class="admin-view" data-admin-view="bookings" aria-labelledby="bookings-title" hidden>
-                <div class="section-heading"><div><p class="eyebrow">จัดการคำขอ</p><h2 id="bookings-title">การจองห้อง</h2></div></div>
+                <div class="section-heading"><div><p class="eyebrow">คำขอพักแบบรายเดือน</p><h2 id="bookings-title">จองรายเดือน</h2><p>ตรวจคำขอ ยืนยันห้อง แล้วรับเข้าพัก ส่วนการจองตามจำนวนคืนอยู่ที่เมนู “จองรายวัน”</p></div></div>
                 <div class="stats-grid" id="booking-stats" aria-live="polite">
                     <article class="stat-card stat-reserved"><span>รอตรวจสอบ</span><strong data-booking-stat="pending">—</strong><small>ทั้งระบบ ไม่ขึ้นกับตัวกรอง</small></article>
                     <article class="stat-card"><span>ยืนยันแล้ว รอเข้าพัก</span><strong data-booking-stat="confirmed">—</strong><small>นับจากรายการที่โหลดอยู่</small></article>
@@ -173,7 +180,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
             </section>
 
             <section class="admin-view" data-admin-view="residents" aria-labelledby="residents-title" hidden>
-                <div class="section-heading"><div><p class="eyebrow">ข้อมูลผู้เช่าปัจจุบัน</p><h2 id="residents-title">ผู้พักอาศัย</h2></div><button class="button button-primary" type="button" data-open-resident-create>เพิ่มผู้พักเข้าห้อง</button></div>
+                <div class="section-heading"><div><p class="eyebrow">ผู้เช่ารายเดือนและเลขมิเตอร์เริ่มต้น</p><h2 id="residents-title">ผู้พักรายเดือน</h2></div><button class="button button-primary" type="button" data-open-resident-create>รับผู้พักรายเดือน</button></div>
                 <div class="stats-grid stats-grid-four" id="resident-stats" aria-live="polite">
                     <article class="stat-card"><span>ผู้พักทั้งหมด</span><strong data-resident-stat="all">—</strong></article>
                     <article class="stat-card stat-occupied"><span>ผูก LINE แล้ว</span><strong data-resident-stat="line">—</strong><small>รับบิลผ่าน LINE ได้</small></article>
@@ -193,7 +200,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
             </section>
 
             <section class="admin-view" data-admin-view="bills" aria-labelledby="bills-title" hidden>
-                <div class="section-heading"><div><p class="eyebrow">ออกเอกสารจากค่ามิเตอร์</p><h2 id="bills-title">ใบแจ้งหนี้</h2></div></div>
+                <div class="section-heading"><div><p class="eyebrow">ค่าเช่า น้ำ และไฟของผู้พักรายเดือน</p><h2 id="bills-title">บิลรายเดือน</h2><p>เงินค่าพักรายวันและค่าประกันจัดการจากรายละเอียดในเมนู “จองรายวัน”</p></div></div>
                 <form class="panel billing-builder" id="bill-builder-form">
                     <section class="billing-next-steps" id="billing-next-steps" aria-label="ขั้นตอนก่อนออกบิล"></section>
                     <div class="security-note" id="billing-readiness-note"><strong>ตรวจสอบค่ารายเดือนก่อนออกบิล</strong><span>ระบบกำลังโหลดสถานะจากหน้า “ตั้งค่า”</span></div>
@@ -231,7 +238,7 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
             </section>
 
             <section class="admin-view" data-admin-view="payments" aria-labelledby="payments-title" hidden>
-                <div class="section-heading"><div><p class="eyebrow">หลักฐานการโอนจากผู้พัก</p><h2 id="payments-title">การชำระเงิน</h2></div></div>
+                <div class="section-heading"><div><p class="eyebrow">หลักฐานชำระบิลรายเดือน</p><h2 id="payments-title">ชำระเงินรายเดือน</h2><p>สลิปค่าพักรายวันอยู่ในรายละเอียดการจองที่เมนู “จองรายวัน”</p></div></div>
                 <div class="stats-grid" id="payment-stats" aria-live="polite">
                     <article class="stat-card stat-reserved"><span>รอตรวจ</span><strong data-payment-stat="pending">—</strong><small>ทั้งระบบ ไม่ขึ้นกับตัวกรอง</small></article>
                     <article class="stat-card"><span>แสดงอยู่ในตาราง</span><strong data-payment-stat="loaded">—</strong><small data-payment-stat-note="loaded">—</small></article>
@@ -314,8 +321,9 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
 
         <nav class="mobile-bottom-nav admin-bottom-nav" aria-label="เมนูเจ้าของระบบบนมือถือ">
             <button class="is-active" type="button" data-admin-nav="overview">ภาพรวม</button>
-            <button type="button" data-admin-nav="bookings">การจอง<span class="nav-count nav-count-dot" id="booking-bottom-count" hidden>0</span></button>
-            <button type="button" data-admin-nav="payments">ชำระเงิน<span class="nav-count nav-count-dot" id="payment-bottom-count" hidden>0</span></button>
+            <button type="button" data-admin-nav="daily">จองรายวัน</button>
+            <button type="button" data-admin-nav="bookings">จองรายเดือน<span class="nav-count nav-count-dot" id="booking-bottom-count" hidden>0</span></button>
+            <button type="button" data-admin-nav="payments">เงินรายเดือน<span class="nav-count nav-count-dot" id="payment-bottom-count" hidden>0</span></button>
             <button type="button" aria-controls="admin-sidebar" aria-expanded="false" data-admin-menu-toggle>เมนูทั้งหมด</button>
         </nav>
     </div>
@@ -336,7 +344,19 @@ $maximumBillingDueDate = $businessToday->modify('+60 days')->format('Y-m-d');
         <input type="hidden" name="id">
         <input type="hidden" name="expected_version">
         <div class="modal-header"><div><p class="eyebrow">จัดการข้อมูลหลัก</p><h2 id="room-dialog-title">เพิ่มห้องพัก</h2></div><button class="text-control" type="button" data-close-dialog aria-label="ปิด">ปิด</button></div>
-        <div class="form-grid form-grid-two"><label class="field"><span>รหัสห้อง</span><input name="room_code" type="text" maxlength="30" required autocomplete="off"></label><label class="field"><span>ชั้น</span><input name="floor" type="number" min="1" max="200" step="1" required></label><label class="field"><span>ประเภทห้อง</span><input name="room_type" type="text" maxlength="50" required></label><label class="field"><span>รูปแบบการให้เช่า</span><select name="rental_mode"><option value="monthly">รายเดือน</option><option value="daily">รายวัน</option></select><small>แต่ละห้องใช้รูปแบบเดียว เปลี่ยนได้เมื่อไม่มีรายการที่ผูกพัน</small></label><label class="field" data-rental-fields="monthly"><span>ค่าเช่ารายเดือน</span><input name="monthly_rent" type="number" min="0.01" step="0.01" required></label><label class="field" data-rental-fields="daily" hidden><span>ราคาต่อคืน (รวมน้ำและไฟ)</span><input name="daily_rate" type="number" min="0.01" step="0.01" disabled></label><label class="field" data-rental-fields="daily" hidden><span>ผู้พักสูงสุด (คน)</span><input name="max_guests" type="number" min="1" max="20" step="1" value="2" disabled></label><label class="field" data-rental-fields="daily" hidden><span>ค่าประกันต่อการพัก (บาท)</span><input name="daily_deposit" type="number" min="0" step="0.01" value="0.00" disabled></label></div><details class="optional-fields"><summary>รูปห้องและรายละเอียดเพิ่มเติม</summary><div class="form-grid form-grid-two"><label class="field form-span-two"><span>รูปห้อง</span><select name="image_key" required><option value="room-standard.jpg">ห้องมาตรฐาน</option><option value="room-deluxe.jpg">ห้องดีลักซ์</option><option value="room-suite.jpg">ห้องสวีท</option><option value="room-studio.jpg">ห้องสตูดิโอ</option></select></label><label class="field form-span-two"><span>สิ่งอำนวยความสะดวก</span><input name="amenities" type="text" maxlength="500" placeholder="คั่นด้วยจุลภาค เช่น แอร์, ตู้เย็น, เตียง"></label><label class="field form-span-two"><span>รายละเอียด</span><textarea name="description" rows="3" maxlength="1000"></textarea></label></div></details>
+        <p class="field-hint" id="room-rental-help" role="status">รายเดือน: ตั้งค่าเช่าต่อเดือน แล้วรับผู้พักจากเมนู “ผู้พักรายเดือน”</p>
+        <div class="form-grid form-grid-two">
+            <label class="field"><span>รหัสห้อง</span><input name="room_code" type="text" maxlength="30" required autocomplete="off"></label>
+            <label class="field"><span>ชั้น</span><input name="floor" type="number" min="1" max="200" step="1" required></label>
+            <label class="field"><span>ประเภทห้อง</span><input name="room_type" type="text" maxlength="50" required></label>
+            <label class="field"><span>รูปแบบการให้เช่า</span><select name="rental_mode" aria-describedby="room-rental-help"><option value="monthly">รายเดือน</option><option value="daily">รายวัน</option></select><small>แต่ละห้องใช้รูปแบบเดียว ระบบตรวจรายการผูกพันก่อนรับการเปลี่ยนรูปแบบ</small></label>
+            <label class="field" data-rental-fields="monthly"><span>ค่าเช่ารายเดือน (บาท/เดือน)</span><input name="monthly_rent" type="number" min="0.01" step="0.01" required></label>
+            <label class="field" data-rental-fields="daily" hidden><span>ราคาต่อคืน (บาท/คืน) · ต้องกรอก</span><input name="daily_rate" type="number" min="0.01" step="0.01" aria-describedby="room-daily-rate-help" disabled><small id="room-daily-rate-help">รวมค่าน้ำและไฟแล้ว ระบบคิดตามจำนวนคืนที่จอง</small></label>
+            <label class="field" data-rental-fields="daily" hidden><span>ผู้พักสูงสุด (คน) · ต้องกรอก</span><input name="max_guests" type="number" min="1" max="20" step="1" value="2" aria-describedby="room-daily-guests-help" disabled><small id="room-daily-guests-help">1–20 คนต่อห้อง ใช้จำกัดจำนวนผู้พักในการจองรายวัน</small></label>
+            <label class="field" data-rental-fields="daily" hidden><span>ค่าประกันต่อการพัก (บาท)</span><input name="daily_deposit" type="number" min="0" step="0.01" value="0.00" aria-describedby="room-daily-deposit-help" disabled><small id="room-daily-deposit-help">ใส่ 0 หากไม่เก็บ เรียกเก็บครั้งเดียวต่อการจองและจัดการคืนจากรายละเอียดการจอง</small></label>
+        </div>
+        <p class="field-hint">การบันทึกหรือเปลี่ยนรูปแบบห้องไม่สร้างการจองใหม่ ห้องรายวันให้ไปเมนู “จองรายวัน” หลังบันทึกแล้ว</p>
+        <details class="optional-fields"><summary>รูปห้องและรายละเอียดเพิ่มเติม</summary><div class="form-grid form-grid-two"><label class="field form-span-two"><span>รูปห้อง</span><select name="image_key" required><option value="room-standard.jpg">ห้องมาตรฐาน</option><option value="room-deluxe.jpg">ห้องดีลักซ์</option><option value="room-suite.jpg">ห้องสวีท</option><option value="room-studio.jpg">ห้องสตูดิโอ</option></select></label><label class="field form-span-two"><span>สิ่งอำนวยความสะดวก</span><input name="amenities" type="text" maxlength="500" placeholder="คั่นด้วยจุลภาค เช่น แอร์, ตู้เย็น, เตียง"></label><label class="field form-span-two"><span>รายละเอียด</span><textarea name="description" rows="3" maxlength="1000"></textarea></label></div></details>
         <p class="form-error" id="room-form-error" role="alert" hidden></p><div class="form-actions"><button class="button button-ghost" type="button" data-close-dialog>ยกเลิก</button><button class="button button-primary" type="submit">บันทึกห้อง</button></div>
     </form>
 </dialog>

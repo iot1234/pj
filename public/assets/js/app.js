@@ -171,7 +171,7 @@
     METER_HISTORY_LOCKED: 'แก้เลขมิเตอร์นี้ไม่ได้ เพราะมีรอบเดือนถัดไปอ้างอิงแล้ว',
     METER_ALREADY_BILLED: 'แก้เลขมิเตอร์ไม่ได้หลังออกบิลแล้ว',
     METER_OCCUPANCY_MISMATCH: 'เลขมิเตอร์นี้ผูกกับผู้พักคนละรอบและย้ายมาใช้ซ้ำไม่ได้ กรุณาตรวจประวัติห้อง',
-    METER_OPENING_REQUIRED: 'ยังขาดเลขมิเตอร์น้ำและไฟ ณ วันเข้าพัก กรุณาไปหน้า “ผู้พักอาศัย” แล้วกด “เติมเลขเริ่มต้น” ของห้องนี้ก่อนจดมิเตอร์หรือออกบิล',
+    METER_OPENING_REQUIRED: 'ยังขาดเลขมิเตอร์น้ำและไฟ ณ วันเข้าพัก กรุณาไปหน้า “ผู้พักรายเดือน” แล้วกด “เติมเลขเริ่มต้น” ของห้องนี้ก่อนจดมิเตอร์หรือออกบิล',
     METER_TOO_HIGH: 'เลขมิเตอร์เริ่มต้นต้องไม่เกิน 9,999,999.00',
     CURRENT_BILLING_PERIOD_NOT_FINALIZED: 'การออกบิลเดือนปัจจุบันต้องยืนยันว่าจดมิเตอร์ครบและต้องการปิดยอดเดือนนี้แล้ว',
     RESIDENT_CHANGED: 'ข้อมูลผู้พักถูกแก้ไขพร้อมกัน กรุณารีเฟรชแล้วลองใหม่',
@@ -1846,7 +1846,7 @@
       roomListReady: false, roomActionBusy: false, residentListReady: false, residentLoadGeneration: 0, residentCreateOpenGeneration: 0,
     };
     const role = body.dataset.userRole || '';
-    const titles = { overview: 'ภาพรวม', rooms: 'ห้องพัก', bookings: 'การจอง', daily: 'จองรายวัน', residents: 'ผู้พักอาศัย', meters: 'จดมิเตอร์', bills: 'ใบแจ้งหนี้', payments: 'การชำระเงิน', users: 'เจ้าของระบบ', settings: 'ตั้งค่า', 'line-oas': 'บัญชี LINE OA', 'line-bindings': 'การผูก LINE ผู้พัก' };
+    const titles = { overview: 'ภาพรวม', rooms: 'ห้องพัก', bookings: 'จองรายเดือน', daily: 'จองรายวัน', residents: 'ผู้พักรายเดือน', meters: 'จดมิเตอร์รายเดือน', bills: 'บิลรายเดือน', payments: 'ชำระเงินรายเดือน', users: 'เจ้าของระบบ', settings: 'ตั้งค่า', 'line-oas': 'บัญชี LINE OA', 'line-bindings': 'การผูก LINE ผู้พัก' };
     const homeView = 'overview';
     const loaders = {};
     const menuToggles = $$('[data-admin-menu-toggle]');
@@ -1977,7 +1977,7 @@
       });
       ['all', 'available', 'reserved', 'occupied'].forEach((key) => { const node = $(`[data-room-stat="${key}"]`); node.textContent = String(key === 'all' ? state.rooms.length : state.rooms.filter((room) => room.status === key).length); });
       const emptyMessage = state.rooms.length === 0
-        ? 'ยังไม่มีห้อง เริ่มใช้งานตามลำดับ: ตั้งค่า / เพิ่มห้อง / รับจอง / รับเข้าพัก / จดเลขตั้งต้น'
+        ? 'ยังไม่มีห้อง กด “เพิ่มห้องพัก” แล้วเลือกรายวันหรือรายเดือนและตั้งราคา จากนั้นไปเมนูรับจองหรือรับผู้พักที่ตรงกัน'
         : 'ไม่พบห้องที่ตรงกับตัวกรอง';
       setTableState($('#admin-room-state'), visible.length ? 'ready' : 'empty', emptyMessage);
     }
@@ -2028,8 +2028,13 @@
       form.elements.monthly_rent.required = !isDaily;
       form.elements.monthly_rent.disabled = isDaily;
       if (form.elements.daily_rate) { form.elements.daily_rate.required = isDaily; form.elements.daily_rate.disabled = !isDaily; }
+      if (form.elements.max_guests) form.elements.max_guests.required = isDaily;
       ['max_guests', 'daily_deposit'].forEach((key) => { if (form.elements[key]) form.elements[key].disabled = !isDaily; });
       $$('#room-form [data-rental-fields]').forEach((node) => { node.hidden = node.dataset.rentalFields !== (isDaily ? 'daily' : 'monthly'); });
+      const help = $('#room-rental-help');
+      if (help) help.textContent = isDaily
+        ? 'รายวัน: กรอกราคาต่อคืน จำนวนผู้พักสูงสุด และค่าประกัน (0 หากไม่เก็บ) บันทึกห้องแล้วไปเมนู “จองรายวัน” เพื่อสร้างการจอง'
+        : 'รายเดือน: ตั้งค่าเช่าต่อเดือน แล้วรับผู้พักจากเมนู “ผู้พักรายเดือน” การบันทึกห้องยังไม่เพิ่มผู้พักหรือสร้างการจอง';
     }
     $('#room-form').elements.rental_mode?.addEventListener('change', () => syncRoomRentalFields($('#room-form')));
     $('#admin-room-search').addEventListener('input', renderRooms);
@@ -3691,7 +3696,7 @@
         setStat('[data-overview-stat="bookings"]', state.bookingPendingCount);
         setStat('[data-overview-note="bookings"]', state.bookingPendingCount === 0 ? 'ไม่มีคำขอค้าง' : 'รอเจ้าของระบบกดยืนยันหรือยกเลิก');
       } else {
-        failures.push('การจอง');
+        failures.push('จองรายเดือน');
         setStat('[data-overview-stat="bookings"]', '—');
         setStat('[data-overview-note="bookings"]', 'โหลดไม่สำเร็จ');
       }

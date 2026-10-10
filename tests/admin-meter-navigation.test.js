@@ -14,10 +14,10 @@ const end = source.indexOf('function roomMatches(', start);
 assert.ok(start >= 0 && end > start, 'admin navigation function must be available');
 const navigationSource = source.slice(start, end);
 
-function harness({ dirty = true, accept = false } = {}) {
+function harness({ dirty = true, accept = false, dailyBusy = false } = {}) {
   const effects = { confirmations: [], renders: 0, loads: [], menuChanges: 0 };
   const draft = { water: dirty ? '125.00' : '100.00' };
-  const panels = ['meters', 'rooms', 'settings'].map((name) => ({
+  const panels = ['meters', 'rooms', 'settings', 'daily', 'bookings', 'residents', 'bills', 'payments'].map((name) => ({
     dataset: { adminView: name },
     hidden: name !== 'meters',
     active: name === 'meters',
@@ -28,7 +28,7 @@ function harness({ dirty = true, accept = false } = {}) {
   const title = { textContent: '' };
   const resetMeters = () => { effects.renders += 1; draft.water = '100.00'; };
   const context = {
-    titles: { meters: 'จดมิเตอร์', rooms: 'ห้องพัก', settings: 'ตั้งค่า' },
+    titles: vm.runInNewContext(`(${source.slice(source.indexOf('const titles =', source.indexOf('function initAdminConsole()'))).match(/^const titles = (\{[^\n]+\});/)[1]})`),
     role: 'owner',
     app: { classList: { contains: () => false } },
     $: (selector) => selector === '[data-admin-view].is-active'
@@ -38,6 +38,8 @@ function harness({ dirty = true, accept = false } = {}) {
     settingsSaveInProgress: false,
     hasDirtySettings: () => false,
     hasDirtyMeterRows: () => draft.water !== '100.00',
+    daily: { busy: () => dailyBusy, inFlight: () => dailyBusy },
+    toast() {},
     window: { confirm: (message) => { effects.confirmations.push(message); return accept; } },
     renderMeters: resetMeters,
     mobileMenu: { matches: false },
@@ -48,6 +50,11 @@ function harness({ dirty = true, accept = false } = {}) {
     loaders: {
       meters: () => { effects.loads.push('meters'); resetMeters(); },
       rooms: () => { effects.loads.push('rooms'); },
+      daily: () => { effects.loads.push('daily'); },
+      bookings: () => { effects.loads.push('bookings'); },
+      residents: () => { effects.loads.push('residents'); },
+      bills: () => { effects.loads.push('bills'); },
+      payments: () => { effects.loads.push('payments'); },
     },
   };
   vm.createContext(context);
@@ -101,4 +108,23 @@ test('confirmed navigation discards drafts and loads the requested page', () => 
   assert.equal(ui.panels.find((panel) => panel.active).dataset.adminView, 'rooms');
   assert.equal(ui.draft.water, '100.00');
   assert.deepEqual(ui.effects.loads, ['rooms']);
+});
+
+test('overview and room shortcuts resolve to real pages and keep navigation safeguards', () => {
+  const template = fs.readFileSync(path.join(__dirname, '../templates/admin/console.php'), 'utf8');
+  const binding = source.match(/\$\$\('\[data-overview-jump\]'\)\.forEach\([^\n]+/)[0];
+  const destinations = [...new Set([...template.matchAll(/data-overview-jump="([a-z-]+)"/g)].map(match => match[1]))];
+  assert.ok(destinations.includes('daily') && destinations.includes('residents') && destinations.includes('bookings'));
+  for (const name of destinations) {
+    const ui = harness({ dirty: false }), button = { dataset: { overviewJump: name }, addEventListener(_event, callback) { this.click = callback; } };
+    vm.runInNewContext(binding, { $$: () => [button], switchView: ui.navigate }); button.click();
+    assert.equal(ui.panels.find(panel => panel.active).dataset.adminView, name);
+    assert.deepEqual(ui.effects.loads, [name]);
+  }
+  const guarded = harness(), button = { dataset: { overviewJump: 'daily' }, addEventListener(_event, callback) { this.click = callback; } };
+  vm.runInNewContext(binding, { $$: () => [button], switchView: guarded.navigate }); button.click();
+  assert.equal(guarded.panels.find(panel => panel.active).dataset.adminView, 'meters');
+  assert.equal(guarded.draft.water, '125.00'); assert.deepEqual(guarded.effects.loads, []);
+  const pending = harness({ dirty: false, dailyBusy: true });
+  assert.equal(pending.navigate('rooms'), false); assert.deepEqual(pending.effects.loads, []);
 });

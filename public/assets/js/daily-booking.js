@@ -113,9 +113,42 @@
   const readStorage = (key) => { try { return JSON.parse(sessionStorage.getItem(key) || 'null'); } catch (_) { return null; } };
   const writeStorage = (key, value) => { try { value === null ? sessionStorage.removeItem(key) : sessionStorage.setItem(key, JSON.stringify(value)); return true; } catch (_) { return false; } };
   const expiry = (value) => Date.parse(/^\d{4}-\d{2}-\d{2} /.test(String(value || '')) ? String(value).replace(' ', 'T') + 'Z' : value);
+  function bookingGuidance(booking, payment, recovering = false, owner = false) {
+    if (recovering) return ['ตรวจผลรายการเดิมก่อน', 'ยังไม่ทราบผลล่าสุด กดตรวจผลรายการเดิม โดยไม่เริ่มจอง รับเงิน หรือโอนซ้ำ'];
+    if (!booking || !payment) return ['กำลังตรวจสถานะล่าสุด', 'รอข้อมูลการจองและการชำระก่อนทำรายการ'];
+    const guard = paymentGuard(booking, payment);
+    if (guard.pending) return ['รอผลตรวจสลิป', 'ส่งหลักฐานแล้ว ระบบกำลังตรวจ กรุณารอผลและอย่าโอนหรือรับเงินซ้ำ'];
+    if (guard.closed) return [owner ? 'ตรวจหลักฐานเดิมก่อนรับเงินเพิ่ม' : 'ติดต่อหอพักเพื่อตรวจหลักฐานเดิม', owner ? 'ตรวจหรือซ่อมหลักฐานเดิมให้เรียบร้อยก่อนรับเงินเพิ่ม ห้ามให้ผู้พักโอนซ้ำ' : 'เก็บสลิปเดิมและหมายเลขอ้างอิงไว้ติดต่อหอพัก อย่าโอนซ้ำ'];
+    if (booking.status === 'confirmed') return ['ยืนยันการจองแล้ว', owner ? 'รับเงินครบแล้ว เมื่อถึงวันเข้าพักกด “เช็กอิน” ในรายการจอง' : 'มาเข้าพักตามวันที่จอง พร้อมแจ้งหมายเลขอ้างอิงให้หอพัก ไม่ต้องชำระซ้ำ'];
+    if (booking.status === 'checked_in') return ['เข้าพักแล้ว', owner ? 'ก่อนเช็กเอาต์ ตรวจห้องและบันทึกคืนหรือหักค่าประกันให้ครบ แล้วกด “เช็กเอาต์”' : 'เมื่อถึงวันออก ติดต่อหอพักเพื่อตรวจห้องและรับคืนค่าประกันตามผลตรวจ'];
+    if (booking.status === 'checked_out') return ['เช็กเอาต์แล้ว', owner ? 'ทำความสะอาดห้อง แล้วกด “ยืนยันทำความสะอาดเสร็จ” ด้านล่าง' : 'การพักสิ้นสุดแล้ว หากมีข้อสงสัยเรื่องยอดเงิน ให้ติดต่อหอพักด้วยหมายเลขอ้างอิง'];
+    if (booking.status !== 'pending' || expiry(booking.expires_at) <= Date.now()) return ['การจองสิ้นสุดหรือหมดเวลากันห้อง', 'ห้ามโอนเพิ่ม หากโอนแล้วให้ใช้สลิปเดิมตรวจผลและติดต่อหอพักเรื่องคืนเงิน'];
+    if (payment.payment?.status === 'rejected') return ['ตรวจเหตุผลที่สลิปไม่ผ่าน', 'ตรวจหลักฐานเดิมและติดต่อหอพักก่อนโอนเพิ่ม หากโอนถูกต้องแล้วให้ใช้สลิปที่ตรงยอดเดิม'];
+    if (payment.has_transfer_instruction) return ['ตรวจยอดโอนเดิมก่อน', 'ออก QR สำหรับรายการนี้แล้ว หากโอนแล้วให้ส่งสลิปของยอดเดิม ห้ามโอนหรือรับเงินสดซ้ำ'];
+    if (!payment.capabilities.slip_verification_ready || !payment.capabilities.promptpay_ready) return [owner ? (payment.cash_available ? 'รับเงินสดเพื่อยืนยันห้อง' : 'ตรวจสถานะก่อนรับเงิน') : 'ติดต่อหอพักเพื่อชำระเงิน', owner ? (payment.cash_available ? 'ยังไม่เปิดรับชำระออนไลน์ เมื่อรับเงินสดครบและออกใบรับเงินแล้ว ให้บันทึกตามปุ่มด้านล่าง หรือตั้งค่าการรับโอนก่อน' : 'ยังรับชำระเพิ่มไม่ได้ ตรวจสถานะและหลักฐานเดิมก่อนทำรายการ') : 'ยังไม่เปิดรับชำระออนไลน์ สอบถามหอพักเรื่องชำระเงินสดก่อนหมดเวลากันห้อง อย่าโอนเอง'];
+    return ['ชำระเงินเพื่อยืนยันห้อง', owner ? 'เลือกรับเงินสดพร้อมใบรับเงิน หรือแสดง QR ให้ผู้พัก หลังรับครบระบบจะยืนยันการจอง' : 'กด “สร้าง QR ชำระเงิน” โอนตามยอดที่แสดง แล้วส่งสลิปในแท็บนี้ก่อนหมดเวลากันห้อง'];
+  }
+  function showGuidance(h, target, booking, payment, recovering = false, owner = false) {
+    const [title, message] = bookingGuidance(booking, payment, recovering, owner);
+    target.replaceChildren(h.create('strong', '', title), h.create('p', '', message)); target.hidden = false;
+  }
+  function paymentTotals(h, target, payment) {
+    const dl = h.create('dl');
+    [['รับเงินแล้ว', 'received_amount'], ['คืนเงินจริงที่บันทึกแล้ว', 'refunded_amount'], ['ยอดที่คืนได้', 'refundable_amount'], ['ค่าประกันรอคืนหรือหัก', 'deposit_remaining']].forEach(([label, name]) => dl.append(h.create('dt', '', label), h.create('dd', '', h.money(payment[name]))));
+    target.replaceChildren(dl);
+    target.hidden = cents(payment.received_amount) === 0 && cents(payment.refunded_amount) === 0;
+  }
+  function rejectedCreate(error, recovering) {
+    if (!(error.status >= 400 && error.status < 500) || [401, 403, 408, 429].includes(error.status) || ['REQUEST_IN_PROGRESS', 'MUTATION_OUTCOME_UNKNOWN', 'BOOKING_RETRY'].includes(error.details?.code)) return false;
+    if (!recovering) return true;
+    // These create-service errors occur only after looking up the exact key
+    // under the room lock. Generic validation/auth errors cannot prove absence.
+    return (error.status === 409 && ['DAILY_QUOTE_INVALID', 'DAILY_QUOTE_EXPIRED', 'DAILY_QUOTE_CHANGED', 'DAILY_ROOM_NOT_AVAILABLE', 'ROOM_NOT_READY', 'ROOM_NOT_DAILY', 'DAILY_STAY_ENDED'].includes(error.details?.code))
+      || (error.status === 422 && error.details?.code === 'DAILY_GUEST_CAPACITY');
+  }
   function summary(h, target, booking) {
     const dl = h.create('dl');
-    const fields = [['ห้อง', booking.room_code || booking.room_id], ['เช็กอิน', h.formatDate(booking.check_in_date)], ['เช็กเอาต์', h.formatDate(booking.check_out_date)], ['ผู้พัก / จำนวนคืน', `${booking.guests} คน / ${booking.nights} คืน`], ['ราคาต่อคืน', h.money(booking.nightly_rate)], ['ค่าห้องรวม', h.money(booking.room_amount)], ['ค่าประกัน', h.money(booking.deposit_amount)], ['ยอดรวม', h.money(booking.total_amount)]];
+    const fields = [['ห้อง', booking.room_code || booking.room_id], ['วันเข้าพัก', h.formatDate(booking.check_in_date)], ['วันออก', h.formatDate(booking.check_out_date)], ['ผู้พัก / จำนวนคืน', `${booking.guests} คน / ${booking.nights} คืน`], ['ราคาต่อคืน', h.money(booking.nightly_rate)], ['ค่าห้องรวม', h.money(booking.room_amount)], ['ค่าประกัน', h.money(booking.deposit_amount)], ['ยอดรวมค่าห้องและประกัน', h.money(booking.total_amount)]];
     if (booking.reference_no) fields.unshift(['หมายเลขอ้างอิง', booking.reference_no], ['สถานะ', statusNames[booking.status]]);
     fields.forEach(([name, value]) => dl.append(h.create('dt', '', name), h.create('dd', '', String(value)))); target.replaceChildren(dl);
   }
@@ -128,8 +161,14 @@
     const state = { search: null, quote: null, access: readStorage(accessStorageKey), pending: readStorage(pendingStorageKey), uploadRecovery: readStorage(uploadStorageKey), booking: null, payment: null, pollPayment: false, busy: false, detailReady: false, quoteBusy: false };
     if (!state.access || !Number.isSafeInteger(state.access.id) || typeof state.access.token !== 'string' || state.access.token.length < 32) state.access = null;
     if (!state.pending || typeof state.pending.idempotency_key !== 'string' || typeof state.pending.quote_token !== 'string') state.pending = null;
+    if (state.pending) state.pending.outcome_unknown = true;
     if (!state.uploadRecovery || state.uploadRecovery.booking_id !== state.access?.id || !/^[0-9a-f]{64}$/.test(state.uploadRecovery.sha256 || '') || !(state.uploadRecovery.prior_payment_id === null || Number.isSafeInteger(state.uploadRecovery.prior_payment_id))) state.uploadRecovery = null;
     search.elements.check_in_date.min = isoToday(); search.elements.check_in_date.value = isoToday(); search.elements.check_out_date.min = isoDateOffsetDays(1); search.elements.check_out_date.value = isoDateOffsetDays(1);
+    function previewStay() {
+      try { const dates = range(formValues(search)); const nights = (Date.parse(dates.check_out_date) - Date.parse(dates.check_in_date)) / 86400000; $('#daily-search-summary').textContent = `${h.formatDate(dates.check_in_date)} → ${h.formatDate(dates.check_out_date)} · ${nights} คืน · ${dates.guests} คน`; }
+      catch (_) { $('#daily-search-summary').textContent = 'เลือกวันออกหลังวันเข้าพัก และระบุจำนวนผู้พัก เพื่อดูจำนวนคืน'; }
+    }
+    previewStay();
     function clearQuote() { quoteGate.invalidate(); state.quote = null; $('#daily-quote-summary').replaceChildren(); form.querySelector('[type="submit"]').disabled = true; }
     function resetPayment() { $('#daily-payment-panel').hidden = true; $('#daily-qr-stage').replaceChildren(); $('#daily-load-qr').disabled = true; $('#daily-slip-form').hidden = true; state.payment = null; }
     function recovery() { $('#daily-recovery').hidden = !state.pending; if (state.pending) $('#daily-room-grid').replaceChildren(); }
@@ -156,12 +195,14 @@
       if (guard.pending || guard.paid || guard.closed || state.uploadRecovery) $('#daily-qr-stage').replaceChildren();
       uploadRecoveryNotice();
       pendingHold();
+      showGuidance(h, $('#daily-next-step'), state.booking, state.payment, !!state.uploadRecovery);
+      paymentTotals(h, $('#daily-payment-totals'), state.payment);
     }
     async function loadDetail() {
       if (!state.access || state.busy) return;
       const revision = detailGate.next(), access = { ...state.access };
       state.pollPayment = state.pollPayment || state.payment?.payment?.status === 'pending' || !!state.uploadRecovery;
-      state.detailReady = false; state.booking = null; $('#daily-copy-reference').disabled = true; resetPayment(); $('#daily-booking-summary').replaceChildren(create('p', '', 'กำลังตรวจการจอง…')); $('#daily-detail').hidden = false; showFormError($('#daily-detail-error'));
+      state.detailReady = false; state.booking = null; $('#daily-copy-reference').disabled = true; resetPayment(); showGuidance(h, $('#daily-next-step'), null, null); $('#daily-booking-summary').replaceChildren(create('p', '', 'กำลังตรวจการจอง…')); $('#daily-detail').hidden = false; showFormError($('#daily-detail-error'));
       const headers = { 'X-Booking-Access-Token': access.token };
       const results = await Promise.allSettled([api(`/api/public/daily/bookings/${access.id}`, { headers }), api(`/api/public/daily/bookings/${access.id}/payment`, { headers })]);
       if (!detailGate.current(revision)) return;
@@ -173,11 +214,13 @@
         const data = results[1].value; paymentGuard(booking, data);
         if (data.version !== booking.version || data.booking_status !== booking.status) throw new Error('สถานะการจองเปลี่ยนระหว่างโหลด กรุณากดตรวจสถานะล่าสุดอีกครั้งก่อนชำระ');
         state.payment = data; if (uploadResolved(state.uploadRecovery, data.payment)) clearUploadRecovery(); renderPayment();
-      } catch (error) { resetPayment(); showFormError($('#daily-detail-error'), error); }
+      } catch (error) { resetPayment(); $('#daily-next-step').hidden = true; showFormError($('#daily-detail-error'), error); }
     }
     async function submitPending() {
       if (state.busy || !state.pending) return;
+      const wasRecovery = state.pending.outcome_unknown === true;
       const submitted = { ...state.pending }; state.busy = true; setDialogBusy(dialog, true); setFormFieldsBusy(form, true); setBusy(form.querySelector('[type="submit"]'), true); setBusy($('#daily-recover-submit'), true);
+      delete submitted.outcome_unknown;
       showFormError($('#daily-booking-error')); showFormError($('#daily-recovery-error'));
       try {
         const booking = validBooking(await api('/api/public/daily/bookings', { method: 'POST', body: submitted }), submitted);
@@ -186,12 +229,14 @@
         state.pending = null; writeStorage(pendingStorageKey, null); clearQuote(); setDialogBusy(dialog, false); closeDialog(dialog); $('#daily-room-grid').replaceChildren(); recovery();
       } catch (error) {
         showFormError($('#daily-booking-error'), error); showFormError($('#daily-recovery-error'), error);
-        if (error.status >= 400 && error.status < 500 && !['REQUEST_IN_PROGRESS', 'MUTATION_OUTCOME_UNKNOWN', 'BOOKING_RETRY'].includes(error.details?.code)) { state.pending = null; writeStorage(pendingStorageKey, null); clearQuote(); }
+        if (rejectedCreate(error, wasRecovery)) { state.pending = null; writeStorage(pendingStorageKey, null); clearQuote(); }
+        else { state.pending.outcome_unknown = true; saveRecovery(pendingStorageKey, state.pending); }
       } finally { state.busy = false; setDialogBusy(dialog, false); setFormFieldsBusy(form, false); setBusy(form.querySelector('[type="submit"]'), false); form.querySelector('[type="submit"]').disabled = !state.quote || !!state.pending; setBusy($('#daily-recover-submit'), false); recovery(); }
-      if (state.access && !state.pending) await loadDetail();
+      if (state.access && !state.pending) { await loadDetail(); $('#daily-detail').scrollIntoView?.({ block: 'start' }); $('#daily-detail-title').focus?.({ preventScroll: true }); }
     }
     async function chooseRoom(room) {
       if (state.busy || state.pending || state.quoteBusy || !state.search) return;
+      if (state.access) { showFormError($('#daily-search-error'), 'มีการจองเปิดอยู่ในแท็บนี้ หากต้องการจองเพิ่ม ให้กด “จองเพิ่มในแท็บใหม่” ในรายละเอียดการจอง เพื่อเก็บรายการเดิมไว้'); return; }
       if (state.uploadRecovery) { showFormError($('#daily-search-error'), 'ยังไม่ทราบผลหลักฐานการจองเดิม กรุณาตรวจผลก่อนเริ่มการจองใหม่'); return; }
       clearQuote(); const revision = quoteGate.next(), submitted = { ...state.search, room_id: room.id };
       state.quoteBusy = true; openDialog(dialog); showFormError($('#daily-booking-error')); $('#daily-quote-summary').textContent = 'กำลังตรวจราคาและห้องว่าง…'; setDialogBusy(dialog, true);
@@ -199,7 +244,7 @@
       catch (error) { if (quoteGate.current(revision)) { state.quote = null; $('#daily-quote-summary').replaceChildren(); showFormError($('#daily-booking-error'), error); } }
       finally { state.quoteBusy = false; setDialogBusy(dialog, false); }
     }
-    search.addEventListener('input', () => { if (state.busy || state.pending) return; searchGate.invalidate(); setBusy(search.querySelector('[type="submit"]'), false); clearQuote(); state.search = null; $('#daily-room-grid').replaceChildren(); $('#daily-results-note').textContent = 'ช่วงพักเปลี่ยนแล้ว กดค้นหาเพื่อดูห้องล่าสุด'; search.elements.check_out_date.min = search.elements.check_in_date.value; });
+    search.addEventListener('input', (event) => { if (state.busy || state.pending) return; searchGate.invalidate(); setBusy(search.querySelector('[type="submit"]'), false); clearQuote(); state.search = null; $('#daily-room-grid').replaceChildren(); $('#daily-results-note').textContent = 'วันที่หรือจำนวนผู้พักเปลี่ยนแล้ว กดค้นหาห้องว่างอีกครั้ง'; const arrival = search.elements.check_in_date.value; if (/^\d{4}-\d{2}-\d{2}$/.test(arrival) && Number.isFinite(Date.parse(`${arrival}T00:00:00Z`))) { const nextDay = new Date(Date.parse(`${arrival}T00:00:00Z`) + 86400000).toISOString().slice(0, 10); search.elements.check_out_date.min = nextDay; if (event?.target === search.elements.check_in_date && search.elements.check_out_date.value <= arrival) search.elements.check_out_date.value = nextDay; } previewStay(); });
     search.addEventListener('submit', async (event) => {
       event.preventDefault(); if (state.busy || state.pending) return; showFormError($('#daily-search-error')); if (!search.reportValidity()) return;
       let submitted; try { submitted = range(formValues(search)); } catch (error) { showFormError($('#daily-search-error'), error.message); return; }
@@ -207,15 +252,22 @@
       try {
         const items = list(await api(`/api/public/daily/availability?${new URLSearchParams(submitted)}`)); if (!searchGate.current(revision)) return;
         if (!Array.isArray(items) || !items.every((room) => Number.isSafeInteger(room.id) && room.id > 0 && moneyValue(room.nightly_rate))) throw new Error('รายการห้องไม่ครบ กรุณาลองค้นหาใหม่');
-        state.search = submitted; $('#daily-results-note').textContent = items.length ? `พบห้องว่าง ${items.length} ห้องในช่วงที่เลือก` : 'ไม่มีห้องว่างตลอดช่วงพัก ลองเปลี่ยนวันที่';
-        items.forEach((room) => { const card = create('article', 'room-card'), section = create('div', 'room-card-body'); section.append(create('h3', '', `ห้อง ${room.room_code}`), create('p', '', `${room.room_type} · ชั้น ${room.floor}`), create('strong', 'room-price', `${money(room.nightly_rate)}/คืน`)); const button = create('button', 'button button-primary button-full', 'ตรวจราคาและจองห้องนี้'); button.type = 'button'; button.addEventListener('click', () => chooseRoom(room)); section.append(button); if (/^\/assets\/images\/rooms\/room-(?:standard|deluxe|suite|studio)\.jpg$/.test(room.image_url || '')) { const media = create('div', 'room-media'), image = create('img'); image.src = room.image_url; image.alt = `ห้อง ${room.room_code}`; image.loading = 'lazy'; media.append(image); card.append(media); } section.append(create('p', 'field-hint', `พักได้ไม่เกิน ${room.max_guests || submitted.guests} คน · ค่าประกัน ${money(room.deposit_amount)}`)); if (room.description) section.append(create('p', 'room-description', room.description)); card.append(section); $('#daily-room-grid').append(card); });
+        state.search = submitted; $('#daily-results-note').textContent = items.length ? `พบ ${items.length} ห้องที่ว่างตลอดช่วงพัก เลือกห้องเพื่อดูยอดรวมก่อนจอง` : 'ไม่พบห้องสำหรับวันที่และจำนวนผู้พักนี้ ลองเปลี่ยนวันที่หรือจำนวนคน หรือสอบถามหอพักผ่าน LINE';
+        items.forEach((room) => {
+          validQuote(room, { ...submitted, room_id: room.id }, false);
+          const card = create('article', 'room-card'), section = create('div', 'room-card-body');
+          section.append(create('h3', '', `ห้อง ${room.room_code}`), create('p', '', `${room.room_type} · ชั้น ${room.floor}`), create('strong', 'room-price', `${money(room.nightly_rate)}/คืน`), create('p', 'daily-stay-preview', `ยอดรวม ${money(room.total_amount)} สำหรับ ${room.nights} คืน รวมค่าประกันแล้ว`));
+          const button = create('button', 'button button-primary button-full', 'ตรวจราคาและจองห้องนี้'); button.type = 'button'; button.addEventListener('click', () => chooseRoom(room)); section.append(button);
+          if (/^\/assets\/images\/rooms\/room-(?:standard|deluxe|suite|studio)\.jpg$/.test(room.image_url || '')) { const media = create('div', 'room-media'), image = create('img'); image.src = room.image_url; image.alt = `ห้อง ${room.room_code}`; image.loading = 'lazy'; media.append(image); card.append(media); }
+          section.append(create('p', 'field-hint', `พักได้ไม่เกิน ${room.max_guests || submitted.guests} คน · ค่าประกัน ${money(room.deposit_amount)}`)); if (room.description) section.append(create('p', 'room-description', room.description)); card.append(section); $('#daily-room-grid').append(card);
+        });
       } catch (error) { if (searchGate.current(revision)) { state.search = null; $('#daily-room-grid').replaceChildren(); $('#daily-results-note').textContent = 'ยังตรวจห้องว่างไม่ได้'; showFormError($('#daily-search-error'), error); } }
       finally { if (searchGate.current(revision)) setBusy(search.querySelector('[type="submit"]'), false); }
     });
     form.addEventListener('submit', (event) => {
       event.preventDefault(); if (state.busy || state.pending || !state.quote || !form.reportValidity()) return;
       if (expiry(state.quote.quote_expires_at) <= Date.now()) { clearQuote(); showFormError($('#daily-booking-error'), 'ราคาที่ตรวจหมดอายุแล้ว ปิดหน้าต่างและเลือกห้องเพื่อตรวจราคาอีกครั้ง'); return; }
-      state.pending = { ...range(state.quote), room_id: state.quote.room_id, ...formValues(form), quote_token: state.quote.quote_token, idempotency_key: uuid() };
+        state.pending = { ...range(state.quote), room_id: state.quote.room_id, ...formValues(form), quote_token: state.quote.quote_token, idempotency_key: uuid() };
       saveRecovery(pendingStorageKey, state.pending); submitPending();
     });
     $('#daily-recover-submit').addEventListener('click', submitPending); $('#daily-detail-refresh').addEventListener('click', loadDetail);
@@ -252,7 +304,7 @@
     window.setInterval(() => { pendingHold(); if (state.quote && expiry(state.quote.quote_expires_at) <= Date.now() && !state.busy) { clearQuote(); showFormError($('#daily-booking-error'), 'ราคาที่ตรวจหมดอายุแล้ว ปิดหน้าต่างและเลือกห้องเพื่อตรวจราคาอีกครั้ง'); } }, 1000);
     window.setInterval(() => { if (document.visibilityState === 'visible' && (state.pollPayment || state.uploadRecovery) && !state.busy) loadDetail(); }, 10000);
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && state.access) loadDetail(); });
-    recovery(); uploadRecoveryNotice(); if (state.access) loadDetail(); return { loadDetail };
+    recovery(); uploadRecoveryNotice(); if (state.access) loadDetail().then(() => $('#daily-detail').scrollIntoView?.({ block: 'start' })); return { loadDetail };
   }
   function initAdmin(h) {
     const { $, create, api, showFormError, errorMessage, money, isoToday, isoDateOffsetDays, formatDate, setBusy, setFormFieldsBusy, setDialogBusy, openDialog, closeDialog, confirmAction } = h;
@@ -269,6 +321,7 @@
       if (stored.includes(false) && !$('#daily-owner-recovery').hidden) $('#daily-owner-recovery-text').textContent = 'เบราว์เซอร์เก็บคำขอเดิมหลังรีเฟรชไม่ได้ กรุณาเปิดแท็บนี้ไว้และตรวจผลรายการเดิมให้เสร็จ ห้ามรับหรือคืนเงินจริงซ้ำ';
     }
     filter.elements.from.value = isoToday(); filter.elements.to.value = isoDateOffsetDays(14);
+    function setupState() { $('#daily-setup-guide').hidden = !state.ready || state.rooms.length > 0; $('#daily-owner-create').disabled = !state.ready || (!state.rooms.length && !state.createPending && !state.financePending && !state.proofPending); }
     function key(action, payload) { const hash = `${action}:${JSON.stringify(payload)}`; if (!state.keys.has(hash)) state.keys.set(hash, uuid()); return state.keys.get(hash); }
     function button(label, handler, className = 'button button-secondary button-small') { const node = create('button', className, label); node.type = 'button'; node.addEventListener('click', handler); return node; }
     function resetBookingPaging() {
@@ -289,11 +342,13 @@
     function drawBookings() {
       $('#daily-admin-rows').replaceChildren(); state.bookings.forEach((booking) => { const tr = create('tr'); const person = create('div'); person.append(create('strong', '', booking.reference_no), create('p', '', `${booking.full_name} · ${booking.phone}`)); [person, booking.room_code, `${formatDate(booking.check_in_date)} / ${formatDate(booking.check_out_date)}`, `${booking.guests} คน / ${booking.nights} คืน`, money(booking.total_amount), statusNames[booking.status], actionCell(booking)].forEach((value, index) => { const td = create('td'); td.dataset.label = ['การจอง / ผู้พัก', 'ห้อง', 'เช็กอิน / เช็กเอาต์', 'ผู้พัก / จำนวนคืน', 'ยอดรวม', 'สถานะ', 'จัดการ'][index]; typeof value === 'object' ? td.append(value) : td.textContent = String(value); tr.append(td); }); $('#daily-admin-rows').append(tr); });
       $('#daily-admin-note').textContent = `แสดง ${state.bookings.length} รายการตามช่วงและสถานะที่เลือก${state.bookingHasMore ? ' · ยังมีรายการ กดโหลดเพิ่มเติมด้านล่าง' : ' · ครบตามตัวกรองแล้ว'}`;
+      if (!state.bookings.length) { const tr = create('tr'), td = create('td', 'daily-empty-state', state.rooms.length ? 'ไม่มีการจองตามช่วงวันที่และสถานะนี้ เปลี่ยนตัวกรองหรือกด “เพิ่มการจองรายวัน”' : 'ยังไม่มีการจอง เริ่มจากตั้งห้องรายวันตามคำแนะนำด้านบน'); td.colSpan = 7; tr.append(td); $('#daily-admin-rows').append(tr); }
       $('#daily-booking-load-more').hidden = !state.bookingHasMore;
     }
     function drawCalendar(data) {
       const rows = state.rooms, bookings = data?.items || data?.bookings || data?.reservations, blocks = data?.blocks;
       if (!Array.isArray(rows) || !Array.isArray(bookings) || !Array.isArray(blocks)) throw new Error('ข้อมูลปฏิทินไม่ครบ');
+      if (!rows.length) { $('#daily-calendar').replaceChildren(create('p', 'daily-empty-state', 'ปฏิทินจะแสดงหลังตั้งห้องรายวันแล้ว')); $('#daily-housekeeping').replaceChildren(create('p', 'field-hint', 'ตั้งห้องรายวันก่อน จึงจัดการทำความสะอาดและช่วงปิดขายได้')); return; }
       const from = filter.elements.from.value, to = filter.elements.to.value, days = [];
       for (let day = from; day < to && days.length < 90; day = new Date(Date.parse(`${day}T00:00:00Z`) + 86400000).toISOString().slice(0, 10)) days.push(day);
       const table = create('table'), head = create('thead'), heading = create('tr'); heading.append(create('th', '', 'ห้อง')); days.forEach((day) => heading.append(create('th', '', day.slice(5)))); head.append(heading); table.append(head); const body = create('tbody');
@@ -302,7 +357,7 @@
       state.rooms.forEach((room) => { const card = create('article', 'panel stack-form'); card.append(create('strong', '', `ห้อง ${room.room_code}`), create('span', '', room.status === 'occupied' ? 'มีผู้พักอยู่' : room.housekeeping_status === 'cleaning' ? 'รอทำความสะอาด' : 'ทำความสะอาดแล้ว')); if (room.housekeeping_status === 'cleaning') { const payload = { expected_version: Number(room.housekeeping_version) }; payload.idempotency_key = key(`ready:${room.id}`, payload); card.append(button('ยืนยันทำความสะอาดเสร็จ', () => roomAction(`/api/admin/daily/rooms/${room.id}/ready`, payload, 'ยืนยันทำความสะอาดเสร็จ'))); } card.append(button('ปิดขายช่วงวัน', () => blockRoom(room))); blocks.filter((b) => Number(b.room_id) === room.id && !b.released_at).forEach((block) => { const payload = { expected_version: Number(block.version) }; payload.idempotency_key = key(`release:${block.id}`, payload); card.append(create('p', '', `${block.start_date} / ${block.end_date}: ${block.reason || 'ปิดขาย'}`), button('ยกเลิกช่วงปิดขาย', () => roomAction(`/api/admin/daily/blocks/${block.id}/release`, payload, 'ยกเลิกช่วงปิดขาย'))); }); operations.append(card); });
     }
     async function load() {
-      if (state.busy) return; const revision = loadGate.next(); resetBookingPaging(); state.ready = false; state.bookings = []; state.rooms = []; $('#daily-admin-rows').replaceChildren(); $('#daily-calendar').replaceChildren(); $('#daily-housekeeping').replaceChildren(); $('#daily-admin-note').textContent = 'กำลังโหลดรายการและปฏิทิน…'; showFormError($('#daily-admin-error'));
+      if (state.busy) return; const revision = loadGate.next(); resetBookingPaging(); state.ready = false; state.bookings = []; state.rooms = []; setupState(); $('#daily-admin-rows').replaceChildren(); $('#daily-calendar').replaceChildren(); $('#daily-housekeeping').replaceChildren(); $('#daily-admin-note').textContent = 'กำลังโหลดรายการและปฏิทิน…'; showFormError($('#daily-admin-error'));
       for (const name of ['arrivals', 'departures', 'pending', 'cleaning']) $(`[data-daily-count="${name}"]`).textContent = '—';
       const query = formValues(filter), span = (Date.parse(query.to) - Date.parse(query.from)) / 86400000;
       if (!query.from || !query.to || span < 1 || span > 90) { showFormError($('#daily-admin-error'), 'เลือกช่วงวันที่ 1–90 วัน'); return; }
@@ -315,7 +370,8 @@
         const all = results[1].value.items, todayItems = list(results[3].value), today = isoToday(); if (!Array.isArray(todayItems)) throw new Error('ข้อมูลผู้เข้าออกวันนี้ไม่ครบ');
         const values = { arrivals: todayItems.filter((b) => b.check_in_date === today && ['pending', 'confirmed'].includes(b.status)).length, departures: all.filter((b) => b.check_out_date <= today && b.status === 'checked_in').length, pending: all.filter((b) => b.status === 'pending').length, cleaning: state.rooms.filter((r) => r.housekeeping_status === 'cleaning').length };
         Object.entries(values).forEach(([name, value]) => { $(`[data-daily-count="${name}"]`).textContent = value; });
-      } catch (error) { resetBookingPaging(); state.ready = false; state.bookings = []; state.rooms = []; $('#daily-admin-rows').replaceChildren(); $('#daily-calendar').replaceChildren(); $('#daily-housekeeping').replaceChildren(); $('#daily-admin-note').textContent = 'ยังตรวจสถานะล่าสุดไม่ได้ กรุณารีเฟรชก่อนทำรายการ'; showFormError($('#daily-admin-error'), error); }
+        setupState();
+      } catch (error) { resetBookingPaging(); state.ready = false; state.bookings = []; state.rooms = []; setupState(); $('#daily-admin-rows').replaceChildren(); $('#daily-calendar').replaceChildren(); $('#daily-housekeeping').replaceChildren(); $('#daily-admin-note').textContent = 'ยังตรวจสถานะล่าสุดไม่ได้ กรุณารีเฟรชก่อนทำรายการ'; showFormError($('#daily-admin-error'), error); }
     }
     async function loadMoreBookings() {
       if (state.busy || !state.ready || !state.bookingHasMore || !state.bookingQuery || state.bookingPageRequest) return;
@@ -362,15 +418,15 @@
     });
     async function openDetail(booking) { if (state.busy || !state.ready) return; if (state.financePending || state.proofPending) { restoreOwnerPending(); toast('ยังไม่ทราบผลรายการเดิม กรุณากดตรวจผลรายการเดิมก่อนเปิดการจองอื่น', 'error'); return; } state.detail = booking; state.payment = null; state.detailReady = false; state.closePayment = null; state.restorePayment = null; for (const id of ['daily-cash-form', 'daily-refund-form', 'daily-deposit-form', 'daily-close-form', 'daily-owner-upload-form', 'daily-owner-restore-form']) { $(`#${id}`).reset(); h.rememberDialogDraft?.($(`#${id}`)); } summary(h, $('#daily-owner-detail-summary'), booking); openDialog($('#daily-owner-detail-dialog')); await loadPayment(); }
     async function loadPayment() {
-      if (!state.detail || state.busy) return; const revision = detailGate.next(), id = state.detail.id; state.detailReady = false; $('#daily-owner-payment-actions').hidden = true; $('#daily-owner-slip-actions').replaceChildren(); $('#daily-owner-qr-stage').replaceChildren(); $('#daily-owner-load-qr').disabled = true; $('#daily-owner-payment-status').textContent = 'กำลังตรวจยอดและหลักฐาน…'; showFormError($('#daily-owner-detail-error'));
-      try { const data = await api(`/api/admin/daily/bookings/${id}/payment`); if (!detailGate.current(revision) || state.detail.id !== id) return; if (statusNames[data.booking_status] && Number.isInteger(data.version)) { state.detail = { ...state.detail, status: data.booking_status, version: data.version }; summary(h, $('#daily-owner-detail-summary'), state.detail); } const guard = paymentGuard(state.detail, data); state.payment = data; state.detailReady = true; $('#daily-owner-payment-status').textContent = `${guard.paid ? 'ได้รับเงินครบ' : guard.pending ? 'กำลังตรวจสลิป ห้ามรับยอดซ้ำ' : 'ยังไม่ได้รับเงินครบ'} · รับแล้ว ${money(data.received_amount)} · คืนแล้ว ${money(data.refunded_amount)} · คืนได้ ${money(data.refundable_amount)} · ค่าประกันคงเหลือ ${money(data.deposit_remaining)}`;
+      if (!state.detail || state.busy) return; const revision = detailGate.next(), id = state.detail.id; state.detailReady = false; $('#daily-owner-next-step').hidden = true; $('#daily-owner-payment-totals').replaceChildren(); $('#daily-owner-payment-actions').hidden = true; $('#daily-owner-slip-actions').replaceChildren(); $('#daily-owner-qr-stage').replaceChildren(); $('#daily-owner-load-qr').disabled = true; $('#daily-owner-payment-status').textContent = 'กำลังตรวจยอดและหลักฐาน…'; showFormError($('#daily-owner-detail-error'));
+      try { const data = await api(`/api/admin/daily/bookings/${id}/payment`); if (!detailGate.current(revision) || state.detail.id !== id) return; if (statusNames[data.booking_status] && Number.isInteger(data.version)) { state.detail = { ...state.detail, status: data.booking_status, version: data.version }; summary(h, $('#daily-owner-detail-summary'), state.detail); } const guard = paymentGuard(state.detail, data); state.payment = data; state.detailReady = true; $('#daily-owner-payment-status').textContent = guard.paid ? 'ได้รับเงินครบแล้ว' : guard.pending ? 'กำลังตรวจสลิป ห้ามรับยอดซ้ำ' : 'ยังไม่ได้รับเงินครบ'; paymentTotals(h, $('#daily-owner-payment-totals'), data); showGuidance(h, $('#daily-owner-next-step'), state.detail, data, !!state.financePending || !!state.proofPending, true);
         if (data.has_transfer_instruction && !guard.paid && !guard.pending) $('#daily-owner-payment-status').textContent += ' · ออก QR รับโอนแล้ว ห้ามรับเงินสดซ้ำ กรุณาดูรายการโอนเดิมก่อน';
         if (data.has_closed_unresolved) $('#daily-owner-payment-status').textContent += ' · มีหลักฐานพักการตรวจที่ยังต้องทบทวน ห้ามรับเงินหรือให้โอนซ้ำ';
         if (state.proofPending?.action === 'upload' && uploadResolved(state.proofPending, data.payment)) { state.proofPending = null; saveOwnerPending(); $('#daily-owner-detail-dialog').dataset.preserveData = 'false'; }
         $('#daily-owner-payment-actions').hidden = false; $('#daily-cash-form').hidden = state.financePending?.action !== 'cash' && (data.cash_available !== true || guard.paid || guard.pending || state.detail.status !== 'pending' || expiry(state.detail.expires_at) <= Date.now()); $('#daily-refund-form').hidden = state.financePending?.action !== 'refund' && !(Number(data.refundable_amount) > 0); $('#daily-deposit-form').hidden = state.financePending?.action !== 'deposit-settlement' && (state.detail.status !== 'checked_in' || !(Number(data.deposit_remaining) > 0));
         $('#daily-close-form').hidden = state.financePending?.action !== 'close'; $('#daily-owner-restore-form').hidden = state.proofPending?.action !== 'restore'; $('#daily-owner-upload-form').hidden = state.proofPending?.action !== 'upload' && !(data.can_owner_upload === true && data.capabilities.slip_verification_ready);
         $('#daily-owner-load-qr').disabled = !guard.mayTransfer || !!state.financePending || !!state.proofPending;
-        $('#daily-owner-bank-help').textContent = guard.closed ? 'ทบทวนหลักฐานที่พักการตรวจหรือซ่อมไฟล์ต้นฉบับก่อน ห้ามรับเงินหรือให้โอนซ้ำ' : !data.capabilities.slip_verification_ready ? (data.has_transfer_instruction ? 'ระบบตรวจสลิปยังไม่พร้อม กรุณาตั้งค่าให้ครบแล้วตรวจหลักฐานเดิม ห้ามรับเงินสดซ้ำ' : 'ยังไม่ได้เปิดรับโอนรายวัน กรุณารับเงินสดพร้อมใบรับเงิน หรือไปหน้าตั้งค่าเพื่อเปิดระบบตรวจสลิปก่อน') : data.has_transfer_instruction ? 'มี QR พร้อมยอดเดิมแล้ว หากผู้พักโอนแล้วให้ส่งหลักฐานเดิม ห้ามรับเงินสดซ้ำ' : 'เลือกรับเงินสดพร้อมใบรับเงิน หรือแสดง QR เพื่อให้ผู้พักโอนตามยอดที่ระบบกันไว้';
+        $('#daily-owner-bank-help').textContent = guard.paid ? 'รับเงินครบแล้ว ไม่ต้องรับเพิ่มหรือให้ผู้พักโอนซ้ำ ตรวจยอดคืนและค่าประกันตามสถานะล่าสุด' : guard.pending ? 'กำลังตรวจสลิปที่ส่งแล้ว รอผลก่อน ห้ามรับเงินสดหรือให้ผู้พักโอนซ้ำ' : guard.closed ? 'ทบทวนหลักฐานที่พักการตรวจหรือซ่อมไฟล์ต้นฉบับก่อน ห้ามรับเงินหรือให้โอนซ้ำ' : !data.capabilities.slip_verification_ready ? (data.has_transfer_instruction ? 'ระบบตรวจสลิปยังไม่พร้อม กรุณาตั้งค่าให้ครบแล้วตรวจหลักฐานเดิม ห้ามรับเงินสดซ้ำ' : data.cash_available ? 'ยังไม่ได้เปิดรับโอนรายวัน รับเงินสดพร้อมใบรับเงินได้ หรือไปหน้าตั้งค่าเพื่อเปิดระบบตรวจสลิปก่อน' : 'ยังรับเงินเพิ่มไม่ได้ ตรวจสถานะและหลักฐานเดิมก่อน') : data.has_transfer_instruction ? 'มี QR พร้อมยอดเดิมแล้ว หากผู้พักโอนแล้วให้ส่งหลักฐานเดิม ห้ามรับเงินสดซ้ำ' : 'เลือกรับเงินสดพร้อมใบรับเงิน หรือแสดง QR เพื่อให้ผู้พักโอนตามยอดที่ระบบกันไว้';
         $('#daily-refund-form').elements.amount.max = data.refundable_amount; $('#daily-deposit-form').elements.retained_amount.max = data.deposit_remaining;
         const evidenceRows = [data.payment, ...(Array.isArray(data.closed_payments) ? data.closed_payments : [])].filter((row, index, rows) => row?.method === 'slip' && rows.findIndex(other => other?.id === row.id) === index);
         if (state.proofPending?.action === 'restore' && evidenceRows.some(row=>row.id===state.proofPending.payment_id&&row.evidence_available===true)) { state.proofPending=null;saveOwnerPending();$('#daily-owner-detail-dialog').dataset.preserveData='false';$('#daily-owner-restore-form').hidden=true; }
@@ -438,10 +494,11 @@
     }
     $('#daily-owner-upload-form').addEventListener('submit', event => { event.preventDefault(); submitOwnerProof('upload', event.currentTarget); });
     $('#daily-owner-restore-form').addEventListener('submit', event => { event.preventDefault(); submitOwnerProof('restore', event.currentTarget); });
-    filter.addEventListener('input', () => { if (state.busy) return; loadGate.invalidate(); resetBookingPaging(); state.ready = false; $('#daily-admin-rows').replaceChildren(); $('#daily-calendar').replaceChildren(); $('#daily-housekeeping').replaceChildren(); $('#daily-admin-note').textContent = 'ตัวกรองเปลี่ยนแล้ว กดแสดงรายการก่อนทำรายการ'; });
+    filter.addEventListener('input', () => { if (state.busy) return; loadGate.invalidate(); resetBookingPaging(); state.ready = false; setupState(); $('#daily-admin-rows').replaceChildren(); $('#daily-calendar').replaceChildren(); $('#daily-housekeeping').replaceChildren(); $('#daily-admin-note').textContent = 'ตัวกรองเปลี่ยนแล้ว กดแสดงรายการก่อนทำรายการ'; });
     filter.addEventListener('submit', (event) => { event.preventDefault(); if (filter.reportValidity()) load(); });
     function clearOwnerQuote() { ownerQuoteGate.invalidate(); state.ownerQuote = null; $('#daily-owner-quote-summary').replaceChildren(); createForm.querySelector('[type="submit"]').disabled = true; }
-    createForm.addEventListener('input', () => { if (!state.busy && !state.createPending) clearOwnerQuote(); });
+    function ownerRoomHelp() { const room = state.rooms.find(row => String(row.id) === String(createForm.elements.room_id.value)); const capacity = Number(room?.max_guests); createForm.elements.guests.max = Number.isInteger(capacity) && capacity >= 1 && capacity <= 20 ? capacity : 20; $('#daily-owner-room-help').textContent = room ? `ห้อง ${room.room_code} · พักได้ไม่เกิน ${createForm.elements.guests.max} คน · ${money(room.daily_rate)}/คืน` : 'เลือกห้องเพื่อดูจำนวนผู้พักสูงสุด'; }
+    createForm.addEventListener('input', (event) => { if (!state.busy && !state.createPending) { clearOwnerQuote(); ownerRoomHelp(); const arrival = createForm.elements.check_in_date.value; if (/^\d{4}-\d{2}-\d{2}$/.test(arrival) && Number.isFinite(Date.parse(`${arrival}T00:00:00Z`))) { const nextDay = new Date(Date.parse(`${arrival}T00:00:00Z`) + 86400000).toISOString().slice(0, 10); createForm.elements.check_out_date.min = nextDay; if (event?.target === createForm.elements.check_in_date && createForm.elements.check_out_date.value <= arrival) createForm.elements.check_out_date.value = nextDay; } } });
     $('#daily-owner-review').addEventListener('click', async () => {
       if (state.busy || state.createPending || !createForm.reportValidity()) return; clearOwnerQuote(); let submitted; try { const fields = formValues(createForm); submitted = { ...range(fields), room_id: Number(fields.room_id) }; } catch (error) { showFormError($('#daily-owner-create-error'), error.message); return; }
       const revision = ownerQuoteGate.next(); state.busy = true; setDialogBusy($('#daily-owner-create-dialog'), true); setFormFieldsBusy(createForm, true); setBusy($('#daily-owner-review'), true); showFormError($('#daily-owner-create-error'));
@@ -456,15 +513,16 @@
       else if (state.proofPending) { state.detail = { ...state.proofPending.booking }; state.restorePayment = state.proofPending.payment_id ? { id: state.proofPending.payment_id, booking_id: state.detail.id } : null; if(state.proofPending.action==='restore')$('#daily-owner-restore-summary').textContent=`ตรวจผลซ่อมหลักฐาน ${state.proofPending.payment_id} ด้วยไฟล์ต้นฉบับเดิม`; summary(h, $('#daily-owner-detail-summary'), state.detail); $('#daily-owner-detail-dialog').dataset.preserveData = 'true'; openDialog($('#daily-owner-detail-dialog')); loadPayment(); }
     }
     $('#daily-owner-recovery-open').addEventListener('click', restoreOwnerPending);
-    $('#daily-owner-create').addEventListener('click', () => { if (!state.ready || state.busy) return; if (state.createPending || state.financePending || state.proofPending) { restoreOwnerPending(); return; } createForm.reset(); clearOwnerQuote(); const select = createForm.elements.room_id; select.replaceChildren(); state.rooms.forEach((room) => { const option = create('option', '', `ห้อง ${room.room_code} · ${money(room.daily_rate)}/คืน`); option.value = room.id; select.append(option); }); createForm.elements.check_in_date.value = isoToday(); createForm.elements.check_out_date.value = isoDateOffsetDays(1); createForm.elements.check_in_date.min = isoToday(); h.rememberDialogDraft?.(createForm); showFormError($('#daily-owner-create-error')); openDialog($('#daily-owner-create-dialog')); });
-    createForm.addEventListener('submit', async (event) => { event.preventDefault(); if (state.busy || (!state.createPending && (!state.ownerQuote || !createForm.reportValidity()))) return; let payload; try { if (state.createPending) payload = { ...state.createPending }; else { if (expiry(state.ownerQuote.quote_expires_at) <= Date.now()) { clearOwnerQuote(); throw new Error('ราคาที่ตรวจหมดอายุ กรุณาตรวจยอดใหม่'); } const fields = formValues(createForm); payload = { ...fields, ...range(fields), room_id: Number(fields.room_id), quote_token: state.ownerQuote.quote_token }; payload.idempotency_key = key('owner-create', payload); state.createPending = { ...payload }; } } catch (error) { showFormError($('#daily-owner-create-error'), error.message); return; }
+    $('#daily-owner-create').addEventListener('click', () => { if (!state.ready || state.busy) return; if (state.createPending || state.financePending || state.proofPending) { restoreOwnerPending(); return; } if (!state.rooms.length) return; createForm.reset(); clearOwnerQuote(); const select = createForm.elements.room_id; select.replaceChildren(); const placeholder = create('option', '', 'เลือกห้องรายวัน'); placeholder.value = ''; select.append(placeholder); state.rooms.forEach((room) => { const option = create('option', '', `ห้อง ${room.room_code} · ${money(room.daily_rate)}/คืน`); option.value = room.id; select.append(option); }); select.value = ''; createForm.elements.check_in_date.value = isoToday(); createForm.elements.check_out_date.value = isoDateOffsetDays(1); createForm.elements.check_in_date.min = isoToday(); createForm.elements.check_out_date.min = isoDateOffsetDays(1); ownerRoomHelp(); h.rememberDialogDraft?.(createForm); showFormError($('#daily-owner-create-error')); openDialog($('#daily-owner-create-dialog')); });
+    createForm.addEventListener('submit', async (event) => { event.preventDefault(); if (state.busy || (!state.createPending && (!state.ownerQuote || !createForm.reportValidity()))) return; const wasRecovery = !!state.createPending; let createdBooking = null; let payload; try { if (state.createPending) payload = { ...state.createPending }; else { if (expiry(state.ownerQuote.quote_expires_at) <= Date.now()) { clearOwnerQuote(); throw new Error('ราคาที่ตรวจหมดอายุ กรุณาตรวจยอดใหม่'); } const fields = formValues(createForm); payload = { ...fields, ...range(fields), room_id: Number(fields.room_id), quote_token: state.ownerQuote.quote_token }; payload.idempotency_key = key('owner-create', payload); state.createPending = { ...payload }; } } catch (error) { showFormError($('#daily-owner-create-error'), error.message); return; }
       state.busy = true; saveOwnerPending(); const dialog = $('#daily-owner-create-dialog'); setDialogBusy(dialog, true); setFormFieldsBusy(createForm, true); setBusy(createForm.querySelector('[type="submit"]'), true); showFormError($('#daily-owner-create-error'));
-      try { validBooking(await api('/api/admin/daily/bookings', { method: 'POST', body: payload }), payload); state.createPending = null; saveOwnerPending(); dialog.dataset.preserveData = 'false'; setDialogBusy(dialog, false); closeDialog(dialog); createForm.reset(); h.rememberDialogDraft?.(createForm); clearOwnerQuote(); toast('สร้างการจองรายวันแล้ว'); }
-      catch (error) { showFormError($('#daily-owner-create-error'), error); if (error.status >= 400 && error.status < 500 && !['MUTATION_OUTCOME_UNKNOWN', 'REQUEST_IN_PROGRESS', 'BOOKING_RETRY'].includes(error.details?.code)) { state.createPending = null; saveOwnerPending(); } }
+      try { createdBooking = validBooking(await api('/api/admin/daily/bookings', { method: 'POST', body: payload }), payload); state.createPending = null; saveOwnerPending(); dialog.dataset.preserveData = 'false'; setDialogBusy(dialog, false); closeDialog(dialog); createForm.reset(); h.rememberDialogDraft?.(createForm); clearOwnerQuote(); toast('สร้างการจองแล้ว เปิดรายละเอียดเพื่อรับเงินและยืนยันห้อง'); }
+      catch (error) { showFormError($('#daily-owner-create-error'), error); if (rejectedCreate(error, wasRecovery)) { state.createPending = null; saveOwnerPending(); } }
       finally { state.busy = false; setDialogBusy(dialog, false); dialog.dataset.preserveData = String(!!state.createPending); if (!state.createPending) setFormFieldsBusy(createForm, false); setBusy(createForm.querySelector('[type="submit"]'), false); createForm.querySelector('[type="submit"]').textContent = state.createPending ? 'ตรวจผลคำขอเดิม' : 'สร้างการจองตามยอดนี้'; createForm.querySelector('[type="submit"]').disabled = !state.createPending && !state.ownerQuote; $('#daily-owner-review').disabled = !!state.createPending; await load(); }
+      if (createdBooking && state.ready) await openDetail(createdBooking);
     });
     ownerRecoveryNotice();
     return { load, busy: () => state.busy || !!state.createPending || !!state.financePending || !!state.proofPending, inFlight: () => state.busy };
   }
-  window.DormDaily = { initPublic, initAdmin, range, validQuote, validBooking, bookingPage, validTransfer, validPaymentRecord, validFinanceOutcome, paymentGuard, uploadResolved, bookingActions, calendarStay, gate, feedback };
+  window.DormDaily = { initPublic, initAdmin, range, validQuote, validBooking, bookingPage, validTransfer, validPaymentRecord, validFinanceOutcome, paymentGuard, uploadResolved, bookingActions, bookingGuidance, calendarStay, gate, feedback };
 })();
