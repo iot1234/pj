@@ -17,7 +17,7 @@ const navigationSource = source.slice(start, end);
 function harness({ dirty = true, accept = false, dailyBusy = false } = {}) {
   const effects = { confirmations: [], renders: 0, loads: [], menuChanges: 0 };
   const draft = { water: dirty ? '125.00' : '100.00' };
-  const panels = ['meters', 'rooms', 'settings', 'daily', 'bookings', 'residents', 'bills', 'payments'].map((name) => ({
+  const panels = ['workspace', 'overview', 'meters', 'rooms', 'settings', 'daily', 'daily-overview', 'daily-rooms', 'daily-revenue', 'monthly-revenue', 'bookings', 'residents', 'bills', 'payments'].map((name) => ({
     dataset: { adminView: name },
     hidden: name !== 'meters',
     active: name === 'meters',
@@ -26,15 +26,18 @@ function harness({ dirty = true, accept = false, dailyBusy = false } = {}) {
     },
   }));
   const title = { textContent: '' };
+  const groups = ['monthly', 'daily'].map(mode => ({ dataset: { rentalNavGroup: mode }, hidden: true }));
+  const footer = ['monthly', 'daily'].map(mode => ({ dataset: { rentalNavMode: mode }, hidden: true }));
+  const monthlySettings = { hidden: false };
   const resetMeters = () => { effects.renders += 1; draft.water = '100.00'; };
   const context = {
     titles: vm.runInNewContext(`(${source.slice(source.indexOf('const titles =', source.indexOf('function initAdminConsole()'))).match(/^const titles = (\{[^\n]+\});/)[1]})`),
     role: 'owner',
-    app: { classList: { contains: () => false } },
+    app: { dataset: {}, classList: { contains: () => false } },
     $: (selector) => selector === '[data-admin-view].is-active'
       ? panels.find((panel) => panel.active)
-      : selector === '#admin-page-title' ? title : null,
-    $$: (selector) => selector === '[data-admin-view]' ? panels : [],
+      : selector === '#admin-page-title' ? title : selector === '#settings-form' ? monthlySettings : null,
+    $$: (selector) => selector === '[data-admin-view]' ? panels : selector === '[data-rental-nav-group]' ? groups : selector === '[data-rental-nav-mode]' ? footer : [],
     settingsSaveInProgress: false,
     hasDirtySettings: () => false,
     hasDirtyMeterRows: () => draft.water !== '100.00',
@@ -43,11 +46,17 @@ function harness({ dirty = true, accept = false, dailyBusy = false } = {}) {
     window: { confirm: (message) => { effects.confirmations.push(message); return accept; } },
     renderMeters: resetMeters,
     mobileMenu: { matches: false },
-    homeView: 'overview',
+    homeView: 'workspace',
     location: { hash: '#meters' },
     setAdminMenu: () => { effects.menuChanges += 1; },
     state: { loaded: new Set(['meters', 'rooms']) },
     loaders: {
+      workspace: () => { effects.loads.push('workspace'); },
+      overview: () => { effects.loads.push('overview'); },
+      'daily-overview': () => { effects.loads.push('daily-overview'); },
+      'daily-rooms': () => { effects.loads.push('daily-rooms'); },
+      'daily-revenue': () => { effects.loads.push('daily-revenue'); },
+      'monthly-revenue': () => { effects.loads.push('monthly-revenue'); },
       meters: () => { effects.loads.push('meters'); resetMeters(); },
       rooms: () => { effects.loads.push('rooms'); },
       daily: () => { effects.loads.push('daily'); },
@@ -59,7 +68,7 @@ function harness({ dirty = true, accept = false, dailyBusy = false } = {}) {
   };
   vm.createContext(context);
   vm.runInContext(`${navigationSource}\nglobalThis.navigate = switchView;`, context);
-  return { effects, draft, panels, navigate: context.navigate };
+  return { effects, draft, panels, groups, footer, monthlySettings, state: context.state, app: context.app, navigate: context.navigate };
 }
 
 test('clicking the active meter menu keeps draft readings when discard is cancelled', () => {
@@ -127,4 +136,33 @@ test('overview and room shortcuts resolve to real pages and keep navigation safe
   assert.equal(guarded.draft.water, '125.00'); assert.deepEqual(guarded.effects.loads, []);
   const pending = harness({ dirty: false, dailyBusy: true });
   assert.equal(pending.navigate('rooms'), false); assert.deepEqual(pending.effects.loads, []);
+});
+
+test('selected workspaces show only their own menus and preserve context in shared settings', () => {
+  const ui = harness({ dirty: false });
+  assert.equal(ui.navigate('daily-overview'), true);
+  assert.equal(ui.app.dataset.rentalWorkspace, 'daily');
+  assert.equal(ui.groups.find(g => g.dataset.rentalNavGroup === 'monthly').hidden, true);
+  assert.equal(ui.groups.find(g => g.dataset.rentalNavGroup === 'daily').hidden, false);
+  assert.equal(ui.footer.find(g => g.dataset.rentalNavMode === 'monthly').hidden, true);
+  assert.equal(ui.monthlySettings.hidden, true);
+  assert.equal(ui.navigate('settings'), true);
+  assert.equal(ui.app.dataset.rentalWorkspace, 'daily');
+  assert.equal(ui.monthlySettings.hidden, true);
+  assert.equal(ui.navigate('monthly-revenue'), true);
+  assert.equal(ui.app.dataset.rentalWorkspace, 'monthly');
+  assert.equal(ui.groups.find(g => g.dataset.rentalNavGroup === 'daily').hidden, true);
+  assert.equal(ui.monthlySettings.hidden, false);
+  assert.equal(ui.navigate('workspace'), true);
+  assert.equal(ui.app.dataset.rentalWorkspace, 'chooser');
+  assert.equal(ui.groups.every(g => g.hidden), true);
+  assert.equal(ui.footer.every(g => g.hidden), true);
+});
+
+test('a pending room write cannot switch workspace or repaint its menu context', () => {
+  const ui = harness({ dirty: false });
+  ui.navigate('rooms'); ui.state.roomActionBusy = true;
+  assert.equal(ui.navigate('daily-rooms'), false);
+  assert.equal(ui.app.dataset.rentalWorkspace, 'monthly');
+  assert.equal(ui.groups.find(g => g.dataset.rentalNavGroup === 'daily').hidden, true);
 });

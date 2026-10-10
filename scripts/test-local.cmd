@@ -54,6 +54,12 @@ echo === Daily booking unit and capability contracts; no live database ===
 "%PHP_EXE%" -c "%PHPRC%" tests/daily_booking_unit.php
 set "RESULT=%ERRORLEVEL%"
 if not "%RESULT%"=="0" goto cleanup
+"%PHP_EXE%" -c "%PHPRC%" tests/room_scope_unit.php
+set "RESULT=%ERRORLEVEL%"
+if not "%RESULT%"=="0" goto cleanup
+"%PHP_EXE%" -c "%PHPRC%" tests/revenue_unit.php
+set "RESULT=%ERRORLEVEL%"
+if not "%RESULT%"=="0" goto cleanup
 echo === Phone-only deployment configuration; no live database ===
 "%PHP_EXE%" -c "%PHPRC%" tests/phone_config_readiness.php
 set "RESULT=%ERRORLEVEL%"

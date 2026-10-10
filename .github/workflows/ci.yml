@@ -25,6 +25,7 @@ jobs:
           docker run --rm --volume "$PWD:/workspace:ro" --workdir /workspace \
             node:24-bookworm-slim sh -ec '
               node --check public/assets/js/app.js
+              node --check public/assets/js/rental-workspaces.js
               node --test tests/*.test.js
             '
 
@@ -127,6 +128,10 @@ jobs:
             tests/phone_config_readiness.php
           docker run --rm --entrypoint php dormitory-ci:${{ github.sha }} \
             tests/daily_booking_unit.php
+          docker run --rm --entrypoint php dormitory-ci:${{ github.sha }} \
+            tests/room_scope_unit.php
+          docker run --rm --entrypoint php dormitory-ci:${{ github.sha }} \
+            tests/revenue_unit.php
 
       - name: Run worker, billing CLI, and install bundle contract tests
         run: |

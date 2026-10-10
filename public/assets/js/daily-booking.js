@@ -361,11 +361,12 @@
       for (const name of ['arrivals', 'departures', 'pending', 'cleaning']) $(`[data-daily-count="${name}"]`).textContent = '—';
       const query = formValues(filter), span = (Date.parse(query.to) - Date.parse(query.from)) / 86400000;
       if (!query.from || !query.to || span < 1 || span > 90) { showFormError($('#daily-admin-error'), 'เลือกช่วงวันที่ 1–90 วัน'); return; }
-      const results = await Promise.allSettled([api(`/api/admin/daily/bookings?${new URLSearchParams(query)}`), api(`/api/admin/daily/calendar?${new URLSearchParams({ from: query.from, to: query.to })}`), api('/api/admin/rooms'), api(`/api/admin/daily/bookings?${new URLSearchParams({ from: isoDateOffsetDays(-1), to: isoDateOffsetDays(1) })}`)]); if (!loadGate.current(revision)) return;
+      const results = await Promise.allSettled([api(`/api/admin/daily/bookings?${new URLSearchParams(query)}`), api(`/api/admin/daily/calendar?${new URLSearchParams({ from: query.from, to: query.to })}`), api('/api/admin/daily/rooms'), api(`/api/admin/daily/bookings?${new URLSearchParams({ from: isoDateOffsetDays(-1), to: isoDateOffsetDays(1) })}`)]); if (!loadGate.current(revision)) return;
       try {
         for (const result of results) if (result.status !== 'fulfilled') throw result.reason;
         const page = bookingPage(results[0].value), rooms = list(results[2].value) || results[2].value?.rooms;
         if (!Array.isArray(rooms)) throw new Error('ข้อมูลห้องและการจองไม่ครบ');
+        if (rooms.some(room => room.rental_mode !== 'daily')) throw new Error('รายการห้องไม่ตรงส่วนงานรายวัน กรุณาโหลดใหม่');
         state.bookings = page.items; state.bookingOffset = page.nextOffset; state.bookingHasMore = page.hasMore; state.bookingQuery = { ...query }; state.rooms = rooms.filter((room) => room.rental_mode === 'daily'); state.ready = true; drawBookings(); drawCalendar(results[1].value);
         const all = results[1].value.items, todayItems = list(results[3].value), today = isoToday(); if (!Array.isArray(todayItems)) throw new Error('ข้อมูลผู้เข้าออกวันนี้ไม่ครบ');
         const values = { arrivals: todayItems.filter((b) => b.check_in_date === today && ['pending', 'confirmed'].includes(b.status)).length, departures: all.filter((b) => b.check_out_date <= today && b.status === 'checked_in').length, pending: all.filter((b) => b.status === 'pending').length, cleaning: state.rooms.filter((r) => r.housekeeping_status === 'cleaning').length };

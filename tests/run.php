@@ -2296,7 +2296,7 @@ $test('pending or verified slips suppress irrelevant payment configuration warni
     $same(false,str_contains($notice,'if (!paymentConfigurationReady) {'));
 });
 
-$test('admin console opens on an overview that surfaces pending work and worker health',function()use($same):void{
+$test('admin console opens on separate workspaces and preserves monthly pending work and worker health',function()use($same):void{
     $root=dirname(__DIR__);
     $admin=file_get_contents($root.'/templates/admin/console.php');
     $js=file_get_contents($root.'/public/assets/js/app.js');
@@ -2306,12 +2306,13 @@ $test('admin console opens on an overview that surfaces pending work and worker 
         if(!is_string($source))throw new RuntimeException("cannot read {$name} overview source");
     }
 
-    // The landing view is the overview, and every other view starts hidden so a
+    // The landing view is the workspace chooser, and every other view starts hidden so a
     // failed script load cannot reveal several stacked sections at once.
-    $same(true,str_contains($admin,'<section class="admin-view is-active" data-admin-view="overview" aria-labelledby="overview-title">'));
+    $same(true,str_contains($admin,'<section class="admin-view is-active" data-admin-view="workspace" aria-labelledby="workspace-title">'));
+    $same(true,str_contains($admin,'<section class="admin-view" data-admin-view="overview" aria-labelledby="overview-title" hidden>'));
     $same(true,str_contains($admin,'<section class="admin-view" data-admin-view="rooms" aria-labelledby="rooms-title" hidden>'));
     $same(1,preg_match_all('/class="admin-view is-active"/',$admin));
-    $same(11,preg_match_all('/data-admin-view="/',$admin));
+    $same(13,preg_match_all('/data-admin-view="/',$admin));
     foreach(['line-oas','line-bindings']as$view)$same(true,str_contains($admin,'class="admin-view" data-admin-view="'.$view.'"'));
 
     // Work that costs money must be visible without opening the view first.
@@ -2321,9 +2322,9 @@ $test('admin console opens on an overview that surfaces pending work and worker 
     $same(true,str_contains($payments,"SELECT COUNT(*) FROM payments WHERE status='pending'"));
     $same(true,str_contains($payments,"'pending_count'=>\$pendingCount"));
 
-    // The overview is the home view, so its hash stays empty and bookmarks of
+    // The chooser is the home view, so its hash stays empty and bookmarks of
     // the other views keep working.
-    $same(true,str_contains($js,"const homeView = 'overview';"));
+    $same(true,str_contains($js,"const homeView = 'workspace';"));
     $same(true,str_contains($js,'const hash = name === homeView ? \'\' : `#${name}`;'));
     $same(0,preg_match('/name === \'rooms\' \? \'\' :/',$js));
 

@@ -52,6 +52,7 @@ final class Application
     private ?\Dormitory\Domain\TransferInstructionService $transferInstructions = null;
     private ?\Dormitory\Domain\DailyBookingService $dailyBookingService = null;
     private ?\Dormitory\Domain\DailyPaymentService $dailyPaymentService = null;
+    private ?\Dormitory\Domain\RevenueService $revenueService = null;
     /** @var array<string,mixed>|null|false */
     private array|null|false $actorCache = false;
 
@@ -107,6 +108,7 @@ final class Application
     public function lineBills(): \Dormitory\Domain\LineBillService { return new \Dormitory\Domain\LineBillService($this); }
     public function dailyBookings(): \Dormitory\Domain\DailyBookingService { return $this->dailyBookingService ??= new \Dormitory\Domain\DailyBookingService($this); }
     public function dailyPayments(): \Dormitory\Domain\DailyPaymentService { return $this->dailyPaymentService ??= new \Dormitory\Domain\DailyPaymentService($this); }
+    public function revenue(): \Dormitory\Domain\RevenueService { return $this->revenueService ??= new \Dormitory\Domain\RevenueService($this); }
 
     /** @return array<string,mixed>|null */
     public function actor(bool $refresh = false): ?array

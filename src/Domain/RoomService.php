@@ -22,23 +22,47 @@ final class RoomService
     }
 
     /** @return list<array<string,mixed>> */
-    public function available(): array
+    public function available(mixed $rentalMode = 'monthly'): array
     {
-        $rows = $this->app->database()->pdo()->query($this->selectSql() . " WHERE r.deleted_at IS NULL AND r.rental_mode='monthly' HAVING status='available' ORDER BY r.floor,r.room_code")->fetchAll();
-        return array_map($this->map(...), $rows);
+        return $this->listRooms($rentalMode, true);
     }
 
     /** @return list<array<string,mixed>> */
-    public function all(): array
+    public function all(mixed $rentalMode = null): array
     {
-        $rows = $this->app->database()->pdo()->query($this->selectSql() . ' WHERE r.deleted_at IS NULL ORDER BY r.floor,r.room_code')->fetchAll();
+        return $this->listRooms($rentalMode, false);
+    }
+
+    /** Catalogue scope only; date-specific daily availability remains in DailyBookingService.
+     *  @return list<array<string,mixed>>
+     */
+    private function listRooms(mixed $rentalMode, bool $availableOnly): array
+    {
+        $rentalMode = $this->rentalScope($rentalMode);
+        $where = ' WHERE r.deleted_at IS NULL';
+        $parameters = [];
+        if ($rentalMode !== null) {
+            $where .= ' AND r.rental_mode=?';
+            $parameters[] = $rentalMode;
+        }
+        $statement = $this->app->database()->pdo()->prepare($this->selectSql() . $where
+            . ($availableOnly ? " HAVING status='available'" : '') . ' ORDER BY r.floor,r.room_code');
+        $statement->execute($parameters);
+        $rows = $statement->fetchAll();
         return array_map($this->map(...), $rows);
     }
 
     /** @return array<string,mixed> */
-    public function create(array $input): array
+    public function create(array $input, mixed $requiredRentalMode = null): array
     {
+        $requiredRentalMode = $this->rentalScope($requiredRentalMode);
         Validator::only($input, ['room_code','floor','room_type','monthly_rent','description','amenities','image_key','rental_mode','daily_rate','max_guests','daily_deposit']);
+        if ($requiredRentalMode !== null) {
+            if (array_key_exists('rental_mode', $input) && $input['rental_mode'] !== $requiredRentalMode) {
+                throw new HttpException(422, 'ประเภทห้องไม่ตรงกับส่วนที่กำลังใช้งาน', 'ROOM_RENTAL_MODE', ['field'=>'rental_mode']);
+            }
+            $input['rental_mode'] = $requiredRentalMode;
+        }
         $data = $this->validate($input, false);
         $data += ['rental_mode'=>'monthly','daily_rate'=>null,'max_guests'=>2,'daily_deposit'=>'0.00'];
         $this->validateRentalConfiguration($data);
@@ -60,9 +84,13 @@ final class RoomService
     }
 
     /** @return array<string,mixed> */
-    public function update(int $id, array $input): array
+    public function update(int $id, array $input, mixed $requiredRentalMode = null): array
     {
+        $requiredRentalMode = $this->rentalScope($requiredRentalMode);
         Validator::only($input, ['room_code','floor','room_type','monthly_rent','description','amenities','image_key','rental_mode','daily_rate','max_guests','daily_deposit','expected_version']);
+        if ($requiredRentalMode !== null && array_key_exists('rental_mode', $input) && $input['rental_mode'] !== $requiredRentalMode) {
+            throw new HttpException(422, 'เปลี่ยนประเภทห้องผ่านส่วนนี้ไม่ได้ กรุณาจัดการในส่วนประเภทห้องที่ถูกต้อง', 'ROOM_RENTAL_MODE', ['field'=>'rental_mode']);
+        }
         $expectedVersion=null;
         if(array_key_exists('expected_version',$input)){
             $expectedVersion=Validator::string($input['expected_version'],'expected_version',64,64);
@@ -73,10 +101,11 @@ final class RoomService
             throw new HttpException(422, 'ไม่มีข้อมูลที่ต้องแก้ไข', 'NOTHING_TO_UPDATE');
         }
         $data = $this->validate($input, true);
-        return $this->app->database()->transaction(function(PDO $pdo)use($id,$data,$expectedVersion):array{
+        return $this->app->database()->transaction(function(PDO $pdo)use($id,$data,$expectedVersion,$requiredRentalMode):array{
         $lock=$pdo->prepare('SELECT * FROM rooms WHERE id=? AND deleted_at IS NULL FOR UPDATE');
         $lock->execute([$id]);$current=$lock->fetch();
         if(!$current)throw new HttpException(404,'ไม่พบห้อง','ROOM_NOT_FOUND');
+        $this->assertRentalScope($current, $requiredRentalMode);
         if($expectedVersion!==null&&!hash_equals($this->editVersion($current),$expectedVersion))throw new HttpException(409,'ข้อมูลห้องถูกแก้ไขแล้ว กรุณาโหลดข้อมูลล่าสุดและตรวจค่าก่อนบันทึก','ROOM_VERSION_CONFLICT');
         $effective=array_replace($current,$data);$this->validateRentalConfiguration($effective);
         if($effective['rental_mode']!==$current['rental_mode']||(int)$effective['max_guests']<(int)$current['max_guests'])$this->app->dailyBookings()->expireRoomHoldsUnderLock($pdo,$id);
@@ -116,14 +145,17 @@ final class RoomService
         });
     }
 
-    public function delete(int $id): void
+    public function delete(int $id, mixed $requiredRentalMode = null): void
     {
-        $this->app->database()->transaction(function (PDO $pdo) use ($id): void {
-            $lock = $pdo->prepare('SELECT id FROM rooms WHERE id=? AND deleted_at IS NULL FOR UPDATE');
+        $requiredRentalMode = $this->rentalScope($requiredRentalMode);
+        $this->app->database()->transaction(function (PDO $pdo) use ($id,$requiredRentalMode): void {
+            $lock = $pdo->prepare('SELECT id,rental_mode FROM rooms WHERE id=? AND deleted_at IS NULL FOR UPDATE');
             $lock->execute([$id]);
-            if (!$lock->fetch()) {
+            $current = $lock->fetch();
+            if (!$current) {
                 throw new HttpException(404, 'ไม่พบห้อง', 'ROOM_NOT_FOUND');
             }
+            $this->assertRentalScope($current, $requiredRentalMode);
             $this->app->bookings()->expireRoomHoldsUnderLock($pdo,$id);
             $this->app->dailyBookings()->expireRoomHoldsUnderLock($pdo,$id);
             $this->assertNoCurrentUse($pdo,$id);
@@ -254,6 +286,23 @@ final class RoomService
             'image_key'=>$imageKey,'image_url'=>$imageKey ? '/assets/images/rooms/' . implode('/', array_map('rawurlencode', explode('/', $imageKey))) : null,
             'status'=>$row['status'],
         ];
+    }
+
+    private function rentalScope(mixed $rentalMode): ?string
+    {
+        if ($rentalMode !== null && (!is_string($rentalMode) || !in_array($rentalMode, ['monthly','daily'], true))) {
+            throw new HttpException(422, 'เลือกประเภทรายเดือนหรือรายวันให้ถูกต้อง', 'VALIDATION_ERROR', ['field'=>'rental_mode']);
+        }
+        return $rentalMode;
+    }
+
+    /** Validate the persisted type only after the caller locks the physical room. */
+    private function assertRentalScope(array $room, ?string $requiredRentalMode): void
+    {
+        if ($requiredRentalMode !== null && $room['rental_mode'] !== $requiredRentalMode) {
+            $label = $requiredRentalMode === 'monthly' ? 'รายเดือน' : 'รายวัน';
+            throw new HttpException(409, 'ห้องนี้ไม่ใช่ห้องพัก'.$label.' กรุณาเปิดส่วนประเภทห้องที่ถูกต้อง', 'ROOM_RENTAL_MODE');
+        }
     }
 
     private function validateRentalConfiguration(array $data): void

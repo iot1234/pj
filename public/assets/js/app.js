@@ -1825,6 +1825,7 @@
   }
 
   function overviewRoomCounts(rooms) {
+    rooms = rooms.filter(room => room.rental_mode !== 'daily');
     return {
       occupied: rooms.filter(room => room.status === 'occupied').length,
       available: rooms.filter(room => room.status === 'available' && (room.rental_mode !== 'daily' || room.housekeeping_status === 'ready')).length,
@@ -1846,9 +1847,10 @@
       roomListReady: false, roomActionBusy: false, residentListReady: false, residentLoadGeneration: 0, residentCreateOpenGeneration: 0,
     };
     const role = body.dataset.userRole || '';
-    const titles = { overview: 'ภาพรวม', rooms: 'ห้องพัก', bookings: 'จองรายเดือน', daily: 'จองรายวัน', residents: 'ผู้พักรายเดือน', meters: 'จดมิเตอร์รายเดือน', bills: 'บิลรายเดือน', payments: 'ชำระเงินรายเดือน', users: 'เจ้าของระบบ', settings: 'ตั้งค่า', 'line-oas': 'บัญชี LINE OA', 'line-bindings': 'การผูก LINE ผู้พัก' };
-    const homeView = 'overview';
+    const titles = { workspace: 'เลือกส่วนงาน', overview: 'ภาพรวมรายเดือน', rooms: 'ห้องรายเดือน', 'daily-overview': 'ภาพรวมรายวัน', 'daily-rooms': 'ห้องรายวัน', 'daily-revenue': 'รายรับรายวัน', 'monthly-revenue': 'รายรับรายเดือน', bookings: 'จองรายเดือน', daily: 'จองรายวัน', residents: 'ผู้พักรายเดือน', meters: 'จดมิเตอร์รายเดือน', bills: 'บิลรายเดือน', payments: 'ชำระเงินรายเดือน', users: 'เจ้าของระบบ', settings: 'ตั้งค่า', 'line-oas': 'บัญชี LINE OA', 'line-bindings': 'การผูก LINE ผู้พัก' };
+    const homeView = 'workspace';
     const loaders = {};
+    let rentalWorkspaces = null;
     const menuToggles = $$('[data-admin-menu-toggle]');
     const menuToggle = menuToggles[0] || null;
     let lastMenuOpener = null;
@@ -1917,6 +1919,7 @@
       if (!titles[name] || (name === 'users' && role !== 'owner')) return false;
       const activeView = $('[data-admin-view].is-active', app)?.dataset.adminView;
       if (typeof daily !== 'undefined' && daily?.busy() && !(name === 'daily' && !daily.inFlight?.())) { toast('มีรายการรายวันที่กำลังบันทึกหรือยังไม่ทราบผล กรุณาตรวจผลรายการเดิมก่อนเปลี่ยนหน้า', 'error'); return false; }
+      if (state.roomActionBusy || (typeof rentalWorkspaces !== 'undefined' && rentalWorkspaces?.busy()) || $('#room-form')?.dataset.submitting === 'true') { toast('กำลังบันทึกห้อง กรุณารอผลก่อนเปลี่ยนหน้า', 'error'); return false; }
       if (state.billWorking) { toast('กำลังตรวจยอดหรือออกบิล กรุณารอผลก่อนเปลี่ยนหน้า', 'error'); return false; }
       if (activeView === 'bills' && name !== 'bills') { rememberBillDraft(); invalidateBillPreview(); }
       if (activeView === 'meters' && state.meterSaving) { toast('กำลังบันทึกมิเตอร์ กรุณารอผลก่อนเปลี่ยนหน้า', 'error'); return false; }
@@ -1937,6 +1940,13 @@
         if (!window.confirm(message)) return false;
         state.meterDrafts?.clear(); state.meterErrors?.clear(); renderMeters();
       }
+      if (['daily', 'daily-overview', 'daily-rooms', 'daily-revenue'].includes(name)) state.workspaceMode = 'daily';
+      else if (['overview', 'rooms', 'bookings', 'residents', 'meters', 'bills', 'payments', 'monthly-revenue'].includes(name)) state.workspaceMode = 'monthly';
+      else if (name === 'workspace') state.workspaceMode = null;
+      if (app.dataset) app.dataset.rentalWorkspace = state.workspaceMode || 'chooser';
+      $$('[data-rental-nav-group]', app).forEach(group => { group.hidden = group.dataset.rentalNavGroup !== state.workspaceMode; });
+      $$('[data-rental-nav-mode]', app).forEach(control => { control.hidden = control.dataset.rentalNavMode !== state.workspaceMode; });
+      const monthlySettings = $('#settings-form'); if (monthlySettings) monthlySettings.hidden = state.workspaceMode === 'daily';
       const menuWasOpen = mobileMenu.matches && app.classList.contains('sidebar-open');
       $$('[data-admin-view]', app).forEach((view) => { const active = view.dataset.adminView === name; view.hidden = !active; view.classList.toggle('is-active', active); });
       $$('[data-admin-nav]', app).forEach((nav) => { const active = nav.dataset.adminNav === name; nav.classList.toggle('is-active', active); if (active) nav.setAttribute('aria-current', 'page'); else nav.removeAttribute('aria-current'); });
@@ -1945,7 +1955,7 @@
       if (updateHash && location.hash !== targetHash) location.hash = targetHash;
       setAdminMenu(false);
       if (menuWasOpen) $('#main-content')?.focus({ preventScroll: true });
-      const volatileViews = ['overview', 'rooms', 'bookings', 'daily', 'residents', 'meters', 'bills', 'payments'];
+      const volatileViews = ['overview', 'rooms', 'bookings', 'daily', 'daily-overview', 'daily-rooms', 'daily-revenue', 'monthly-revenue', 'residents', 'meters', 'bills', 'payments'];
       if (force || volatileViews.includes(name) || !state.loaded.has(name)) state.viewLoad = Promise.resolve(loaders[name]?.());
       return true;
     }
@@ -1960,7 +1970,7 @@
       if (state.roomListReady === false) return;
       const rows = $('#admin-room-rows');
       rows.replaceChildren();
-      const visible = state.rooms.filter(roomMatches);
+      const visible = state.rooms.filter(room => room.rental_mode !== 'daily').filter(roomMatches);
       visible.forEach((room) => {
         const tr = create('tr');
         const roomCell = create('div', 'room-cell');
@@ -1977,7 +1987,7 @@
       });
       ['all', 'available', 'reserved', 'occupied'].forEach((key) => { const node = $(`[data-room-stat="${key}"]`); node.textContent = String(key === 'all' ? state.rooms.length : state.rooms.filter((room) => room.status === key).length); });
       const emptyMessage = state.rooms.length === 0
-        ? 'ยังไม่มีห้อง กด “เพิ่มห้องพัก” แล้วเลือกรายวันหรือรายเดือนและตั้งราคา จากนั้นไปเมนูรับจองหรือรับผู้พักที่ตรงกัน'
+        ? 'ยังไม่มีห้องรายเดือน กด “เพิ่มห้องรายเดือน” เพื่อตั้งค่าเช่าต่อเดือน'
         : 'ไม่พบห้องที่ตรงกับตัวกรอง';
       setTableState($('#admin-room-state'), visible.length ? 'ready' : 'empty', emptyMessage);
     }
@@ -1987,9 +1997,9 @@
       state.roomListReady = false; state.rooms = []; invalidateBillPreview(); const rows = $('#admin-room-rows'); rows.replaceChildren(); rows.setAttribute('inert', '');
       setTableState($('#admin-room-state'), 'loading', 'กำลังโหลดห้องพัก…');
       try {
-        const data = await api('/api/admin/rooms', { signal: controller.signal });
+        const data = await api('/api/admin/monthly/rooms', { signal: controller.signal });
         if (state.roomController !== controller) return;
-        state.rooms = requiredEntityList(data, 'rooms'); state.roomListReady = true;
+        const roomRows = requiredEntityList(data, 'rooms'); if (roomRows.some(room => room.rental_mode && room.rental_mode !== 'monthly')) throw new Error('รายการห้องไม่ตรงส่วนงานรายเดือน กรุณาโหลดใหม่'); state.rooms = roomRows; state.roomListReady = true;
         state.loaded.add('rooms'); state.loaded.delete('meters'); renderRooms();
         if (state.loaded.has('bills')) fillBillRooms();
       } catch (error) {
@@ -2005,15 +2015,19 @@
       }
     }
 
-    function openRoomForm(room = null) {
+    function openRoomForm(room = null, rentalMode = 'monthly') {
       const form = $('#room-form'); if (form.dataset.submitting === 'true') return; form.reset(); showFormError($('#room-form-error'));
+      if (!['daily', 'monthly'].includes(rentalMode) || (room && room.rental_mode !== rentalMode)) { showFormError($('#room-form-error'), 'ห้องไม่ตรงกับส่วนงาน กรุณาโหลดรายการของส่วนงานนั้นก่อน'); return; }
+      form.dataset.rentalMode = rentalMode;
       form.elements.id.value = room?.id || '';
       if (form.elements.expected_version) {
         form.elements.expected_version.value = room?.room_version || '';
         if (room && (typeof room.room_version !== 'string' || !room.room_version)) { showFormError($('#room-form-error'), 'ข้อมูลเวอร์ชันห้องไม่ครบ กรุณารีเฟรชรายการก่อนแก้ไข'); openDialog($('#room-dialog')); return; }
       }
-      $('#room-dialog-title').textContent = room ? `แก้ไขห้อง ${text(room.room_code)}` : 'เพิ่มห้องพัก';
+      $('#room-dialog-title').textContent = room ? `แก้ไขห้อง${rentalMode === 'daily' ? 'รายวัน' : 'รายเดือน'} ${text(room.room_code)}` : `เพิ่มห้อง${rentalMode === 'daily' ? 'รายวัน' : 'รายเดือน'}`;
       if (room) ['room_code', 'floor', 'room_type', 'monthly_rent', 'description', 'image_key', 'rental_mode', 'daily_rate', 'max_guests', 'daily_deposit'].forEach((key) => { if (form.elements[key]) form.elements[key].value = room[key] ?? ''; });
+      form.elements.rental_mode.value = rentalMode; form.elements.rental_mode.disabled = true;
+      const workspaceName = $('#room-workspace-name'); if (workspaceName) workspaceName.textContent = rentalMode === 'daily' ? 'ห้องรายวัน' : 'ห้องรายเดือน';
       syncRoomRentalFields(form);
       form.elements.amenities.value = Array.isArray(room?.amenities) ? room.amenities.join(', ') : '';
       $$('details', form).forEach((section) => { section.open = false; });
@@ -2022,6 +2036,8 @@
     }
 
     loaders.rooms = loadRooms;
+    rentalWorkspaces = window.DormRentalWorkspaces?.init({ $, create, api, money, formatDateTime, showFormError, errorMessage, setBusy, confirmAction, toast, todayPeriod, openRoomForm });
+    loaders['daily-rooms'] = () => rentalWorkspaces?.loadDailyRooms(); loaders['daily-overview'] = () => rentalWorkspaces?.loadDailyOverview(); loaders['daily-revenue'] = () => rentalWorkspaces?.loadRevenue('daily'); loaders['monthly-revenue'] = () => rentalWorkspaces?.loadRevenue('monthly');
     function syncRoomRentalFields(form) {
       if (!form.elements.rental_mode) return;
       const isDaily = form.elements.rental_mode.value === 'daily';
@@ -2052,7 +2068,7 @@
           if (!await confirmAction('ลบห้องพัก', `ต้องการลบห้อง ${text(room.room_code)} หรือไม่? ระบบจะปฏิเสธหากมีข้อมูลผูกพัน`)) return;
           if (!state.roomListReady || state.roomController || !state.rooms.includes(room)) return;
           setBusy(button, true, 'กำลังลบ…');
-          await api(`/api/admin/rooms/${encodeURIComponent(room.id)}`, { method: 'DELETE', body: {} });
+          await api(`/api/admin/monthly/rooms/${encodeURIComponent(room.id)}`, { method: 'DELETE', body: {} });
           toast('ลบห้องแล้ว'); await loadRooms();
         } catch (error) { toast(error, 'error'); await loadRooms(); }
         finally { state.roomActionBusy = false; setBusy(button, false); }
@@ -2061,12 +2077,13 @@
     $('#room-form').addEventListener('submit', async (event) => {
       event.preventDefault(); const form = event.currentTarget; if (form.dataset.submitting === 'true') return; const error = $('#room-form-error'); showFormError(error); if (!form.reportValidity()) return;
       const values = Object.fromEntries(new FormData(form).entries()); const id = values.id; delete values.id;
+      const rentalMode = form.dataset.rentalMode || 'monthly'; if (!['monthly', 'daily'].includes(rentalMode)) { showFormError(error, 'ประเภทห้องไม่ถูกต้อง กรุณาเปิดฟอร์มใหม่'); return; } values.rental_mode = rentalMode;
       if (!id) delete values.expected_version;
       else if (form.elements.expected_version && !values.expected_version) { showFormError(error, 'ยังอ่านเวอร์ชันห้องล่าสุดไม่ได้ กรุณาปิดหน้าต่างและรีเฟรชรายการก่อนแก้ไข'); return; }
       values.monthly_rent = number(values.monthly_rent); values.amenities = String(values.amenities || '').split(',').map((item) => item.trim()).filter(Boolean);
       if (values.rental_mode === 'daily') { values.monthly_rent = 0; values.daily_rate = String(values.daily_rate); values.max_guests = Number(values.max_guests); values.daily_deposit = String(values.daily_deposit || '0.00'); }
       const button = form.querySelector('[type="submit"]'); if (!beginDialogSave(form)) return; setBusy(button, true, 'กำลังบันทึก…');
-      try { await api(id ? `/api/admin/rooms/${encodeURIComponent(id)}` : '/api/admin/rooms', { method: id ? 'PUT' : 'POST', body: values }); finishDialogSave(form); form.reset(); closeDialog($('#room-dialog')); toast('บันทึกห้องแล้ว'); loadRooms(); }
+      try { await api(id ? `/api/admin/${rentalMode}/rooms/${encodeURIComponent(id)}` : `/api/admin/${rentalMode}/rooms`, { method: id ? 'PUT' : 'POST', body: values }); finishDialogSave(form); form.reset(); closeDialog($('#room-dialog')); toast(`บันทึกห้อง${rentalMode === 'daily' ? 'รายวัน' : 'รายเดือน'}แล้ว`); if (rentalMode === 'daily') rentalWorkspaces?.loadDailyRooms(); else loadRooms(); }
       catch (requestError) { showFormError(error, requestError); } finally { finishDialogSave(form); setBusy(button, false); }
     });
 
@@ -3658,7 +3675,7 @@
       setStat('#overview-period', formatPeriod(period));
       const options = { signal: controller.signal };
       const requests = [
-        api('/api/admin/rooms', options).then(data=>requiredEntityList(data,'rooms')),
+        api('/api/admin/monthly/rooms', options).then(data=>{const rooms=requiredEntityList(data,'rooms');if(rooms.some(room=>room.rental_mode&&room.rental_mode!=='monthly'))throw new Error('ข้อมูลห้องรายเดือนไม่ตรงส่วนงาน');return rooms;}),
         api('/api/admin/bookings?status=pending&offset=0&limit=1', options).then(data=>{if(!Number.isSafeInteger(data?.pending_count)||data.pending_count<0)throw new Error('ข้อมูลจำนวนการจองไม่ครบ');return data;}),
         api('/api/admin/payments?status=pending&offset=0&limit=1', options).then(data=>{if(!Number.isSafeInteger(data?.pending_count)||data.pending_count<0)throw new Error('ข้อมูลจำนวนสลิปไม่ครบ');return data;}),
         api(`/api/admin/bills?period=${encodeURIComponent(period)}`, options).then(data=>requiredEntityList(data,'bills')),
@@ -3737,7 +3754,7 @@
       }
 
       if (metersResult.status === 'fulfilled') {
-        const meters = listFrom(metersResult.value, 'meters');
+        const meters = listFrom(metersResult.value, 'meters').filter(row => row.rental_mode !== 'daily');
         const done = meters.filter(meterIsComplete).length;
         renderOverviewTask('meters', `${done}/${meters.length}`, done, meters.length,
           meters.length === 0
@@ -3838,6 +3855,10 @@
       if (active === 'rooms') loadRooms();
       if (active === 'overview') loadOverview();
       if (active === 'daily') daily?.load();
+      if (active === 'daily-rooms') rentalWorkspaces?.loadDailyRooms();
+      if (active === 'daily-overview') rentalWorkspaces?.loadDailyOverview();
+      if (active === 'daily-revenue') rentalWorkspaces?.loadRevenue('daily');
+      if (active === 'monthly-revenue') rentalWorkspaces?.loadRevenue('monthly');
     });
     if (initialHash !== (initialView === homeView ? '' : initialView)) replaceAdminHash(initialView);
     window.addEventListener('hashchange', () => {

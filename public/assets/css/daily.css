@@ -13,7 +13,22 @@
 .daily-empty-state { padding: 1.2rem; color: var(--muted); white-space: normal; }
 .daily-setup-guide { margin-bottom: 1rem; }
 .daily-setup-guide h3 { margin-top: 0; }
+.workspace-options { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 1.25rem; }
+.workspace-card { display: flex; flex-direction: column; justify-content: space-between; gap: 1rem; padding: 1.5rem; }
+.workspace-card h3 { font-size: 1.6rem; margin: .25rem 0 .7rem; }
+.workspace-card p { line-height: 1.8; color: var(--ink-soft); }
+.workspace-card .button { align-self: flex-start; }
+.workspace-stats { grid-template-columns: repeat(3,minmax(0,1fr)); }
+.workspace-revenue .stat-card strong { overflow-wrap: anywhere; }
+.revenue-toolbar { align-items: flex-end; }
+.revenue-toolbar .field { margin: 0; }
+.revenue-details { margin: 1rem 0; padding: 1.25rem; }
+.workspace-revenue .table-panel .panel-heading { padding: 1rem 1.25rem 0; }
+.workspace-revenue table td { overflow-wrap: anywhere; }
 .admin-bottom-nav { grid-template-columns: repeat(5,minmax(0,1fr)); }
+.admin-shell[data-rental-workspace="chooser"] .admin-bottom-nav { grid-template-columns: repeat(2,minmax(0,1fr)); }
+.admin-nav > [data-rental-nav-group] { display: contents; }
+.admin-nav > [data-rental-nav-group][hidden] { display: none; }
 .daily-calendar-cell { min-width: 5.5rem; font-size: .8rem; white-space: normal; }
 .daily-calendar-cell[data-booked="true"] { background: #edf2fc; }
 .daily-calendar-cell[data-blocked="true"] { background: #fff2e0; }
@@ -24,6 +39,13 @@
 #daily-qr-stage:empty { display: none; }
 .admin-content #daily-calendar th:last-child, .admin-content #daily-calendar td:last-child { position: static; box-shadow: none; }
 @media(max-width:600px) {
+  .workspace-options { grid-template-columns: minmax(0,1fr); }
+  .workspace-stats { grid-template-columns: repeat(2,minmax(0,1fr)); gap: .6rem; }
+  .workspace-card { padding: 1.1rem; }
+  .workspace-card .button { align-self: stretch; }
+  .revenue-toolbar { align-items: stretch; }
+  .revenue-toolbar .field { width: 100%; }
+  .workspace-revenue .table-panel .panel-heading { padding: .85rem; }
   .daily-public-header { flex-wrap: wrap; gap: .6rem; }
   .daily-public-header .header-actions { display: flex; width: 100%; gap: .4rem; }
   .daily-public-header .header-actions .button { flex: 1; min-width: 0; padding: .5rem .3rem; }

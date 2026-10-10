@@ -115,12 +115,12 @@ test('a guest still checked in after planned checkout blocks future calendar cel
   assert.equal(f.calendarStay([future, { ...overdue, status: 'checked_out' }], 2, '2026-10-15', '2026-10-09').id, future.id);
   assert.equal(f.calendarStay([overdue], 3, '2026-10-15', '2026-10-09'), undefined);
 });
-test('monthly work counts exclude daily occupants and available inventory excludes cleaning rooms', () => {
+test('monthly overview counts exclude every daily room and occupant', () => {
   const app = fs.readFileSync(require('node:path').join(__dirname, '../public/assets/js/app.js'), 'utf8');
   const start = app.indexOf('function overviewRoomCounts('), end = app.indexOf('function initAdminConsole()', start), context = {};
   vm.createContext(context); vm.runInContext(app.slice(start, end), context);
   const counts = context.overviewRoomCounts([{ status: 'occupied', rental_mode: 'monthly' }, { status: 'occupied', rental_mode: 'daily' }, { status: 'available', rental_mode: 'daily', housekeeping_status: 'cleaning' }, { status: 'available', rental_mode: 'daily', housekeeping_status: 'ready' }, { status: 'available', rental_mode: 'monthly' }]);
-  assert.equal(counts.monthlyOccupied, 1); assert.equal(counts.occupied, 2); assert.equal(counts.available, 2);
+  assert.equal(counts.monthlyOccupied, 1); assert.equal(counts.occupied, 1); assert.equal(counts.available, 1);
 });
 test('a room that looks available still hides delete when the server reports future commitments', () => {
   const app = fs.readFileSync(require('node:path').join(__dirname, '../public/assets/js/app.js'), 'utf8'), rows = node(), rendered = [];
@@ -133,10 +133,10 @@ test('a room that looks available still hides delete when the server reports fut
 });
 test('room edits submit the opened server version and retain it after an unknown write outcome', async () => {
   const app = fs.readFileSync(require('node:path').join(__dirname, '../public/assets/js/app.js'), 'utf8'), form = node(), error = node(), requests = [], pending = deferred();
-  form.elements = { expected_version: { value: 'opened-room-version' } }; const values = { id: '2', expected_version: 'opened-room-version', room_code: 'D02', rental_mode: 'daily', daily_rate: '550.00', max_guests: '2', daily_deposit: '100.00', amenities: '' };
+  form.dataset.rentalMode = 'daily'; form.elements = { expected_version: { value: 'opened-room-version' } }; const values = { id: '2', expected_version: 'opened-room-version', room_code: 'D02', rental_mode: 'monthly', daily_rate: '550.00', max_guests: '2', daily_deposit: '100.00', amenities: '' };
   const context = { $: selector => selector === '#room-form' ? form : selector === '#room-form-error' ? error : node(), FormData: class { entries() { return Object.entries(values); } }, number: Number, beginDialogSave: () => true, finishDialogSave() {}, setBusy() {}, closeDialog() {}, toast() {}, loadRooms() {}, showFormError: (n, value) => { n.textContent = value?.message || value || ''; }, api: (url, options) => { requests.push({ url, options }); return pending.promise; } };
   vm.createContext(context); const start = app.indexOf("$('#room-form').addEventListener('submit'"), end = app.indexOf('const setStat =', start); vm.runInContext(app.slice(start, end), context);
-  const work = form.listeners.submit({ preventDefault() {}, currentTarget: form }); assert.equal(requests[0].options.body.expected_version, 'opened-room-version'); assert.equal(requests[0].options.method, 'PUT');
+  const work = form.listeners.submit({ preventDefault() {}, currentTarget: form }); assert.equal(requests[0].options.body.expected_version, 'opened-room-version'); assert.equal(requests[0].options.method, 'PUT'); assert.equal(requests[0].options.body.rental_mode, 'daily'); assert.equal(requests[0].url, '/api/admin/daily/rooms/2');
   pending.reject(new Error('unknown result')); await work; assert.equal(form.elements.expected_version.value, 'opened-room-version'); assert.equal(values.daily_rate, '550.00'); assert.equal(error.textContent, 'unknown result');
 });
 test('finance success is scoped to the intended receipt and historical close outcomes do not overwrite a later retry', () => {
@@ -409,7 +409,7 @@ test('editing the search cannot rewrite an already submitted unknown booking sta
 test('an empty daily inventory shows setup only after a complete successful load', async () => {
   const ui = adminHarness(), loading = ui.admin.load();
   assert.equal(ui.$('#daily-setup-guide').hidden, true); assert.equal(ui.$('#daily-owner-create').disabled, true);
-  resolveOwnerInventory(ui, 0, [{ id: 1, room_code: 'M01', rental_mode: 'monthly' }]); await loading;
+  resolveOwnerInventory(ui, 0, []); await loading;
   assert.equal(ui.$('#daily-setup-guide').hidden, false); assert.equal(ui.$('#daily-owner-create').disabled, true);
   ui.$('#daily-owner-create').listeners.click();
   assert.notEqual(ui.$('#daily-owner-create-dialog').open, true);

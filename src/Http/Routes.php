@@ -14,6 +14,7 @@ final class Routes
         $router=new Router($app);
         LineAdminRoutes::register($router,$app);
         DailyRoutes::register($router,$app);
+        RentalRoutes::register($router,$app);
         $page=static function(string $template,string $title,string $pageId,?array $user=null) use($app): Response {
             return Response::html($app->view()->render($template,['title'=>$title,'page'=>$pageId,'csrfToken'=>$app->security()->csrfToken(),'user'=>$user??[],'appTimezone'=>(string)$app->config->get('APP_TIMEZONE','Asia/Bangkok')]));
         };
@@ -101,7 +102,7 @@ final class Routes
         $router->put('/api/admin/users/{id}',function(Request $r)use($app,$id):Response{$target=$id($r);$data=$app->database()->transaction(function()use($app,$r,$target):array{$data=$app->adminUsers()->update($target,$r->body,(int)$app->actor()['id']);$app->audit()->writeStrict($r,$app->actor(),'admin_user.update','admin_user',$data['id'],['role'=>$data['role'],'active'=>$data['active']]);return $data;});return Response::json($data);},$owner);
         $router->delete('/api/admin/users/{id}',function(Request $r)use($app,$id):Response{Validator::only($r->body,[]);$target=$id($r);$app->database()->transaction(function()use($app,$r,$target):void{$app->adminUsers()->delete($target,(int)$app->actor()['id']);$app->audit()->writeStrict($r,$app->actor(),'admin_user.disable','admin_user',$target);});return Response::json(null,200,'Admin disabled');},$owner);
 
-        $router->get('/api/admin/rooms',fn(Request $r)=>Response::json($app->rooms()->all()),$admin);
+        $router->get('/api/admin/rooms',function(Request $r)use($app):Response{Validator::only($r->query,['rental_mode']);$mode=Validator::enum($r->query['rental_mode']??'monthly','rental_mode',['monthly','daily']);return Response::json($app->rooms()->all($mode));},$admin);
         $router->post('/api/admin/rooms',function(Request $r)use($app):Response{$data=$app->database()->transaction(function()use($app,$r):array{$data=$app->rooms()->create($r->body);$app->audit()->writeStrict($r,$app->actor(),'room.create','room',$data['id']);return $data;});return Response::json($data,201);},$admin);
         $router->put('/api/admin/rooms/{id}',function(Request $r)use($app,$id):Response{Validator::string($r->body['expected_version']??null,'expected_version',64,64);$target=$id($r);$data=$app->database()->transaction(function()use($app,$r,$target):array{$data=$app->rooms()->update($target,$r->body);$app->audit()->writeStrict($r,$app->actor(),'room.update','room',$data['id']);return $data;});return Response::json($data);},$admin);
         $router->delete('/api/admin/rooms/{id}',function(Request $r)use($app,$id):Response{Validator::only($r->body,[]);$target=$id($r);$app->database()->transaction(function()use($app,$r,$target):void{$app->rooms()->delete($target);$app->audit()->writeStrict($r,$app->actor(),'room.delete','room',$target);});return Response::json(null,200,'Room deleted');},$admin);

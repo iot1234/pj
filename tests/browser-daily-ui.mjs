@@ -52,7 +52,8 @@ async function context(width) {
     else if(url.pathname==='/api/admin/daily/payments/9/retry'){assert.equal(evidenceAvailable,true);reviewPayment.status='verified';reviewClosed=[];paid=true;booking.status='confirmed';booking.version+=1;data={...reviewedRow(reviewPayment),booking_status:booking.status,version:booking.version};}
     else if (url.pathname === '/api/admin/daily/bookings') data = { items: booking ? [booking] : [],has_more:false,next_offset:booking?1:0 };
     else if (url.pathname === '/api/admin/daily/calendar') data = { items: booking ? [booking] : [], rooms: [room], blocks: [], from: input.from, to: input.to };
-    else if (url.pathname === '/api/admin/rooms') data = [room];
+    else if (url.pathname === '/api/admin/daily/rooms') data = [room];
+    else if (['/api/admin/rooms', '/api/admin/monthly/rooms'].includes(url.pathname)) data = [];
     else if (url.pathname === '/api/admin/bookings') data = { items: [], pending_count: 0, next_offset: 0, has_more: false };
     else if (url.pathname === '/api/admin/payments') data = { items: [], pending_count: 0, next_offset: 0, has_more: false };
     else data = {};
